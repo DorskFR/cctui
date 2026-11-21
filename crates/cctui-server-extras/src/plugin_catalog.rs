@@ -82,11 +82,13 @@ pub fn parse(body: &str) -> Vec<CatalogEntry> {
 }
 
 /// The catalog committed in this build.
+#[must_use]
 pub fn embedded() -> Vec<CatalogEntry> {
     parse(EMBEDDED)
 }
 
 /// `off` disables the fetch entirely.
+#[must_use]
 pub fn catalog_url() -> String {
     std::env::var("CCTUI_PLUGIN_CATALOG_URL")
         .ok()
@@ -95,7 +97,7 @@ pub fn catalog_url() -> String {
         .unwrap_or_else(|| {
             format!(
                 "https://raw.githubusercontent.com/{}/main/plugins/catalog.json",
-                crate::routes::manifest::repo()
+                cctui_server_kernel::config::repo()
             )
         })
 }
@@ -128,12 +130,12 @@ fn remember(entries: &[CatalogEntry], ttl: Duration) {
 /// The catalog body from `url`, through the SSRF-guarded client. `None` on any
 /// transport, status or size failure — the caller falls back to [`embedded`].
 async fn fetch(url: &str) -> Option<String> {
-    let allow = crate::outbound::upstream_allowlist();
-    if let Err(e) = crate::outbound::validate_outbound_url(url, &allow).await {
+    let allow = cctui_server_kernel::outbound::upstream_allowlist();
+    if let Err(e) = cctui_server_kernel::outbound::validate_outbound_url(url, &allow).await {
         tracing::warn!("plugin catalog url refused: {e}");
         return None;
     }
-    let resp = crate::outbound::upstream_client()
+    let resp = cctui_server_kernel::outbound::upstream_client()
         .get(url)
         .timeout(FETCH_TIMEOUT)
         .send()
@@ -181,6 +183,7 @@ async fn resolve(url: &str) -> (Vec<CatalogEntry>, Duration) {
     }
 }
 
+#[must_use]
 pub fn sha256_hex(bytes: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(bytes);

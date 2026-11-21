@@ -1,5 +1,6 @@
-//! `GET /api/v1/sessions/{id}/langfuse` — per-session cost/usage rollup proxied
-//! from Langfuse. Keys stay server-side; the browser never talks to
+//! `GET /api/v1/sessions/{id}/langfuse`: per-session cost/usage rollup proxied from Langfuse.
+//!
+//! Keys stay server-side; the browser never talks to
 //! Langfuse. Ownership is enforced by the `sess_read` authz layer; the response
 //! is cached ~60s in the [`crate::langfuse::LangfuseClient`] to spare upstream.
 
@@ -7,15 +8,15 @@ use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 
-use crate::error::AppError;
+use crate::context::ExtrasContext;
 use crate::langfuse::LangfuseSessionUsage;
-use crate::state::AppState;
+use cctui_server_kernel::error::AppError;
 
-pub async fn session_langfuse(
-    State(state): State<AppState>,
+pub async fn session_langfuse<S: ExtrasContext>(
+    State(state): State<S>,
     Path(session_id): Path<String>,
 ) -> Result<Json<LangfuseSessionUsage>, AppError> {
-    let Some(client) = state.langfuse.as_ref() else {
+    let Some(client) = state.langfuse() else {
         return Err(AppError::new(StatusCode::NOT_FOUND, "langfuse not configured"));
     };
     match client.session_usage(&session_id).await {

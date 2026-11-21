@@ -230,6 +230,10 @@ jobs:
         if: env.WARM_ONLY != 'true' && contains(format(' {0} ', needs.changes.outputs.crates), ' cctui-server-voice ')
         run: cargo check -p cctui-server-voice --all-targets --locked
 
+      - name: Extras builds on the kernel alone
+        if: env.WARM_ONLY != 'true' && contains(format(' {0} ', needs.changes.outputs.crates), ' cctui-server-extras ')
+        run: cargo check -p cctui-server-extras --all-targets --locked
+
   test:
     name: cargo test
     needs: changes

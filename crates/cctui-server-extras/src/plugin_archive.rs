@@ -134,13 +134,14 @@ pub fn check_catalog_archive(bytes: &[u8], id: &str, version: &str) -> Result<()
     Ok(())
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub mod test_support {
     use flate2::Compression;
     use flate2::write::GzEncoder;
 
     /// A gzip'd tar of `(path, bytes)` regular files; the name is written raw
     /// so tests can smuggle paths the builder would refuse.
+    #[must_use]
     pub fn tgz(entries: &[(&str, &[u8])]) -> Vec<u8> {
         let mut builder = tar::Builder::new(GzEncoder::new(Vec::new(), Compression::fast()));
         for (path, data) in entries {
@@ -157,8 +158,10 @@ pub mod test_support {
     pub const MANIFEST: &[u8] = br#"{"id":"demo","name":"Demo","version":"1.0.0","cctuiApi":1,"web":"web/index.js","skills":["demo"]}"#;
 
     /// A valid plugin archive for `id`, optionally wrapped in a top-level folder.
+    ///
     /// A DB-backed test must pass its own `id`: the `plugins` table is shared by
     /// every test in the run, so a shared id makes tests race.
+    #[must_use]
     pub fn plugin_tgz(id: &str, folder: Option<&str>, version: &str) -> Vec<u8> {
         let manifest =
             String::from_utf8_lossy(MANIFEST).replace("1.0.0", version).replace("demo", id);
@@ -171,6 +174,7 @@ pub mod test_support {
     }
 
     /// A valid plugin archive with the id `demo`, for tests that touch no DB.
+    #[must_use]
     pub fn demo_tgz(folder: Option<&str>, version: &str) -> Vec<u8> {
         plugin_tgz("demo", folder, version)
     }

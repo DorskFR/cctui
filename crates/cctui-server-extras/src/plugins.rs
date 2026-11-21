@@ -695,11 +695,12 @@ pub fn mime_for(path: &str) -> &'static str {
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub mod test_support {
     use std::path::Path;
 
     /// Write a minimal valid plugin folder with one web entry and one skill.
+    #[allow(clippy::must_use_candidate)]
     pub fn write_plugin(root: &Path, id: &str, extra_manifest: &str) -> std::path::PathBuf {
         let dir = root.join(id);
         std::fs::create_dir_all(dir.join("web")).unwrap();

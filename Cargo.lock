@@ -1137,6 +1137,34 @@ dependencies = [
 ]
 
 [[package]]
+name = "cctui-server-extras"
+version = "0.32.0-beta.20"
+dependencies = [
+ "anyhow",
+ "axum",
+ "base64 0.23.1",
+ "cctui-proto",
+ "cctui-secrets",
+ "cctui-server-kernel",
+ "chrono",
+ "dashmap",
+ "flate2",
+ "hex",
+ "http",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "sqlx",
+ "tar",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "cctui-server-kernel"
 version = "0.32.0-beta.20"
 dependencies = [
@@ -1219,13 +1247,13 @@ dependencies = [
  "cctui-secrets",
  "cctui-server-blobs",
  "cctui-server-core",
+ "cctui-server-extras",
  "cctui-server-kernel",
  "cctui-server-search",
  "cctui-server-voice",
  "cctui-telemetry",
  "chrono",
  "dashmap",
- "flate2",
  "futures-util",
  "hex",
  "hmac 0.12.1",
@@ -1243,7 +1271,6 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "sqlx",
- "tar",
  "tempfile",
  "thiserror 2.0.21",
  "tokio",

@@ -1,6 +1,7 @@
-//! Per-user cctui credentials the host mints on a plugin's behalf: enabling a
-//! plugin that declares `hostToken` mints a `read`-scoped user token labelled
-//! `plugin:<id>`, and the token dies with the enablement.
+//! Per-user cctui credentials the host mints on a plugin's behalf.
+//!
+//! Enabling a plugin that declares `hostToken` mints a `read`-scoped user token
+//! labelled `plugin:<id>`, and the token dies with the enablement.
 //!
 //! The plaintext is needed again on every session spawn, so it is sealed with
 //! the vault key into the owning user's `user_settings.data` under
@@ -13,10 +14,10 @@ use serde_json::{Map, Value};
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use crate::auth::{
+use crate::plugins::PluginRegistry;
+use cctui_server_kernel::auth::{
     AuthConfig, NewKey, Scope, mint_secret, register_key, sha256_hex, token_preview, user_token,
 };
-use crate::plugins::PluginRegistry;
 
 /// The only scope a host token ever carries. A plugin's skill reaches cctui
 /// through one route — the backend proxy at `/api/v1/plugins/<id>/backend/*` —
@@ -47,7 +48,10 @@ pub fn sealed(data: Option<&Value>, plugin_id: &str) -> Option<String> {
 /// key rotation leaves a value nothing can read — a re-enable re-mints it).
 #[must_use]
 pub fn unsealed(data: Option<&Value>, plugin_id: &str) -> Option<String> {
-    crate::crypto::decrypt(&sealed(data, plugin_id)?, &crate::crypto::vault_key())
+    cctui_server_kernel::crypto::decrypt(
+        &sealed(data, plugin_id)?,
+        &cctui_server_kernel::crypto::vault_key(),
+    )
 }
 
 /// Drop the whole block, for anything that hands `user_settings.data` back to
@@ -89,7 +93,7 @@ fn write(data: &mut Value, plugin_id: &str, value: Option<String>) {
 /// The grant is `read` intersected with the user's own ceiling, so a user who
 /// may not read cannot gain it through a plugin.
 async fn mint(pool: &PgPool, user_id: Uuid, plugin_id: &str) -> sqlx::Result<String> {
-    let ceiling = crate::store::acls::user_ceiling(pool, user_id).await?;
+    let ceiling = cctui_server_kernel::store::acls::user_ceiling(pool, user_id).await?;
     let grant: BTreeSet<Scope> = ceiling.into_iter().filter(|scope| *scope == GRANT).collect();
     let token = user_token(&mint_secret());
     let hash = sha256_hex(&token);
@@ -248,7 +252,14 @@ pub async fn reconcile(
     }
     for id in plan.mint {
         let token = mint(pool, user_id, &id).await?;
-        write(next, &id, Some(crate::crypto::encrypt(&token, &crate::crypto::vault_key())));
+        write(
+            next,
+            &id,
+            Some(cctui_server_kernel::crypto::encrypt(
+                &token,
+                &cctui_server_kernel::crypto::vault_key(),
+            )),
+        );
     }
     for id in plan.revoke {
         revoke(pool, auth, user_id, &id).await?;
@@ -256,8 +267,9 @@ pub async fn reconcile(
     Ok(())
 }
 
-/// Mint a token for every user who enables `plugin_id` but holds none — users
-/// who enabled it before it declared `hostToken` never went through a settings
+/// Mint a token for every user who enables `plugin_id` but holds none.
+///
+/// Users who enabled it before it declared `hostToken` never went through a settings
 /// write that would have minted one. Idempotent: a user with a sealed copy is
 /// skipped, and a copy written concurrently by a settings save wins (the token
 /// minted here is destroyed).
@@ -281,7 +293,10 @@ pub async fn reconcile_plugin(
     let mut minted = 0;
     for user_id in users {
         let token = mint(pool, user_id, plugin_id).await?;
-        let sealed = Value::String(crate::crypto::encrypt(&token, &crate::crypto::vault_key()));
+        let sealed = Value::String(cctui_server_kernel::crypto::encrypt(
+            &token,
+            &cctui_server_kernel::crypto::vault_key(),
+        ));
         let written = sqlx::query(
             "UPDATE user_settings SET data = jsonb_set(data, '{plugins}', \
                  jsonb_set(data->'plugins', $1::text[], \
@@ -328,9 +343,9 @@ pub async fn reconcile_installed(pool: &PgPool, auth: &AuthConfig, registry: &Pl
 #[cfg(test)]
 mod db_tests {
     use super::{label, reconcile, reconcile_plugin, revoke_for_all, sealed, unsealed};
-    use crate::auth::AuthConfig;
     use crate::plugins::PluginRegistry;
     use crate::plugins::test_support::write_plugin;
+    use cctui_server_kernel::auth::AuthConfig;
     use serde_json::{Value, json};
     use sqlx::PgPool;
     use uuid::Uuid;
@@ -340,11 +355,11 @@ mod db_tests {
     /// set-once and ignores a second call, so parallel tests cannot conflict —
     /// whichever lands first wins and every sealer in the process agrees.
     fn install_test_vault_key() {
-        crate::crypto::install_vault_key(vec![0x5a; 32]);
+        cctui_server_kernel::crypto::install_vault_key(vec![0x5a; 32]);
     }
 
     async fn connect(test_name: &str) -> Option<PgPool> {
-        let url = crate::routes::gateway::test_db_url(test_name)?;
+        let url = cctui_server_kernel::test_support::db_url(test_name)?;
         Some(sqlx::postgres::PgPoolOptions::new().max_connections(2).connect(&url).await.unwrap())
     }
 
@@ -465,7 +480,7 @@ mod db_tests {
         assert!(plaintext.starts_with("cctui_u_"), "{plaintext}");
         assert_ne!(first, plaintext, "the token is sealed at rest, not stored verbatim");
         assert_eq!(
-            crate::auth::sha256_hex(&plaintext),
+            cctui_server_kernel::auth::sha256_hex(&plaintext),
             hashes[0],
             "the sealed copy is the token whose hash the DB holds"
         );
@@ -538,7 +553,7 @@ mod db_tests {
         assert_eq!(hashes.len(), 1, "the enabling user gets exactly one token");
         let data = stored_data(&pool, user_id).await;
         let plaintext = unsealed(data.as_ref(), ID).expect("sealed into their settings");
-        assert_eq!(crate::auth::sha256_hex(&plaintext), hashes[0]);
+        assert_eq!(cctui_server_kernel::auth::sha256_hex(&plaintext), hashes[0]);
         assert_eq!(key_scopes(&pool, &hashes[0]).await, vec!["read".to_owned()]);
         assert!(
             data.as_ref().unwrap()["plugins"]["enabled"]["quiet"].as_bool().unwrap(),

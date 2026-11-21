@@ -98,7 +98,7 @@ pub(super) fn register(r: Routes) -> Routes {
             &[GET],
             "/sessions/{id}/langfuse",
             "Langfuse cost/usage rollup for a session.",
-            get(routes::langfuse::session_langfuse),
+            get(routes::langfuse::session_langfuse::<crate::state::AppState>),
             Authn::Bearer,
             sess_read(),
         )

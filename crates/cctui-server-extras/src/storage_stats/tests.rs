@@ -8,6 +8,17 @@ use super::job::Walk;
 use super::lifecycle::{
     MARK, MIN_ABOVE_BYTES, Rule, TRIM_NOTE, active, apply, dropped_text, text_len, validate,
 };
+use crate::context::SearchReindex;
+
+/// The seeded events are never chunked, so the lifecycle walk finds nothing to
+/// reindex.
+struct Unchunked;
+
+impl SearchReindex for Unchunked {
+    async fn reindex_search(&self, _pool: &PgPool, _ids: &[i64]) -> Result<(), sqlx::Error> {
+        Ok(())
+    }
+}
 
 const TRIM: Rule = Rule::Trim { after_days: 7, above_bytes: 4096 };
 const DROP: Rule = Rule::Drop { after_days: 7 };
@@ -157,7 +168,7 @@ struct Seeded {
 
 impl Seeded {
     async fn new(tag: &str) -> Option<Self> {
-        let url = crate::routes::gateway::test_db_url(tag)?;
+        let url = cctui_server_kernel::test_support::db_url(tag)?;
         let pool = sqlx::postgres::PgPoolOptions::new()
             .max_connections(4)
             .connect(&url)
@@ -236,7 +247,7 @@ impl Seeded {
         let walk = self.walk(rules);
         let (mut trimmed, mut dropped) = (0, 0);
         for _ in 0..50 {
-            let step = walk.step(&self.pool).await.expect("step");
+            let step = walk.step(&self.pool, &Unchunked).await.expect("step");
             trimmed += step.trimmed;
             dropped += step.dropped;
             if !step.more {
@@ -365,7 +376,7 @@ async fn without_an_enabled_rule_the_job_touches_nothing() {
         trim: trim_rules().trim.map(|t| StorageTrimRule { enabled: false, ..t }),
         drop: None,
     });
-    let step = s.walk(rules).step(&s.pool).await.unwrap();
+    let step = s.walk(rules).step(&s.pool, &Unchunked).await.unwrap();
     assert_eq!(step, super::job::Step::default());
     assert_eq!(s.payloads().await, before);
     assert_eq!(s.runs().await, 0, "no run is recorded");

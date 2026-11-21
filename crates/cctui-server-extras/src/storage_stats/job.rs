@@ -7,6 +7,7 @@ use tokio::time::Instant;
 
 use super::TOOL_RESULT;
 use super::lifecycle::{self, Rule};
+use crate::context::SearchReindex;
 
 pub const NAME: &str = "default";
 
@@ -60,7 +61,11 @@ impl Walk {
         }
     }
 
-    pub async fn step(&self, pool: &PgPool) -> Result<Step, sqlx::Error> {
+    pub async fn step(
+        &self,
+        pool: &PgPool,
+        search: &impl SearchReindex,
+    ) -> Result<Step, sqlx::Error> {
         let mut tx = pool.begin().await?;
         if !locked(&mut tx, &self.name).await? {
             tx.rollback().await?;
@@ -87,7 +92,7 @@ impl Walk {
                     "storage lifecycle batch"
                 );
             }
-            reindex(pool, &updated).await;
+            reindex(pool, search, &updated).await;
             return Ok(Step { more: true, ..step });
         }
         finish(&mut tx, &self.name).await?;
@@ -303,7 +308,7 @@ async fn note_error(pool: &PgPool, name: &str, err: &sqlx::Error) {
 }
 
 /// With search off `search_chunks` stays empty, so only indexed events are rebuilt.
-async fn reindex(pool: &PgPool, ids: &[i64]) {
+async fn reindex(pool: &PgPool, search: &impl SearchReindex, ids: &[i64]) {
     if ids.is_empty() {
         return;
     }
@@ -314,7 +319,7 @@ async fn reindex(pool: &PgPool, ids: &[i64]) {
         .bind(ids)
         .fetch_all(pool)
         .await?;
-        crate::search_index::reindex(pool, &chunked).await
+        search.reindex_search(pool, &chunked).await
     };
     if let Err(err) = rebuilt.await {
         tracing::warn!(%err, "storage lifecycle left stale search chunks");
@@ -322,7 +327,7 @@ async fn reindex(pool: &PgPool, ids: &[i64]) {
 }
 
 /// With no rule enabled this only reads the rules table, once a minute.
-pub async fn task(pool: PgPool) {
+pub async fn task(pool: PgPool, search: impl SearchReindex) {
     let mut walked: Option<(Vec<Rule>, Instant)> = None;
     loop {
         let wait = match lifecycle::load_rules(&pool).await.map(|r| lifecycle::active(&r)) {
@@ -330,7 +335,7 @@ pub async fn task(pool: PgPool) {
                 walked = None;
                 POLL
             }
-            Ok(rules) => tick(&pool, rules, &mut walked).await,
+            Ok(rules) => tick(&pool, &search, rules, &mut walked).await,
             Err(err) => {
                 tracing::warn!(%err, "storage lifecycle rules unreadable");
                 POLL
@@ -342,6 +347,7 @@ pub async fn task(pool: PgPool) {
 
 async fn tick(
     pool: &PgPool,
+    search: &impl SearchReindex,
     rules: Vec<Rule>,
     walked: &mut Option<(Vec<Rule>, Instant)>,
 ) -> Duration {
@@ -351,7 +357,7 @@ async fn tick(
         return POLL;
     }
     let walk = Walk::new(NAME, rules.clone());
-    match walk.step(pool).await {
+    match walk.step(pool, search).await {
         Ok(step) if step.more => {
             *walked = None;
             PAUSE

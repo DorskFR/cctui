@@ -26,6 +26,7 @@ mod dispatchers;
 mod envelope_guard;
 mod error;
 mod events;
+mod extras_context;
 mod followup;
 mod followup_op;
 mod guard_step;
@@ -33,7 +34,6 @@ mod hooks;
 mod http_cache;
 mod inbox;
 mod keepalive;
-mod langfuse;
 mod live_sessions;
 mod machine_liveness;
 mod machine_resources;
@@ -46,13 +46,8 @@ mod outbox;
 mod outcome;
 mod pace;
 mod peer_policy;
-mod plugin_archive;
-mod plugin_catalog;
-mod plugin_host_token;
 mod plugin_proxy;
-mod plugin_settings;
 mod plugin_store;
-mod plugins;
 mod pool_usage;
 mod presence;
 mod presets;
@@ -73,7 +68,6 @@ mod skill_store;
 mod soft_limit;
 mod spawn_labels;
 mod state;
-mod storage_stats;
 mod store;
 mod transcript_md;
 mod turn_dedupe;
@@ -87,9 +81,16 @@ mod webhook;
 mod ws;
 
 #[cfg(test)]
+mod storage_admin_tests;
+
+#[cfg(test)]
 mod image_blobs_search_tests;
 
 use cctui_server_blobs::{blob_move, blob_store, image_blobs};
+use cctui_server_extras::{
+    langfuse, plugin_archive, plugin_catalog, plugin_host_token, plugin_settings, plugins,
+    storage_stats,
+};
 use cctui_server_search as search_index;
 use cctui_server_voice as voice_live;
 use cctui_server_voice::speech;
@@ -441,7 +442,7 @@ async fn start_background_tasks(state: &AppState) {
     if let Some(config) = blob_move::Config::from_env() {
         tokio::spawn(blob_move::task(state.pool.clone(), config));
     }
-    tokio::spawn(storage_stats::task(state.pool.clone()));
+    tokio::spawn(storage_stats::task(state.pool.clone(), state.clone()));
 
     // Off the startup path: every replica sweeps, and the scan is IO over a
     // shared volume.
@@ -1309,6 +1310,9 @@ mod tests {
             assert!(tracing::enabled!(target: "cctui_server_search", tracing::Level::DEBUG));
             assert!(tracing::enabled!(target: "cctui_server_blobs::routes", tracing::Level::DEBUG));
             assert!(tracing::enabled!(target: "cctui_server_voice::engine", tracing::Level::DEBUG));
+            assert!(
+                tracing::enabled!(target: "cctui_server_extras::storage_stats::job", tracing::Level::DEBUG)
+            );
         });
     }
 

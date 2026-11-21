@@ -40,7 +40,7 @@ async fn stored(pool: &PgPool, plugin_id: &str) -> sqlx::Result<BTreeMap<String,
 }
 
 fn unseal(value: &str) -> Option<String> {
-    crate::crypto::decrypt(value, &crate::crypto::vault_key())
+    cctui_server_kernel::crypto::decrypt(value, &cctui_server_kernel::crypto::vault_key())
 }
 
 /// Every declared value, secrets decrypted. Server-side use only.
@@ -132,7 +132,7 @@ pub async fn write(
             return Err(SettingsError::NotAUrl(key.clone()));
         }
         let stored_value = if decl.secret {
-            crate::crypto::encrypt(value, &crate::crypto::vault_key())
+            cctui_server_kernel::crypto::encrypt(value, &cctui_server_kernel::crypto::vault_key())
         } else {
             value.to_owned()
         };
@@ -162,7 +162,8 @@ pub async fn proxy_secret(pool: &PgPool, plugin_id: &str) -> sqlx::Result<Option
 }
 
 async fn store_proxy_secret(pool: &PgPool, plugin_id: &str, secret: &str) -> sqlx::Result<()> {
-    let sealed = crate::crypto::encrypt(secret, &crate::crypto::vault_key());
+    let sealed =
+        cctui_server_kernel::crypto::encrypt(secret, &cctui_server_kernel::crypto::vault_key());
     sqlx::query(
         "INSERT INTO plugin_settings (plugin_id, proxy_secret) VALUES ($1, $2) \
          ON CONFLICT (plugin_id) DO UPDATE SET proxy_secret = EXCLUDED.proxy_secret, \
@@ -178,13 +179,14 @@ async fn store_proxy_secret(pool: &PgPool, plugin_id: &str, secret: &str) -> sql
 /// Replace the proxy secret and return the new plaintext; the only moment it is
 /// ever readable.
 pub async fn rotate_proxy_secret(pool: &PgPool, plugin_id: &str) -> sqlx::Result<String> {
-    let secret = crate::auth::mint_secret();
+    let secret = cctui_server_kernel::auth::mint_secret();
     store_proxy_secret(pool, plugin_id, &secret).await?;
     Ok(secret)
 }
 
-/// The proxy secret, minting one when the plugin has none. Returns the
-/// plaintext together with whether it was freshly generated, so an install can
+/// The proxy secret, minting one when the plugin has none.
+///
+/// Returns the plaintext together with whether it was freshly generated, so an install can
 /// show a new secret once and a re-install never re-shows the old one.
 pub async fn ensure_proxy_secret(pool: &PgPool, plugin_id: &str) -> sqlx::Result<(String, bool)> {
     if let Some(existing) = proxy_secret(pool, plugin_id).await? {
@@ -250,7 +252,8 @@ mod tests {
 
     #[tokio::test]
     async fn secrets_are_sealed_and_never_read_back_while_plain_values_are() {
-        let Some(url) = crate::routes::gateway::test_db_url("plugin_instance_settings") else {
+        let Some(url) = cctui_server_kernel::test_support::db_url("plugin_instance_settings")
+        else {
             return;
         };
         let pool =
@@ -300,7 +303,7 @@ mod tests {
     #[tokio::test]
     async fn a_proxy_secret_is_minted_once_and_rotates_to_a_new_value() {
         const ID: &str = "plugin-settings-secret";
-        let Some(url) = crate::routes::gateway::test_db_url("plugin_proxy_secret") else {
+        let Some(url) = cctui_server_kernel::test_support::db_url("plugin_proxy_secret") else {
             return;
         };
         let pool =
@@ -323,7 +326,7 @@ mod tests {
 
     #[tokio::test]
     async fn settings_and_the_secret_share_one_row_without_clobbering_each_other() {
-        let Some(url) = crate::routes::gateway::test_db_url("plugin_settings_coexist") else {
+        let Some(url) = cctui_server_kernel::test_support::db_url("plugin_settings_coexist") else {
             return;
         };
         let pool =

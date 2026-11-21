@@ -145,6 +145,7 @@ struct CachedSessionUsage {
 const USAGE_TTL: Duration = Duration::from_mins(1);
 
 impl LangfuseClient {
+    #[must_use]
     pub fn new(config: LangfuseConfig, http: reqwest::Client) -> Self {
         Self {
             config,
@@ -155,12 +156,14 @@ impl LangfuseClient {
     }
 
     /// Base host for building `<host>/project/<id>/sessions/<uuid>` deep links.
+    #[must_use]
     pub fn host(&self) -> &str {
         &self.config.host
     }
 
     /// Browser-facing base host for deep links (defaults to [`host`] when the
     /// `CCTUI_LANGFUSE_PUBLIC_HOST` env is unset).
+    #[must_use]
     pub fn public_host(&self) -> &str {
         &self.config.public_host
     }
@@ -224,12 +227,14 @@ impl LangfuseClient {
         Ok(usage)
     }
 
+    #[must_use]
     pub const fn captures_content(&self) -> bool {
         self.config.capture_content
     }
 
     /// Whether this call should be sampled (cheap, sync — checked before the
     /// trace task is spawned and before any payload is reconstructed).
+    #[must_use]
     pub fn should_sample(&self) -> bool {
         let r = self.config.sample_rate;
         r >= 1.0 || (r > 0.0 && rand_unit() < r)
@@ -252,7 +257,7 @@ impl LangfuseClient {
 /// on, keeping the request's non-content shape (`model`, `stream`, counts) so a
 /// redacted trace is still diagnosable.
 fn redact_unless_captured(mut payload: TracePayload, capture_content: bool) -> TracePayload {
-    use cctui_server_core::gateway::proxy::{TRACE_COUNTED_FIELDS, TRACE_KEPT_FIELDS};
+    use cctui_server_kernel::gateway_trace::{TRACE_COUNTED_FIELDS, TRACE_KEPT_FIELDS};
     if capture_content {
         return payload;
     }
@@ -333,6 +338,7 @@ impl BatchIds {
 }
 
 /// The exact ingestion body posted for `payload`.
+#[must_use]
 pub fn ingestion_batch(payload: TracePayload, capture_content: bool, ids: &BatchIds) -> Value {
     let BatchIds { trace: trace_id, generation: gen_id, now, .. } = ids;
     let payload = redact_unless_captured(payload, capture_content);
@@ -429,13 +435,15 @@ pub enum ResponseFormat {
     Gemini,
 }
 
-/// Reconstruct the completion text + token usage from an Anthropic Messages
-/// response body, handling both the buffered single-JSON shape and the SSE
+/// Reconstruct the completion text + token usage from an Anthropic Messages response body.
+///
+/// Handles both the buffered single-JSON shape and the SSE
 /// stream (`event: ...\ndata: {...}` lines). Returns `(output_text, usage)`.
 ///
 /// SSE reconstruction concatenates `content_block_delta` text deltas and pulls
 /// usage from `message_start` (input tokens) + `message_delta` (output tokens).
 #[cfg(test)]
+#[must_use]
 pub fn reconstruct_anthropic(body: &[u8]) -> (Option<String>, Option<Value>) {
     reconstruct(ResponseFormat::Anthropic, body)
 }
@@ -448,12 +456,14 @@ pub fn reconstruct_anthropic(body: &[u8]) -> (Option<String>, Option<Value>) {
 /// the other families: `input` = prompt minus cached, `cache_read_input_tokens`
 /// = cached, `output` = candidates plus thoughts.
 #[cfg(test)]
+#[must_use]
 pub fn reconstruct_gemini(body: &[u8]) -> (Option<String>, Option<Value>) {
     reconstruct(ResponseFormat::Gemini, body)
 }
 
-/// Reconstruct the completion text + token usage from an `OpenAI` Responses API
-/// response body (what codex speaks), handling both the buffered single-JSON
+/// Reconstruct the completion text + token usage from an `OpenAI` Responses API body.
+///
+/// The body is what codex speaks; handles both the buffered single-JSON
 /// shape and the SSE stream (`data: {...}` lines). Returns `(output_text,
 /// usage)`.
 ///
@@ -463,10 +473,12 @@ pub fn reconstruct_gemini(body: &[u8]) -> (Option<String>, Option<Value>) {
 /// path uses: `input` = `input_tokens - cached_tokens`, `cache_read_input_tokens`
 /// = `cached_tokens`, `output` = `output_tokens`.
 #[cfg(test)]
+#[must_use]
 pub fn reconstruct_openai(body: &[u8]) -> (Option<String>, Option<Value>) {
     reconstruct(ResponseFormat::Openai, body)
 }
 
+#[must_use]
 pub fn reconstruct(format: ResponseFormat, body: &[u8]) -> (Option<String>, Option<Value>) {
     let text = String::from_utf8_lossy(body);
     if let Some(whole) = whole_body(format, text.trim()) {
@@ -668,7 +680,7 @@ impl TraceDigest {
     }
 }
 
-impl cctui_server_core::gateway::proxy::ResponseDigest for TraceDigest {
+impl cctui_server_kernel::gateway_trace::ResponseDigest for TraceDigest {
     fn feed(&mut self, chunk: &[u8]) {
         match &mut self.state {
             DigestState::Leading(lead) => {
@@ -694,7 +706,7 @@ impl cctui_server_core::gateway::proxy::ResponseDigest for TraceDigest {
         }
     }
 
-    fn finish(self: Box<Self>) -> cctui_server_core::gateway::proxy::ResponseSummary {
+    fn finish(self: Box<Self>) -> cctui_server_kernel::gateway_trace::ResponseSummary {
         let Self { format, state } = *self;
         let (output_chars, usage) = match state {
             DigestState::Leading(body) | DigestState::Whole(body) => {
@@ -709,7 +721,7 @@ impl cctui_server_core::gateway::proxy::ResponseDigest for TraceDigest {
                 (text.map(|count| count.0), usage)
             }
         };
-        cctui_server_core::gateway::proxy::ResponseSummary { output_chars, usage }
+        cctui_server_kernel::gateway_trace::ResponseSummary { output_chars, usage }
     }
 }
 
@@ -863,7 +875,7 @@ mod tests {
 
     #[tokio::test]
     async fn langfuse_config_secret_key_resolves_from_every_ref_kind_and_follows_rotation() {
-        use crate::config::test_refs::{KIND_REFS, map_registry};
+        use cctui_server_kernel::config::test_refs::{KIND_REFS, map_registry};
         for reference in KIND_REFS {
             let (map, registry) = map_registry("sk-v1");
             let cfg = LangfuseConfig::from_lookup(&registry, langfuse_env(reference))
@@ -884,7 +896,7 @@ mod tests {
 
     #[tokio::test]
     async fn langfuse_config_literal_key_unchanged_and_bad_ref_names_the_var() {
-        use crate::config::test_refs::map_registry;
+        use cctui_server_kernel::config::test_refs::map_registry;
         let (_, registry) = map_registry("unused");
         let cfg = LangfuseConfig::from_lookup(&registry, langfuse_env("sk-lf-literal:x"))
             .await
@@ -1092,7 +1104,7 @@ mod tests {
                 sample_rate: 1.0,
                 capture_content: false,
             },
-            crate::build_http_client(),
+            cctui_server_kernel::client::build_http_client(),
         );
         assert!(c.should_sample());
         let z = LangfuseClient::new(
@@ -1104,7 +1116,7 @@ mod tests {
                 sample_rate: 0.0,
                 capture_content: false,
             },
-            crate::build_http_client(),
+            cctui_server_kernel::client::build_http_client(),
         );
         assert!(!z.should_sample());
     }
@@ -1116,7 +1128,7 @@ mod tests {
     // assert that a full evaluate (both Block and Allow) leaves it untouched.
     #[test]
     fn soft_limit_eval_never_touches_langfuse_usage_cache() {
-        use crate::soft_limit::{
+        use cctui_proto::api::soft_limit::{
             Decision, SoftLimits, evaluate_soft_limit, normalize_usage_windows,
         };
         let client = LangfuseClient::new(
@@ -1128,7 +1140,7 @@ mod tests {
                 sample_rate: 1.0,
                 capture_content: false,
             },
-            crate::build_http_client(),
+            cctui_server_kernel::client::build_http_client(),
         );
         assert!(client.usage_cache.is_empty());
 

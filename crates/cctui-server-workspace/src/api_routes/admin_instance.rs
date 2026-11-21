@@ -106,7 +106,7 @@ fn storage_and_harness(r: Routes) -> Routes {
         &[GET],
         "/admin/storage",
         "Database, per-session and tool-output sizes, and the tool-output lifecycle (admin).",
-        get(routes::storage_admin::overview),
+        get(routes::storage_admin::overview::<crate::state::AppState>),
         Authn::Bearer,
         ScopeAz(auth::Scope::Admin),
     )
@@ -114,7 +114,7 @@ fn storage_and_harness(r: Routes) -> Routes {
         &[Method::PUT],
         "/admin/storage/lifecycle",
         "Set the tool-output lifecycle rules; none keeps everything (admin).",
-        put(routes::storage_admin::update_lifecycle),
+        put(routes::storage_admin::update_lifecycle::<crate::state::AppState>),
         Authn::Bearer,
         ScopeAz(auth::Scope::Admin),
     )
@@ -122,7 +122,7 @@ fn storage_and_harness(r: Routes) -> Routes {
         &[Method::POST],
         "/admin/storage/lifecycle/preview",
         "Estimate the rows and bytes a tool-output lifecycle rule set would free (admin).",
-        post(routes::storage_admin::preview_lifecycle),
+        post(routes::storage_admin::preview_lifecycle::<crate::state::AppState>),
         Authn::Bearer,
         ScopeAz(auth::Scope::Admin),
     )

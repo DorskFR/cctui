@@ -21,6 +21,7 @@ members = [
     "crates/cctui-server",
     "crates/cctui-server-blobs",
     "crates/cctui-server-core",
+    "crates/cctui-server-extras",
     "crates/cctui-server-kernel",
     "crates/cctui-server-search",
     "crates/cctui-server-voice",
@@ -54,6 +55,7 @@ missing_panics_doc = "allow"
 cctui-aws = { path = "crates/cctui-aws" }
 cctui-server-blobs = { path = "crates/cctui-server-blobs" }
 cctui-server-core = { path = "crates/cctui-server-core" }
+cctui-server-extras = { path = "crates/cctui-server-extras" }
 cctui-server-kernel = { path = "crates/cctui-server-kernel" }
 cctui-server-search = { path = "crates/cctui-server-search" }
 cctui-server-voice = { path = "crates/cctui-server-voice" }

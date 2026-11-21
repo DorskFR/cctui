@@ -15,6 +15,7 @@ aws-sm = ["cctui-secrets/aws-sm"]
 [dependencies]
 cctui-server-blobs.workspace = true
 cctui-server-core.workspace = true
+cctui-server-extras.workspace = true
 cctui-server-kernel.workspace = true
 cctui-server-search.workspace = true
 cctui-server-voice.workspace = true
@@ -55,12 +56,11 @@ toml.workspace = true
 log = "0.4.33"
 webauthn-rs = { version = "0.6", features = ["danger-allow-state-serialisation", "conditional-ui"] }
 webauthn-rs-proto = "0.6"
-flate2 = "1"
-tar = "0.4"
 tokio-tungstenite.workspace = true
 
 [dev-dependencies]
 cctui-server-core = { workspace = true, features = ["test-support"] }
+cctui-server-extras = { workspace = true, features = ["test-support"] }
 cctui-server-kernel = { workspace = true, features = ["test-support"] }
 cctui-server-blobs = { workspace = true, features = ["test-support"] }
 cctui-server-search = { workspace = true, features = ["test-support"] }

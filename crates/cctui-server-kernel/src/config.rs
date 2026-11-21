@@ -671,6 +671,13 @@ pub fn origin_permitted(config: &Config, headers: &axum::http::HeaderMap) -> boo
         .is_none_or(|value| value.to_str().is_ok_and(|o| config.origin_allowed(o)))
 }
 
+const DEFAULT_REPO: &str = "DorskFR/cctui";
+
+#[must_use]
+pub fn repo() -> String {
+    std::env::var("CCTUI_REPO").unwrap_or_else(|_| DEFAULT_REPO.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
