@@ -115,7 +115,8 @@ describe('the spawn template', () => {
 			prompt: 'Summarise the night',
 			labels: ['l1'],
 			context_items: ['notes'],
-			context_auto: false
+			context_auto: false,
+			auto_archive: true
 		});
 		expect(form.kit).toEqual({
 			harness: 'claude-code',
@@ -152,6 +153,16 @@ describe('the spawn template', () => {
 			label_ids: ['l2'],
 			context: null
 		});
+	});
+
+	it('writes the auto-archive tick into the template, both ways', () => {
+		const p = preset();
+		const form = formFromPreset(p, 'UTC');
+		form.spawn.auto_archive = false;
+		expect(requestFromForm(form, { schedule: true, base: p }).template?.auto_archive).toBe(false);
+		const fresh = emptyForm({ machine_id: 'm1', timezone: 'UTC' });
+		fresh.spawn.auto_archive = true;
+		expect(requestFromForm(fresh, { schedule: true }).template?.auto_archive).toBe(true);
 	});
 
 	it('builds a new schedule from the form', () => {

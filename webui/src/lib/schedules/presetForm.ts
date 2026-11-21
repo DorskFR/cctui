@@ -103,7 +103,8 @@ export function formFromPreset(preset: LaunchPreset, fallbackTimezone: string): 
 			prompt: preset.prompt,
 			labels: [...(t.label_ids ?? [])],
 			context_items: [...(t.context?.items ?? [])],
-			context_auto: t.context?.auto ?? false
+			context_auto: t.context?.auto ?? false,
+			auto_archive: t.auto_archive ?? false
 		},
 		kit: {
 			harness,
@@ -179,8 +180,8 @@ const DEFAULTS = {
 const known = (mode: string | null): PermissionMode | null =>
 	PERMISSION_MODES.includes(mode as PermissionMode) ? (mode as PermissionMode) : null;
 
-/** What the spawn form's fields set on every run; profile, auto-archive and
- * the stored files are kept from the preset. */
+/** What the spawn form's fields set on every run; profile and the stored
+ * files are kept from the preset. */
 export function templateFromForm(form: PresetForm, base?: LaunchPreset | null): SpawnTemplate {
 	const kept: SpawnTemplate = base?.template ?? {};
 	const { context_items: items, context_auto: auto } = form.spawn;
@@ -190,6 +191,7 @@ export function templateFromForm(form: PresetForm, base?: LaunchPreset | null): 
 		service_tier: form.kit.service_tier?.trim() || null,
 		label_ids: [...form.spawn.labels],
 		context: items.length || auto ? { items: [...items], auto } : null,
+		auto_archive: form.spawn.auto_archive,
 		attachment_names: kept.attachment_names ?? []
 	};
 }

@@ -155,6 +155,18 @@ describe('the schedule editor', () => {
 		expect(setFiles).not.toHaveBeenCalled();
 	});
 
+	it('ticks auto-archive and saves it into the template', async () => {
+		await open();
+		const box = document.querySelector<HTMLInputElement>('[data-journey="auto-archive"] input, input[data-journey="auto-archive"]');
+		if (!box) throw new Error('no auto-archive checkbox');
+		expect(box.checked).toBe(false);
+		box.click();
+		await tick();
+		button('Save')?.click();
+		await tick();
+		expect(save.mock.calls[0][1].template).toMatchObject({ auto_archive: true });
+	});
+
 	it('clears the stored files on request', async () => {
 		await open();
 		button('Remove files')?.click();
