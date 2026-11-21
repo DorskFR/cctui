@@ -263,7 +263,7 @@ where
             Ok(v) => return Some(Ok(v)),
             Err(err) if err.downcast_ref::<AuthRejected>().is_some() => return Some(Err(err)),
             Err(err) => {
-                tracing::warn!(%err, retry_in = ?backoff.peek(), "daemon_auth failed; retrying");
+                tracing::warn!(err = format!("{err:#}"), retry_in = ?backoff.peek(), "daemon_auth failed; retrying");
                 if !backoff.sleep(shutdown).await {
                     return None;
                 }
