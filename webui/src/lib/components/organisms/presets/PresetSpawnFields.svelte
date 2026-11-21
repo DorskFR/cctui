@@ -17,6 +17,7 @@
 	import KitFields from '#lib/components/organisms/spawn/KitFields.svelte';
 	import MachineFields from '#lib/components/organisms/spawn/MachineFields.svelte';
 	import SpawnAddons from '#lib/components/organisms/spawn/SpawnAddons.svelte';
+	import SpawnAutoArchive from '#lib/components/organisms/spawn/SpawnAutoArchive.svelte';
 	import SpawnContextRow from '#lib/components/organisms/spawn/SpawnContextRow.svelte';
 	import { m } from '#lib/paraglide/messages.js';
 	import type { PresetForm, PresetFormProblems } from '#lib/schedules/presetForm.ts';
@@ -109,6 +110,7 @@
 			adapter={form.kit.harness}
 		/>
 	{/if}
+	<SpawnAutoArchive bind:checked={form.spawn.auto_archive} />
 	{#if errors.length}
 		<Callout tone="danger" icon="alert" role="alert">
 			{#each errors as error (error)}<div>{error}</div>{/each}

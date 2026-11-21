@@ -215,18 +215,72 @@ fn backfill_config_is_off_unless_enabled() {
     let on =
         Config::from_lookup(|k| (k == "CCTUI_IMAGE_BACKFILL").then(|| "1".into())).expect("on");
     assert_eq!((on.scan, on.rows, on.pause), (500, 20, Duration::from_secs(1)));
+    assert_eq!(on.concurrency, 1);
     assert_eq!(on.budget_bytes, 512 * 1024 * 1024);
     let tuned = Config::from_lookup(|k| match k {
         "CCTUI_IMAGE_BACKFILL" => Some("true".into()),
         "CCTUI_IMAGE_BACKFILL_SCAN" => Some("100".into()),
         "CCTUI_IMAGE_BACKFILL_ROWS" => Some("5".into()),
+        "CCTUI_IMAGE_BACKFILL_CONCURRENCY" => Some("8".into()),
         "CCTUI_IMAGE_BACKFILL_PAUSE_MS" => Some("2000".into()),
         "CCTUI_IMAGE_BACKFILL_BUDGET_MB" => Some("64".into()),
         _ => None,
     })
     .expect("on");
     assert_eq!((tuned.scan, tuned.rows, tuned.pause), (100, 5, Duration::from_secs(2)));
+    assert_eq!(tuned.concurrency, 8);
     assert_eq!(tuned.budget_bytes, 64 * 1024 * 1024);
+}
+
+#[test]
+fn backfill_pause_zero_means_no_pause_and_concurrency_zero_falls_back() {
+    let cfg = Config::from_lookup(|k| match k {
+        "CCTUI_IMAGE_BACKFILL" => Some("1".into()),
+        "CCTUI_IMAGE_BACKFILL_PAUSE_MS" | "CCTUI_IMAGE_BACKFILL_CONCURRENCY" => Some("0".into()),
+        _ => None,
+    })
+    .expect("on");
+    assert_eq!(cfg.pause, Duration::ZERO);
+    assert_eq!(cfg.concurrency, 1);
+    assert_eq!(Walk::new(&Config { concurrency: 0, ..cfg }).concurrency, 1);
+}
+
+#[tokio::test]
+async fn backfill_rewrites_a_concurrent_batch_and_stores_a_shared_image_once() {
+    let name = "image_backfill_concurrent";
+    let Some(db) = seeded(name, 2).await else { return };
+    let walk_name = format!("test-{}", db.uid);
+    let seed = Uuid::new_v4().as_u128();
+    let shared = screenshot(seed, 300_000);
+    let mut hashes = vec![sha(&shared)];
+    let mut rows = Vec::new();
+    for i in 0..6u128 {
+        let own = screenshot(seed.wrapping_add(i + 1), 120_000);
+        hashes.push(sha(&own));
+        let session = usize::try_from(i % 2).unwrap();
+        let own_id = db.insert(session, &read_result(&format!("toolu_own_{i}"), &own)).await;
+        let shared_id =
+            db.insert(session, &read_result(&format!("toolu_shared_{i}"), &shared)).await;
+        rows.push((own_id, session, own));
+        rows.push((shared_id, session, shared.clone()));
+    }
+    set_cursor(&db.pool, &walk_name, rows[0].0 - 1).await;
+    let mut concurrent = walk(&walk_name, 50, &db.sessions);
+    concurrent.concurrency = 4;
+
+    assert_eq!(drain(&concurrent, &db.pool).await, rows.len());
+    for (id, _, bytes) in &rows {
+        assert!(!db.payload_has(*id, &b64(bytes)[..64]).await, "row {id} still inline");
+    }
+    assert_eq!(db.blob_rows(&sha(&shared)).await, 1, "one blob for the shared image");
+    for (_, session, bytes) in &rows {
+        assert_eq!(db.served(*session, &sha(bytes)).await.as_deref(), Some(bytes.as_slice()));
+    }
+    let (last, rewritten) = cursor(&db.pool, &walk_name).await;
+    assert!(last >= rows.last().map_or(0, |r| r.0), "cursor passed the batch");
+    assert_eq!(rewritten, i64::try_from(rows.len()).unwrap());
+    assert_eq!(drain(&concurrent, &db.pool).await, 0, "a second walk finds nothing left");
+    db.cleanup(&hashes, Some(&walk_name)).await;
 }
 
 struct Seeded {
@@ -360,6 +414,7 @@ fn walk(name: &str, rows: usize, scope: &[String]) -> Walk {
         name: name.to_owned(),
         scan: 500,
         rows,
+        concurrency: 1,
         lag: Duration::ZERO,
         scope: Some(scope.to_vec()),
     }
