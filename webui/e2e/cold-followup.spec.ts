@@ -168,7 +168,6 @@ test.describe('desktop', () => {
 		await message(page).press('Shift+Enter');
 		await message(page).pressSequentially('more');
 		await expect(message(page)).toHaveValue(`${INSTRUCTION}\nmore`);
-		await page.waitForTimeout(500);
 		expect(stub.followups).toHaveLength(0);
 	});
 

@@ -25,7 +25,20 @@ async function openSessions(page: Page, viewport: { width: number; height: numbe
 	await page.setViewportSize(viewport);
 	await page.goto('/sessions');
 	await page.locator('header.hd .pill').waitFor();
-	await page.waitForTimeout(500);
+	await page.evaluate(() => document.fonts.ready);
+	let prev = '';
+	await expect
+		.poll(async () => {
+			const key = await page
+				.locator('header.hd')
+				.evaluate((hd) =>
+					JSON.stringify([...hd.querySelectorAll('*')].map((e) => e.getBoundingClientRect().toJSON()))
+				);
+			const same = key === prev;
+			prev = key;
+			return same;
+		}, { message: 'the header settles' })
+		.toBe(true);
 }
 
 test('desktop: the version block clears every control in the tail', async ({ page }, testInfo) => {

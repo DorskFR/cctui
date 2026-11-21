@@ -180,8 +180,15 @@ test.describe('plugins page (admin)', () => {
 		await sw.click();
 		await expect(sw).toBeChecked();
 		await expect(page.locator('[data-journey="plugin-config"]')).toHaveCount(1);
+		const saved = page.waitForResponse(
+			(r) =>
+				r.url().includes('/api/v1/settings') &&
+				r.request().method() === 'PUT' &&
+				(r.request().postDataJSON() as { data: { pluginsEnabled?: Record<string, boolean> } }).data
+					.pluginsEnabled?.demo === false
+		);
 		await sw.click();
 		await expect(sw).not.toBeChecked();
-		await page.waitForTimeout(1500);
+		await saved;
 	});
 });

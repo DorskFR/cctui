@@ -52,8 +52,7 @@ test('390px: dictation starts with one tap, shows a large stop target, and stops
 	expect(box!.width).toBeGreaterThanOrEqual(200);
 	expect(box!.x + box!.width).toBeLessThanOrEqual(MOBILE.width);
 
-	await page.waitForTimeout(1500);
-	await expect(recording).toContainText('0:01');
+	await expect(recording).toContainText('0:01', { timeout: 5_000 });
 	await stop.click();
 
 	await expect(recording).toHaveCount(0);

@@ -71,9 +71,23 @@ async function setPlugin(page: Page, on: boolean) {
 	await loaded;
 	const sw = page.locator('[data-journey="plugin-switch"][data-plugin="demo"]');
 	await expect(sw).toBeVisible();
-	if ((await sw.isChecked()) !== on) await sw.click();
+	if ((await sw.isChecked()) !== on) {
+		const saved = settingsSaved(page, (data) => data.pluginsEnabled?.demo === on);
+		await sw.click();
+		await saved;
+	}
 	await expect(sw).toBeChecked({ checked: on });
-	await page.waitForTimeout(1500);
+}
+
+type SavedSettings = { pluginsEnabled?: Record<string, boolean> };
+
+function settingsSaved(page: Page, match: (data: SavedSettings) => boolean) {
+	return page.waitForResponse(
+		(r) =>
+			r.url().includes('/api/v1/settings') &&
+			r.request().method() === 'PUT' &&
+			match((r.request().postDataJSON() as { data: SavedSettings }).data)
+	);
 }
 
 async function openDrawer(page: Page) {
@@ -162,7 +176,7 @@ test.describe('runtime plugins', () => {
 		await expect(pane(page)).toHaveAttribute('data-word', /test/i);
 		await pane(page).locator('[data-journey="demo-close"]').click();
 		await expect(pane(page)).toHaveCount(0);
-		await page.waitForTimeout(500);
+		await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
 		await expect(pane(page)).toHaveCount(0);
 		expect(relevant(errors)).toEqual([]);
 	});
