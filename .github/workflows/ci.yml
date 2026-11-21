@@ -742,6 +742,9 @@ jobs:
       - name: The release takes push CI's binaries or builds its own
         run: bash scripts/release-ci-bins.test.sh
 
+      - name: Darwin binaries get a pinned Mach-O UUID
+        run: bash scripts/pin-macho-uuid.test.sh
+
       - name: Path scoping tests did not leak into this checkout
         run: bash scripts/check-git-untouched.sh
 
