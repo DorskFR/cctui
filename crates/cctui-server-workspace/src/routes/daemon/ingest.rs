@@ -34,14 +34,12 @@ impl Ingest {
                 event_type: "message",
                 payload: payload.clone(),
                 turn_id: *turn_id,
-                chunked: false,
             },
             AdapterEvent::ToolUse { local_id, payload } => NewEvent {
                 local_id: local_id.clone(),
                 event_type: "tool_use",
                 payload: payload.clone(),
                 turn_id: None,
-                chunked: false,
             },
             _ => return Err(Box::new(DaemonFrameUp::Event { adapter_id, event })),
         };
@@ -82,10 +80,7 @@ pub(super) async fn ingest_run(
         if search {
             let bodies =
                 crate::search_index::chunk_event(&adapter_id, row.event_type, row.payload.clone());
-            row.chunked = !bodies.is_empty();
             searchable.push((row.local_id.clone(), bodies));
-        } else {
-            row.chunked = true;
         }
         events.push((adapter_id, event));
         rows.push(row);
@@ -137,34 +132,22 @@ pub(super) async fn insert_event(
     user_id: Uuid,
     row: NewEvent,
 ) -> anyhow::Result<Option<i64>> {
-    let NewEvent { local_id, event_type, mut payload, turn_id, chunked } = row;
+    let NewEvent { local_id, event_type, mut payload, turn_id } = row;
     // Postgres jsonb/text cannot store the NUL code point (`\0`); a
     // payload carrying one (e.g. binary-ish tool output) fails the INSERT and
     // the event is silently lost. Strip NULs from every string so
     // the rest of the payload survives.
     strip_nul(&mut payload);
-    // `WHERE EXISTS`: a daemon can emit events for a session the server never
-    // registered (missed SessionStarted, ephemeral subagent); those are a
-    // no-op instead of an FK violation.
     let links = crate::routes::fs::extract_links(&payload);
-    // Untargeted: two dedup indexes cover this table and either must suppress
-    // the row; a targeted clause can only name one.
-    let id: Option<i64> = sqlx::query_scalar(
-        "INSERT INTO stream_events (session_id, event_type, payload, turn_id, search_text) \
-         SELECT $1, $2, $3, $4, CASE WHEN $7 THEN '' END WHERE EXISTS ( \
-             SELECT 1 FROM sessions WHERE id = $1 AND machine_uuid = $5 AND user_id = $6) \
-         ON CONFLICT DO NOTHING \
-         RETURNING id",
-    )
-    .bind(&local_id)
-    .bind(event_type)
-    .bind(payload)
-    .bind(turn_id)
-    .bind(machine_id)
-    .bind(user_id)
-    .bind(chunked)
-    .fetch_optional(pool)
-    .await?;
+    let id: Option<i64> = sqlx::query_scalar(INSERT_ONE_SQL)
+        .bind(&local_id)
+        .bind(event_type)
+        .bind(payload)
+        .bind(turn_id)
+        .bind(machine_id)
+        .bind(user_id)
+        .fetch_optional(pool)
+        .await?;
     if id.is_some() {
         crate::routes::fs::record_links(pool, &local_id, &links).await?;
     }
@@ -177,24 +160,52 @@ pub(super) struct NewEvent {
     event_type: &'static str,
     payload: serde_json::Value,
     turn_id: Option<Uuid>,
-    /// Stores an empty `search_text`: its chunks carry its text, or search is
-    /// off and the backfill chunks it once search is back on.
-    chunked: bool,
 }
 
 impl NewEvent {
-    /// An unchunked row: the trigger fills its `search_text` only while `search` is on.
     #[must_use]
     pub(super) fn unchunked(
         local_id: &str,
         event_type: &'static str,
         payload: serde_json::Value,
         turn_id: Option<Uuid>,
-        search: bool,
+        _search: bool,
     ) -> Self {
-        Self { local_id: local_id.to_owned(), event_type, payload, turn_id, chunked: !search }
+        Self { local_id: local_id.to_owned(), event_type, payload, turn_id }
     }
 }
+
+/// `WHERE EXISTS`: a daemon can emit events for a session the server never
+/// registered (missed `SessionStarted`, ephemeral subagent); those are a no-op
+/// instead of an FK violation. Untargeted `ON CONFLICT`: two dedup indexes
+/// cover this table and either must suppress the row; a targeted clause can
+/// only name one.
+const INSERT_ONE_SQL: &str = "INSERT INTO stream_events \
+     (session_id, event_type, payload, turn_id) \
+     SELECT $1, $2, $3, $4 WHERE EXISTS ( \
+         SELECT 1 FROM sessions WHERE id = $1 AND machine_uuid = $5 AND user_id = $6) \
+     ON CONFLICT DO NOTHING \
+     RETURNING id";
+
+const INSERT_MANY_SQL: &str = "WITH src AS ( \
+         SELECT nextval(pg_get_serial_sequence('stream_events', 'id')) AS id, r.* \
+         FROM ( \
+             SELECT u.* \
+             FROM unnest($1::text[], $2::text[], $3::jsonb[], $4::uuid[]) \
+                  WITH ORDINALITY AS u(session_id, event_type, payload, turn_id, ord) \
+             WHERE EXISTS ( \
+                 SELECT 1 FROM sessions s \
+                 WHERE s.id = u.session_id AND s.machine_uuid = $5 AND s.user_id = $6) \
+             ORDER BY u.ord \
+         ) r \
+     ), ins AS ( \
+         INSERT INTO stream_events (id, session_id, event_type, payload, turn_id) \
+         SELECT id, session_id, event_type, payload, turn_id \
+         FROM src ORDER BY ord \
+         ON CONFLICT DO NOTHING \
+         RETURNING id \
+     ) \
+     SELECT src.ord, ins.id FROM ins JOIN src USING (id)";
 
 /// Rows per `stream_events` statement: bounds one statement's bind size.
 const INSERT_BATCH: usize = 1000;
@@ -214,7 +225,6 @@ pub(super) async fn insert_events(
         let mut types = Vec::with_capacity(chunk.len());
         let mut payloads = Vec::with_capacity(chunk.len());
         let mut turns = Vec::with_capacity(chunk.len());
-        let mut chunked = Vec::with_capacity(chunk.len());
         let mut links = Vec::with_capacity(chunk.len());
         for row in chunk.iter_mut() {
             strip_nul(&mut row.payload);
@@ -223,38 +233,16 @@ pub(super) async fn insert_events(
             types.push(row.event_type);
             payloads.push(std::mem::take(&mut row.payload));
             turns.push(row.turn_id);
-            chunked.push(row.chunked);
         }
-        let inserted: Vec<(i64, i64)> = sqlx::query_as(
-            "WITH src AS ( \
-                 SELECT nextval(pg_get_serial_sequence('stream_events', 'id')) AS id, r.* \
-                 FROM ( \
-                     SELECT u.* \
-                     FROM unnest($1::text[], $2::text[], $3::jsonb[], $4::uuid[], $7::bool[]) \
-                          WITH ORDINALITY AS u(session_id, event_type, payload, turn_id, chunked, ord) \
-                     WHERE EXISTS ( \
-                         SELECT 1 FROM sessions s \
-                         WHERE s.id = u.session_id AND s.machine_uuid = $5 AND s.user_id = $6) \
-                     ORDER BY u.ord \
-                 ) r \
-             ), ins AS ( \
-                 INSERT INTO stream_events (id, session_id, event_type, payload, turn_id, search_text) \
-                 SELECT id, session_id, event_type, payload, turn_id, CASE WHEN chunked THEN '' END \
-                 FROM src ORDER BY ord \
-                 ON CONFLICT DO NOTHING \
-                 RETURNING id \
-             ) \
-             SELECT src.ord, ins.id FROM ins JOIN src USING (id)",
-        )
-        .bind(&ids)
-        .bind(&types)
-        .bind(&payloads)
-        .bind(&turns)
-        .bind(machine_id)
-        .bind(user_id)
-        .bind(&chunked)
-        .fetch_all(pool)
-        .await?;
+        let inserted: Vec<(i64, i64)> = sqlx::query_as(INSERT_MANY_SQL)
+            .bind(&ids)
+            .bind(&types)
+            .bind(&payloads)
+            .bind(&turns)
+            .bind(machine_id)
+            .bind(user_id)
+            .fetch_all(pool)
+            .await?;
         let mut seqs = vec![None; chunk.len()];
         for (ord, id) in inserted {
             if let Some(slot) = usize::try_from(ord - 1).ok().and_then(|i| seqs.get_mut(i)) {
@@ -296,7 +284,6 @@ pub(super) fn backfill(local_id: &str, n: usize) -> Vec<NewEvent> {
             event_type: "message",
             payload: serde_json::json!({ "type": "assistant", "text": format!("line {i}") }),
             turn_id: None,
-            chunked: false,
         })
         .collect()
 }
@@ -429,7 +416,6 @@ mod tests {
             event_type: "message",
             payload: payload.clone(),
             turn_id,
-            chunked: false,
         };
 
         let sent = insert_events(&pool, mid, uid, vec![user_line(Some(Uuid::new_v4()))])
@@ -573,7 +559,6 @@ mod tests {
             event_type: "message",
             payload: json!({ "type": "assistant", "text": "line 7" }),
             turn_id: None,
-            chunked: false,
         });
         let seqs = insert_events(&pool, mid, uid, rows).await.expect("insert");
         assert_eq!(seqs.len(), n + 1);
@@ -660,80 +645,45 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn only_unchunked_rows_keep_a_search_text() {
-        let Some(url) = crate::routes::gateway::test_db_url("search_text_on_insert") else {
-            return;
-        };
-        let pool = crate::db::connect(&url).await.expect("connect test db");
-        let (uid, mid) = seed_machine(&pool, "search_text_on_insert").await;
-        let sid = seed_owned_session(&pool, uid, mid).await;
-        let row = |text: &str, chunked| NewEvent {
-            local_id: sid.clone(),
-            event_type: "message",
-            payload: json!({ "role": "assistant", "text": text }),
-            turn_id: None,
-            chunked,
-        };
-        let seqs = insert_events(&pool, mid, uid, vec![row("chunked", true), row("raw", false)])
-            .await
-            .expect("insert");
-        let text = |id: Option<i64>| {
-            let pool = pool.clone();
-            async move {
-                sqlx::query_scalar::<_, String>(
-                    "SELECT search_text FROM stream_events WHERE id = $1",
-                )
-                .bind(id)
-                .fetch_one(&pool)
-                .await
-                .expect("row")
-            }
-        };
-        assert_eq!(text(seqs[0]).await, "");
-        assert_eq!(text(seqs[1]).await, "raw   ");
-
-        sqlx::query(
-            "UPDATE stream_events \
-             SET payload = jsonb_set(payload, ARRAY['text'], to_jsonb(payload ->> 'text' || ' edited')) \
-             WHERE id = ANY($1)",
-        )
-        .bind(seqs.iter().flatten().copied().collect::<Vec<_>>())
-        .execute(&pool)
-        .await
-        .expect("update");
-        assert_eq!(text(seqs[0]).await, "", "a chunked row stays out of the trigram index");
-        assert_eq!(text(seqs[1]).await, "raw edited   ");
-
-        sqlx::query("DELETE FROM stream_events WHERE session_id = $1")
-            .bind(&sid)
-            .execute(&pool)
-            .await
-            .ok();
-        drop_machines(&pool, &[sid], &[(uid, mid)]).await;
-    }
-
-    #[tokio::test]
-    async fn the_single_row_insert_leaves_search_text_empty_with_search_off() {
-        let Some(url) = crate::routes::gateway::test_db_url("search_text_single_row") else {
-            return;
-        };
-        let pool = crate::db::connect(&url).await.expect("connect test db");
-        let (uid, mid) = seed_machine(&pool, "search_text_single_row").await;
-        let sid = seed_owned_session(&pool, uid, mid).await;
-        let mut stored = Vec::new();
-        for (text, search) in [("searched", true), ("unsearched", false)] {
-            let payload = json!({ "role": "assistant", "text": text });
-            let row = NewEvent::unchunked(&sid, "message", payload, None, search);
-            let id = insert_event(&pool, mid, uid, row).await.expect("insert").expect("new row");
-            let search_text: String =
-                sqlx::query_scalar("SELECT search_text FROM stream_events WHERE id = $1")
-                    .bind(id)
-                    .fetch_one(&pool)
-                    .await
-                    .expect("row");
-            stored.push(search_text);
+    async fn ingest_inserts_without_search_text_and_the_row_is_found_through_its_chunks() {
+        for sql in [INSERT_ONE_SQL, INSERT_MANY_SQL] {
+            assert!(!sql.contains("search_text"), "{sql}");
         }
-        assert_eq!(stored, ["searched   ", ""]);
+        let Some(url) = crate::routes::gateway::test_db_url("ingest_chunks_only") else {
+            return;
+        };
+        let pool = crate::db::connect(&url).await.expect("connect test db");
+        let (uid, mid) = seed_machine(&pool, "ingest_chunks_only").await;
+        let sid = seed_owned_session(&pool, uid, mid).await;
+        let payload = |text: &str| json!({ "role": "assistant", "text": text });
+        let row = |text: &str| NewEvent::unchunked(&sid, "message", payload(text), None, true);
+        let batched = insert_events(&pool, mid, uid, vec![row("a batched quokka line")])
+            .await
+            .expect("batched insert");
+        let single = insert_event(&pool, mid, uid, row("a single quokka line"))
+            .await
+            .expect("single insert");
+        let ids: Vec<i64> =
+            batched.into_iter().chain([single]).map(|s| s.expect("new row")).collect();
+        let chunked: Vec<crate::search_index::Chunked> = ids
+            .iter()
+            .zip(["a batched quokka line", "a single quokka line"])
+            .map(|(&event_id, text)| crate::search_index::Chunked {
+                event_id,
+                session_id: sid.clone(),
+                bodies: crate::search_index::chunk_event("claude-code", "message", payload(text)),
+            })
+            .collect();
+        crate::search_index::insert_chunks(&pool, &chunked).await.expect("chunks");
+        let found: Vec<i64> = sqlx::query_scalar(
+            "SELECT DISTINCT event_id FROM search_chunks \
+             WHERE session_id = $1 AND body ILIKE '%quokka%' ORDER BY event_id",
+        )
+        .bind(&sid)
+        .fetch_all(&pool)
+        .await
+        .expect("search");
+        assert_eq!(found, ids);
 
         sqlx::query("DELETE FROM stream_events WHERE session_id = $1")
             .bind(&sid)
@@ -769,25 +719,23 @@ mod tests {
                 event_type: "tool_use",
                 payload,
                 turn_id: None,
-                chunked: false,
             });
         }
         let seqs = insert_events(&pool, mid, uid, rows).await.expect("insert");
         assert!(seqs.iter().all(Option::is_some));
 
         for (sid, seq) in [(&a, seqs[0]), (&b, seqs[1])] {
-            let (payload, base64_in_search): (serde_json::Value, bool) = sqlx::query_as(
-                "SELECT payload, strpos(search_text, $2) > 0 FROM stream_events WHERE id = $1",
-            )
-            .bind(seq)
-            .bind(&data_head)
-            .fetch_one(&pool)
-            .await
-            .expect("stored row");
+            let payload: serde_json::Value =
+                sqlx::query_scalar("SELECT payload FROM stream_events WHERE id = $1")
+                    .bind(seq)
+                    .fetch_one(&pool)
+                    .await
+                    .expect("stored row");
             assert_eq!(payload["content"][0]["source"]["type"], "cctui-blob");
             assert_eq!(payload["content"][0]["source"]["blob_id"], hash);
             assert!(!payload.to_string().contains(&data_head), "no base64 in the payload");
-            assert!(!base64_in_search, "no base64 in search_text");
+            let bodies = crate::search_index::chunk_event("claude-code", "tool_use", payload);
+            assert!(bodies.iter().all(|b| !b.contains(&data_head)), "no base64 in the chunks");
             let served = crate::routes::blobs::fetch_session_blob(&pool, sid, &hash)
                 .await
                 .expect("fetch")

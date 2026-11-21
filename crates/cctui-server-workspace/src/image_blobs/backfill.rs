@@ -123,29 +123,10 @@ pub async fn rewrite_event(conn: &mut sqlx::PgConnection, id: i64) -> Result<Out
     }
 }
 
-/// A row left inline keeps its image in the payload only: its `search_text`
-/// is recomputed without the base64. `Ok(false)` when it already was.
-pub async fn scrub_search_text(
-    conn: &mut sqlx::PgConnection,
-    id: i64,
-) -> Result<bool, sqlx::Error> {
-    let scrubbed = sqlx::query(
-        "UPDATE stream_events e SET search_text = s.text \
-         FROM (SELECT public.stream_events_search_text_of(payload) AS text \
-               FROM stream_events WHERE id = $1) s \
-         WHERE e.id = $1 AND e.search_text <> '' AND e.search_text IS DISTINCT FROM s.text",
-    )
-    .bind(id)
-    .execute(conn)
-    .await?;
-    Ok(scrubbed.rows_affected() == 1)
-}
-
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Step {
     pub rewritten: usize,
     pub left_inline: usize,
-    pub scrubbed: usize,
     pub blob_bytes: u64,
     pub images: Tally,
     pub more: bool,
@@ -241,14 +222,10 @@ impl Walk {
                     step.blob_bytes += blob_bytes;
                     step.images.add(tally);
                 }
-                Outcome::Gone => {}
-                Outcome::Nothing => {
-                    step.scrubbed += usize::from(scrub_search_text(&mut conn, id).await?);
-                }
+                Outcome::Gone | Outcome::Nothing => {}
                 other => {
                     tracing::info!(id, ?other, "image backfill left an event inline");
                     step.left_inline += 1;
-                    step.scrubbed += usize::from(scrub_search_text(&mut conn, id).await?);
                 }
             }
         }
@@ -288,11 +265,10 @@ pub async fn task(pool: PgPool, config: Config) {
         let wait = match walk.step(&pool).await {
             Ok(step) => {
                 spent = spent.saturating_add(step.blob_bytes);
-                if step.rewritten + step.left_inline + step.scrubbed > 0 {
+                if step.rewritten + step.left_inline > 0 {
                     tracing::info!(
                         rewritten = step.rewritten,
                         left_inline = step.left_inline,
-                        scrubbed = step.scrubbed,
                         blob_bytes = step.blob_bytes,
                         images_valid = step.images.valid,
                         images_corrupt = step.images.corrupt,

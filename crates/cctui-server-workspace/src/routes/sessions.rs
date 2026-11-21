@@ -22,7 +22,6 @@ use crate::events::{self, Actor, Event, kind};
 use crate::followup::{followup_count_sql, nests_under_parent, next_session_sql};
 use crate::live_sessions::live_sessions_predicate;
 use crate::routes::spawn::resolve_owned_machine;
-use crate::search_index::Unchunked;
 use crate::state::AppState;
 use crate::store::sessions::SessionRowStatus;
 
@@ -1309,9 +1308,6 @@ const SEARCH_BUDGET: std::time::Duration = std::time::Duration::from_secs(3);
 const SEARCH_STATEMENT_TIMEOUT: &str = "SET LOCAL statement_timeout = '5s'";
 /// Newest matching chunks of a session ranked for its snippet.
 const SNIPPET_CANDIDATES: i64 = 50;
-/// Must match the `(session_id, left(search_text, 8192))` index of migration
-/// 108 exactly, or the unchunked fallback stops using it.
-const SEARCH_TEXT_CAP: u32 = 8192;
 
 /// Escape LIKE/ILIKE wildcards so a user's literal `%`/`_` aren't treated as
 /// pattern metacharacters, then wrap in `%…%` for a substring match. `\` is
@@ -1392,9 +1388,8 @@ impl TermBinds {
     }
 }
 
-/// Free-text terms folded like the indexed chunks, and as typed for the
-/// unchunked fallback, which matches `search_text` unfolded; terms that fold
-/// to nothing are dropped.
+/// Free-text terms folded like the indexed chunks, and as typed for snippets
+/// cut from unfolded text; terms that fold to nothing are dropped.
 struct Terms {
     folded: Vec<String>,
     raw: Vec<String>,
@@ -1445,7 +1440,7 @@ impl Terms {
         self.folded.len()
     }
 
-    /// What a snippet centres on: chunk text is folded, `search_text` is not.
+    /// What a snippet centres on: chunk text is folded, the rendered text is not.
     fn needles(&self) -> Vec<String> {
         self.anchored_needles().into_iter().map(|(n, _)| n).collect()
     }
@@ -1475,12 +1470,7 @@ fn ph_text(params: &mut Vec<SqlParam>, s: String) -> usize {
 
 /// SQL predicate for one fielded value. The bind is appended to `params` and
 /// the returned string references it by its `$N` position (1-based).
-fn leaf_predicate(
-    field: &str,
-    value: &str,
-    params: &mut Vec<SqlParam>,
-    gap: Option<Unchunked>,
-) -> String {
+fn leaf_predicate(field: &str, value: &str, params: &mut Vec<SqlParam>) -> String {
     match field {
         "machine" => {
             let p = ph_text(params, value.to_string());
@@ -1539,53 +1529,25 @@ fn leaf_predicate(
         // Across sessions they stay the literal free text they were before the
         // query registry learned them.
         "role" | "tool" | "after" | "before" => {
-            text_leaf(&format!("{field}:{value}"), Anchor::Anywhere, params, gap)
+            text_leaf(&format!("{field}:{value}"), Anchor::Anywhere, params)
         }
-        _ => text_leaf(value, Anchor::Anywhere, params, gap),
+        _ => text_leaf(value, Anchor::Anywhere, params),
     }
 }
 
-/// `alias.id` past the backfill cursor and either below the first event
-/// chunked on ingest or, above it, written by a path that chunks nothing.
-fn unchunked_ids(alias: &str, g: Unchunked) -> String {
-    format!(
-        "{alias}.id > {} AND ({alias}.id < {} \
-         OR NOT EXISTS (SELECT 1 FROM search_chunks k WHERE k.event_id = {alias}.id))",
-        g.after, g.before
-    )
+fn text_leaf(term: &str, anchor: Anchor, params: &mut Vec<SqlParam>) -> String {
+    free_text_predicate(TermBinds::bind(params, &crate::search_index::text::fold(term), anchor))
 }
 
-fn text_leaf(
-    term: &str,
-    anchor: Anchor,
-    params: &mut Vec<SqlParam>,
-    gap: Option<Unchunked>,
-) -> String {
-    let folded = TermBinds::bind(params, &crate::search_index::text::fold(term), anchor);
-    let fallback = gap.map(|g| (TermBinds::bind(params, term, anchor), g));
-    free_text_predicate(folded, fallback)
-}
-
-/// The residual free-text path: id / name / dir / the session's search chunks,
-/// and with `fallback` its unchunked events' capped `search_text`.
-///
 /// `(SELECT s.id)` must not be simplified to `s.id`: the wrapper keeps the
 /// correlation as a Param, and a plain `s.id` lets the planner hoist the
 /// sublink into a hashed subplan that rechecks every matching event in the
 /// table rather than probing one session (13 s vs 0.35 s on 600k events).
-fn free_text_predicate(t: TermBinds, fallback: Option<(TermBinds, Unchunked)>) -> String {
-    let unchunked = fallback.map_or_else(String::new, |(r, g)| {
-        format!(
-            " OR EXISTS (SELECT 1 FROM stream_events e \
-                        WHERE e.session_id = (SELECT s.id) AND {} AND {})",
-            unchunked_ids("e", g),
-            r.test(&format!("left(e.search_text, {SEARCH_TEXT_CAP})"))
-        )
-    });
+fn free_text_predicate(t: TermBinds) -> String {
     format!(
         "(({}) OR ({}) OR ({}) \
           OR EXISTS (SELECT 1 FROM search_chunks c \
-                     WHERE c.session_id = (SELECT s.id) AND {}){unchunked})",
+                     WHERE c.session_id = (SELECT s.id) AND {}))",
         t.test("s.id"),
         t.test("COALESCE(s.session_name, '')"),
         t.test("s.working_dir"),
@@ -1593,13 +1555,9 @@ fn free_text_predicate(t: TermBinds, fallback: Option<(TermBinds, Unchunked)>) -
     )
 }
 
-fn compile_filter(
-    filter: &cctui_query::Filter,
-    params: &mut Vec<SqlParam>,
-    gap: Option<Unchunked>,
-) -> String {
+fn compile_filter(filter: &cctui_query::Filter, params: &mut Vec<SqlParam>) -> String {
     let preds: Vec<String> =
-        filter.values.iter().map(|v| leaf_predicate(&filter.field, v, params, gap)).collect();
+        filter.values.iter().map(|v| leaf_predicate(&filter.field, v, params)).collect();
     let joined = match preds.len() {
         0 => "TRUE".to_string(),
         1 => preds.into_iter().next().unwrap(),
@@ -1613,27 +1571,12 @@ fn compile_filter(
 /// predicates / join-EXISTS, free text takes the `pg_trgm` path, and the
 /// boolean/negation structure maps straight to `AND`/`OR`/`NOT`.
 fn compile_node(node: &cctui_query::Node, params: &mut Vec<SqlParam>) -> String {
-    compile_node_at(node, params, None, 0)
-}
-
-/// [`compile_node`] for the session search, whose free text also probes the
-/// `gap` events that have no chunks yet.
-fn compile_search(
-    node: &cctui_query::Node,
-    params: &mut Vec<SqlParam>,
-    gap: Option<Unchunked>,
-) -> String {
-    compile_node_at(node, params, gap, 0)
+    compile_node_at(node, params, 0)
 }
 
 const MAX_COMPILE_DEPTH: usize = 4 * cctui_query::MAX_DEPTH + 8;
 
-fn compile_node_at(
-    node: &cctui_query::Node,
-    params: &mut Vec<SqlParam>,
-    gap: Option<Unchunked>,
-    depth: usize,
-) -> String {
+fn compile_node_at(node: &cctui_query::Node, params: &mut Vec<SqlParam>, depth: usize) -> String {
     use cctui_query::Node;
     if depth > MAX_COMPILE_DEPTH {
         return "FALSE".to_string();
@@ -1642,12 +1585,12 @@ fn compile_node_at(
         Node::Empty => "TRUE".to_string(),
         Node::Text { value, phrase } => {
             let (term, anchor) = search_term(value, *phrase);
-            text_leaf(term, anchor, params, gap)
+            text_leaf(term, anchor, params)
         }
-        Node::Filter { filter } => compile_filter(filter, params, gap),
-        Node::Not { child } => format!("(NOT {})", compile_node_at(child, params, gap, depth + 1)),
-        Node::And { children } => join_children(children, "AND", params, gap, depth),
-        Node::Or { children } => join_children(children, "OR", params, gap, depth),
+        Node::Filter { filter } => compile_filter(filter, params),
+        Node::Not { child } => format!("(NOT {})", compile_node_at(child, params, depth + 1)),
+        Node::And { children } => join_children(children, "AND", params, depth),
+        Node::Or { children } => join_children(children, "OR", params, depth),
     }
 }
 
@@ -1655,11 +1598,10 @@ fn join_children(
     children: &[cctui_query::Node],
     sep: &str,
     params: &mut Vec<SqlParam>,
-    gap: Option<Unchunked>,
     depth: usize,
 ) -> String {
     let preds: Vec<String> =
-        children.iter().map(|c| compile_node_at(c, params, gap, depth + 1)).collect();
+        children.iter().map(|c| compile_node_at(c, params, depth + 1)).collect();
     if preds.is_empty() {
         "TRUE".to_string()
     } else {
@@ -1681,12 +1623,11 @@ fn check_query_len(q: &str) -> Result<(), AppError> {
 /// The best of a session's newest chunks matching any term, at most one row
 /// per session, ranked by how many distinct terms it holds, then `ts_rank`.
 /// `$1` is the session-id array, `$2…$n+1` the ILIKE patterns, `$n+2` the
-/// terms the rank weighs; with a `gap`, `$n+3…$2n+2` the unfolded patterns its
-/// newest matching unchunked event is tested with. The `~*` word-start
-/// rechecks follow, one per pattern in the same order.
-fn snippet_sql(n_patterns: usize, gap: Option<Unchunked>) -> String {
+/// terms the rank weighs, then the `~*` word-start rechecks, one per pattern
+/// in the same order.
+fn snippet_sql(n_patterns: usize) -> String {
     let rank = n_patterns + 2;
-    let re = if gap.is_some() { 2 * n_patterns + 3 } else { n_patterns + 3 };
+    let re = n_patterns + 3;
     let hit = |col: &str, like: usize, r: usize| format!("({col} ILIKE ${like} AND {col} ~* ${r})");
     let each = |col: &str, like: usize, r: usize| {
         (0..n_patterns).map(|k| hit(col, like + k, r + k)).collect::<Vec<_>>()
@@ -1704,24 +1645,13 @@ fn snippet_sql(n_patterns: usize, gap: Option<Unchunked>) -> String {
     } else {
         String::new()
     };
-    let unchunked = gap.map_or_else(String::new, |g| {
-        let col = format!("left(e.search_text, {SEARCH_TEXT_CAP})");
-        format!(
-            " UNION ALL ( \
-               SELECT {col}, e.id FROM stream_events e \
-               WHERE e.session_id = sid AND {} AND ({}) \
-               ORDER BY e.id DESC LIMIT 1)",
-            unchunked_ids("e", g),
-            each(&col, rank + 1, re + n_patterns).join(" OR ")
-        )
-    });
     format!(
         "SELECT sid, hit.body, hit.event_id FROM unnest($1::text[]) AS sid \
          CROSS JOIN LATERAL ( \
            SELECT m.body, m.event_id FROM ( \
              (SELECT c.body, c.event_id FROM search_chunks c \
               WHERE c.session_id = sid AND ({any}) \
-              ORDER BY c.event_id DESC LIMIT {SNIPPET_CANDIDATES}){every}{unchunked} \
+              ORDER BY c.event_id DESC LIMIT {SNIPPET_CANDIDATES}){every} \
            ) m \
            ORDER BY ({}) DESC, \
                     ts_rank(to_tsvector('simple', m.body), plainto_tsquery('simple', ${rank})) DESC, \
@@ -1737,19 +1667,14 @@ async fn fetch_snippets(
     pool: &sqlx::PgPool,
     ids: &[String],
     terms: &Terms,
-    gap: Option<Unchunked>,
 ) -> Result<Vec<(String, String, i64)>, sqlx::Error> {
-    let sql = snippet_sql(terms.len(), gap);
+    let sql = snippet_sql(terms.len());
     let mut query = sqlx::query_as::<_, (String, String, i64)>(sqlx::AssertSqlSafe(sql)).bind(ids);
     for t in &terms.folded {
         query = query.bind(ilike_contains(t));
     }
     query = query.bind(terms.folded.join(" "));
-    let raw: &[String] = if gap.is_some() { &terms.raw } else { &[] };
-    for t in raw {
-        query = query.bind(ilike_contains(t));
-    }
-    for re in terms.regexes(&terms.folded).into_iter().chain(terms.regexes(raw)) {
+    for re in terms.regexes(&terms.folded) {
         query = query.bind(re);
     }
     query.fetch_all(pool).await
@@ -1836,7 +1761,6 @@ pub async fn search_sessions(
         uid,
         exclude_dispatched: params.exclude_dispatched,
     };
-    let gap = if browse { None } else { crate::search_index::unchunked(&state.pool).await? };
     let found = if browse {
         browse_archive(&state.pool, &page).await?
     } else {
@@ -1851,7 +1775,7 @@ pub async fn search_sessions(
             let registry = state.registry.read().await;
             Some(registry.list().into_iter().map(|h| h.session.id.clone()).collect())
         };
-        scan_matches(&state.pool, &root, live_ids.as_deref(), &page, gap).await?
+        scan_matches(&state.pool, &root, live_ids.as_deref(), &page).await?
     };
 
     let mut with_ts: Vec<(DateTime<Utc>, SessionListItem)> =
@@ -1865,7 +1789,7 @@ pub async fn search_sessions(
     let terms = Terms::of_query(&root);
     let ids: Vec<String> = sessions.iter().map(|s| s.id.clone()).collect();
     if !browse && !ids.is_empty() && !terms.is_empty() {
-        let snippet_rows = fetch_snippets(&state.pool, &ids, &terms, gap).await?;
+        let snippet_rows = fetch_snippets(&state.pool, &ids, &terms).await?;
         attach_transcript_hits(&mut sessions, snippet_rows, &terms.anchored_needles());
     }
 
@@ -2001,10 +1925,9 @@ impl<'a> Scan<'a> {
         root: &cctui_query::Node,
         live_ids: Option<&'a [String]>,
         page: &SearchPage,
-        gap: Option<Unchunked>,
     ) -> Self {
         let mut params: Vec<SqlParam> = Vec::new();
-        let where_sql = compile_search(root, &mut params, gap);
+        let where_sql = compile_node(root, &mut params);
         let ids = params.len() + 1;
         Self {
             window_sql: search_window_sql(live_ids.is_some(), page.exclude_dispatched),
@@ -2126,9 +2049,8 @@ async fn scan_matches(
     root: &cctui_query::Node,
     live_ids: Option<&[String]>,
     page: &SearchPage,
-    gap: Option<Unchunked>,
 ) -> Result<FoundPage, AppError> {
-    let scan = Scan::compile(root, live_ids, page, gap);
+    let scan = Scan::compile(root, live_ids, page);
     let want = usize::try_from(page.limit).unwrap_or(1);
     let mut skip =
         if page.cursor.is_some() { 0 } else { usize::try_from(page.offset).unwrap_or(0) };
@@ -3129,22 +3051,18 @@ type ConvSearchRow = (i64, String, serde_json::Value, DateTime<Utc>);
 
 /// `$1` the session id, `$2…$n+1` the folded ILIKE patterns — all of them
 /// required of one and the same event, each in any of its chunks — then
-/// `after`, `before` and the row cap; with a `gap`, the next `n` the unfolded
-/// patterns its unchunked events must all carry in their capped `search_text`;
-/// last, the event-id window `(lo, hi]`.
+/// `after`, `before` and the row cap; last, the event-id window `(lo, hi]`.
 ///
 /// Every pattern is a correlated probe of the event's own chunks, so a window
 /// costs a primary-key lookup per event in it, never a trigram scan of the
 /// whole session.
-fn conv_search_sql(n_patterns: usize, gap: Option<Unchunked>) -> String {
+fn conv_search_sql(n_patterns: usize) -> String {
     let (a, b, l) = (n_patterns + 2, n_patterns + 3, n_patterns + 4);
-    let gap = gap.filter(|_| n_patterns > 0);
-    let lo = l + 1 + if gap.is_some() { n_patterns } else { 0 };
-    let hi = lo + 1;
+    let (lo, hi) = (l + 1, l + 2);
     let text_where = if n_patterns == 0 {
         "TRUE".to_string()
     } else {
-        let chunked = (2..=n_patterns + 1)
+        (2..=n_patterns + 1)
             .map(|i| {
                 format!(
                     "EXISTS (SELECT 1 FROM search_chunks c \
@@ -3152,16 +3070,7 @@ fn conv_search_sql(n_patterns: usize, gap: Option<Unchunked>) -> String {
                 )
             })
             .collect::<Vec<_>>()
-            .join(" AND ");
-        let unchunked = gap.map_or_else(String::new, |g| {
-            use std::fmt::Write as _;
-            let raw = (l + 1..=l + n_patterns).fold(String::new(), |mut acc, i| {
-                let _ = write!(acc, " AND left(e.search_text, {SEARCH_TEXT_CAP}) ILIKE ${i}");
-                acc
-            });
-            format!(" OR ({}{raw})", unchunked_ids("e", g))
-        });
-        format!("({chunked}){unchunked}")
+            .join(" AND ")
     };
     format!(
         "SELECT e.id, e.event_type, e.payload, e.created_at \
@@ -3219,14 +3128,12 @@ async fn conv_search_rows(
     session_id: &str,
     terms: &Terms,
     filters: &ConvSearchFilters,
-    gap: Option<Unchunked>,
     limits: ConvScanLimits,
 ) -> Result<ConvScan, sqlx::Error> {
     let deadline = std::time::Instant::now() + limits.budget;
     let mut tx = pool.begin().await?;
     sqlx::query(SEARCH_STATEMENT_TIMEOUT).execute(&mut *tx).await?;
-    let gap = gap.filter(|_| !terms.is_empty());
-    let sql = conv_search_sql(terms.len(), gap);
+    let sql = conv_search_sql(terms.len());
     let mut rows: Vec<ConvSearchRow> = Vec::new();
     let mut after = 0_i64;
     loop {
@@ -3243,11 +3150,6 @@ async fn conv_search_rows(
             query = query.bind(ilike_contains(t));
         }
         query = query.bind(filters.after).bind(filters.before).bind(cap);
-        if gap.is_some() {
-            for t in &terms.raw {
-                query = query.bind(ilike_contains(t));
-            }
-        }
         match query.bind(after).bind(hi).fetch_all(&mut *tx).await {
             Ok(found) => rows.extend(found),
             Err(e) if is_statement_timeout(&e) => return Ok(ConvScan { rows, partial: true }),
@@ -3297,11 +3199,10 @@ pub async fn search_conversation(
     flatten_conv_query(&root, false, &mut terms, &mut raw_filters);
     let filters = conv_filters(&raw_filters);
     let terms = Terms::of(&terms);
-    let gap = crate::search_index::unchunked(&state.pool).await?;
     let needles = terms.needles();
 
     let ConvScan { rows, partial } =
-        conv_search_rows(&state.pool, &session_id, &terms, &filters, gap, ConvScanLimits::DEFAULT)
+        conv_search_rows(&state.pool, &session_id, &terms, &filters, ConvScanLimits::DEFAULT)
             .await?;
     let scanned = i64::try_from(rows.len()).unwrap_or(i64::MAX);
 
@@ -6334,7 +6235,7 @@ mod tests {
 
     #[test]
     fn conversation_search_ands_every_term_over_the_session_chunks() {
-        let sql = super::conv_search_sql(3, None);
+        let sql = super::conv_search_sql(3);
         assert_eq!(sql.matches("c.body ILIKE $").count(), 3);
         assert!(sql.contains("$2") && sql.contains("$3") && sql.contains("$4"));
         assert_eq!(sql.matches(" AND EXISTS ").count(), 2, "terms are ANDed per event: {sql}");
@@ -6344,7 +6245,7 @@ mod tests {
         assert!(sql.ends_with("ORDER BY e.id ASC LIMIT $7"), "oldest first: {sql}");
         assert!(sql.contains("WHERE e.session_id = $1 AND e.id > $8 AND e.id <= $9"), "{sql}");
 
-        let none = super::conv_search_sql(0, None);
+        let none = super::conv_search_sql(0);
         assert!(none.contains("AND (TRUE)"));
         assert!(none.contains("e.id > $5 AND e.id <= $6"), "{none}");
         assert!(none.ends_with("ORDER BY e.id ASC LIMIT $4"));
@@ -6482,9 +6383,8 @@ mod tests {
                 let terms = super::Terms::of(&root.free_text_terms());
                 let filters = super::conv_filters(&[]);
                 let limits = super::ConvScanLimits::DEFAULT;
-                let scan = super::conv_search_rows(&pool, &sid, &terms, &filters, None, limits)
-                    .await
-                    .unwrap();
+                let scan =
+                    super::conv_search_rows(&pool, &sid, &terms, &filters, limits).await.unwrap();
                 assert!(!scan.partial, "no timeout");
                 scan.rows.len()
             }
@@ -6510,7 +6410,7 @@ mod tests {
 
         let page = search_page(10, None);
         let root = cctui_query::parse("\"master...HEAD (three dots)\"");
-        let found = super::scan_matches(&pool, &root, None, &page, None).await.unwrap();
+        let found = super::scan_matches(&pool, &root, None, &page).await.unwrap();
         assert!(found.rows.iter().any(|r| r.id == sid), "the session list finds it too");
 
         sqlx::query("DELETE FROM sessions WHERE id = $1").bind(&sid).execute(&pool).await.unwrap();
@@ -6612,7 +6512,7 @@ mod tests {
         let mut pages = Vec::new();
         let mut total = None;
         loop {
-            let found = super::scan_matches(pool, &root, None, &page, None).await.unwrap();
+            let found = super::scan_matches(pool, &root, None, &page).await.unwrap();
             assert!(!found.partial, "{q}: no timeout");
             if pages.is_empty() {
                 total = found.total;
@@ -6748,7 +6648,7 @@ mod tests {
 
         let one = SearchPageOpts { limit: 1, ..opts };
         let root = cctui_query::parse("*hook");
-        let found = super::scan_matches(&pool, &root, None, &one.page(), None).await.unwrap();
+        let found = super::scan_matches(&pool, &root, None, &one.page()).await.unwrap();
         assert_eq!(found.rows.len(), 1);
         assert_eq!(
             found.total,
@@ -6766,9 +6666,7 @@ mod tests {
         limits: super::ConvScanLimits,
     ) -> super::ConvScan {
         let terms = super::Terms::of(&cctui_query::parse(q).free_text_terms());
-        super::conv_search_rows(pool, sid, &terms, &super::conv_filters(&[]), None, limits)
-            .await
-            .unwrap()
+        super::conv_search_rows(pool, sid, &terms, &super::conv_filters(&[]), limits).await.unwrap()
     }
 
     #[tokio::test]
@@ -6814,134 +6712,73 @@ mod tests {
     }
 
     #[test]
-    fn the_unchunked_fallback_probes_the_indexed_search_text_expression() {
-        let index =
-            include_str!("../../../../migrations/108_stream_events_session_search_trgm.up.sql");
-        assert!(index.contains("(session_id, left(search_text, 8192) gin_trgm_ops)"));
-        let gap = Some(crate::search_index::Unchunked { after: 10, before: 500 });
-
-        let mut params = Vec::new();
-        let sql = super::compile_search(&cctui_query::parse("\u{FB01}x"), &mut params, gap);
-        assert!(sql.contains("e.session_id = (SELECT s.id)"), "{sql}");
-        assert!(sql.contains("e.id > 10 AND (e.id < 500 OR NOT EXISTS"), "{sql}");
-        assert!(sql.contains("WHERE k.event_id = e.id"), "a primary-key probe: {sql}");
-        assert!(sql.contains("left(e.search_text, 8192) ILIKE $3"), "{sql}");
-        assert!(sql.contains("left(e.search_text, 8192) ~* $4"), "{sql}");
-        let texts: Vec<String> = params
-            .into_iter()
-            .map(|p| match p {
-                SqlParam::Text(s) => s,
-                SqlParam::Bool(b) => b.to_string(),
-            })
-            .collect();
-        assert_eq!(
-            texts,
-            ["%fix%", "\\mfix", "%\u{FB01}x%", "\\m\u{FB01}x"],
-            "search_text is matched unfolded"
-        );
-
-        let conv = super::conv_search_sql(2, gap);
-        assert!(conv.contains(" OR (e.id > 10 AND (e.id < 500 OR NOT EXISTS"), "{conv}");
-        for i in [7, 8] {
-            assert!(conv.contains(&format!("left(e.search_text, 8192) ILIKE ${i}")), "{conv}");
+    fn no_search_sql_mentions_search_text() {
+        let queries = [
+            "fix",
+            "\u{FB01}x",
+            "\"a phrase\"",
+            "*tail",
+            "a b -c",
+            "a OR b",
+            "role:user tool:Bash after:2026-01-01",
+            "title:x dir:y model:z -tag:t",
+        ];
+        let mut sqls: Vec<String> = queries.iter().map(|q| compile(q).0).collect();
+        for n in 0..4 {
+            sqls.push(super::conv_search_sql(n));
         }
-        assert!(conv.contains("e.session_id = $1 AND e.id > $9 AND e.id <= $10"), "{conv}");
-        assert!(conv.ends_with("ORDER BY e.id ASC LIMIT $6"), "{conv}");
-
-        let snip = snippet_sql(2, gap);
-        for (like, re) in [(5, 9), (6, 10)] {
-            let col = "left(e.search_text, 8192)";
-            assert!(snip.contains(&format!("({col} ILIKE ${like} AND {col} ~* ${re})")), "{snip}");
+        for n in 1..4 {
+            sqls.push(snippet_sql(n));
         }
-        assert!(snip.contains("plainto_tsquery('simple', $4)"), "{snip}");
-
-        let (none, _) = compile("fix");
-        for sql in [none, super::conv_search_sql(2, None), snippet_sql(2, None)] {
-            assert!(!sql.contains("search_text"), "no fallback once history is chunked: {sql}");
+        for sql in sqls {
+            assert!(!sql.contains("search_text"), "{sql}");
         }
     }
 
     #[tokio::test]
-    async fn search_falls_back_to_search_text_for_unchunked_history() {
-        use crate::search_index::Unchunked;
-        let Some((pool, sid)) = seeded_session("search_unchunked_fallback").await else {
+    async fn search_finds_an_event_through_its_chunks_only() {
+        let Some((pool, sid)) = seeded_session("search_chunks_only").await else {
             return;
         };
-        let insert = |text: &'static str| {
-            let (pool, sid) = (pool.clone(), sid.clone());
-            async move {
-                sqlx::query_scalar::<_, i64>(
-                    "INSERT INTO stream_events (session_id, event_type, payload) \
-                     VALUES ($1, 'message', jsonb_build_object('role', 'assistant', 'text', $2::text)) \
-                     RETURNING id",
-                )
-                .bind(&sid)
-                .bind(text)
-                .fetch_one(&pool)
-                .await
-                .unwrap()
-            }
-        };
-        let old = insert("an ancient unchunked phrase").await;
-        let fresh = insert("a freshly chunked phrase").await;
-        let side = insert("a sidelined peer phrase").await;
-        let live = insert("a live chunked phrase").await;
-        crate::search_index::reindex(&pool, &[fresh, live]).await.unwrap();
-        let gap = Unchunked::between(old - 1, Some(fresh + 1));
-        assert!(gap.is_some());
-        let closed = Unchunked::between(fresh, Some(fresh));
-        assert_eq!(closed, None, "the cursor reached live_from");
-
-        let hits = |q: &'static str, gap: Option<Unchunked>| {
+        let id: i64 = sqlx::query_scalar(
+            "INSERT INTO stream_events (session_id, event_type, payload) \
+             VALUES ($1, 'message', jsonb_build_object('role', 'assistant', 'text', $2::text)) \
+             RETURNING id",
+        )
+        .bind(&sid)
+        .bind("an ancient phrase")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        let hits = |q: &'static str| {
             let (pool, sid) = (pool.clone(), sid.clone());
             async move {
                 let terms = super::Terms::of(&cctui_query::parse(q).free_text_terms());
                 let filters = super::conv_filters(&[]);
                 let limits = super::ConvScanLimits::DEFAULT;
-                let scan = super::conv_search_rows(&pool, &sid, &terms, &filters, gap, limits)
-                    .await
-                    .unwrap();
-                assert!(!scan.partial, "no timeout");
+                let scan =
+                    super::conv_search_rows(&pool, &sid, &terms, &filters, limits).await.unwrap();
                 scan.rows.into_iter().map(|r| r.0).collect::<Vec<_>>()
             }
         };
-        assert_eq!(hits("\"ancient unchunked phrase\"", gap).await, [old]);
-        assert_eq!(hits("ancient phrase", gap).await, [old], "every word, one event");
-        assert!(hits("\"ancient unchunked phrase\"", closed).await.is_empty());
-        assert_eq!(
-            hits("\"freshly chunked phrase\"", gap).await,
-            [fresh],
-            "an event both chunked and in the range is one hit"
-        );
-        assert_eq!(
-            hits("\"sidelined peer phrase\"", gap).await,
-            [side],
-            "above live_from, a row no path chunked"
-        );
-        assert_eq!(hits("\"live chunked phrase\"", gap).await, [live]);
-        assert_eq!(hits("phrase", gap).await, [old, fresh, side, live]);
-
-        let listed = |q: &'static str, gap: Option<Unchunked>| {
+        let listed = |q: &'static str| {
             let pool = pool.clone();
             async move {
-                let root = cctui_query::parse(q);
                 let page = search_page(10, None);
-                super::scan_matches(&pool, &root, None, &page, gap).await.unwrap().rows
+                super::scan_matches(&pool, &cctui_query::parse(q), None, &page).await.unwrap().rows
             }
         };
-        let found = listed("\"ancient unchunked phrase\"", gap).await;
-        assert!(found.iter().any(|r| r.id == sid), "the session list finds it");
-        assert!(!listed("\"ancient unchunked phrase\"", closed).await.iter().any(|r| r.id == sid));
-        assert!(listed("\"sidelined peer phrase\"", gap).await.iter().any(|r| r.id == sid));
-        let once = listed("\"chunked phrase\"", gap).await;
-        assert_eq!(once.iter().filter(|r| r.id == sid).count(), 1, "one row per session");
+        assert!(hits("\"ancient phrase\"").await.is_empty(), "no chunks, no hit");
+        assert!(!listed("\"ancient phrase\"").await.iter().any(|r| r.id == sid));
 
+        crate::search_index::reindex(&pool, &[id]).await.unwrap();
+        assert_eq!(hits("\"ancient phrase\"").await, [id]);
+        assert!(listed("\"ancient phrase\"").await.iter().any(|r| r.id == sid));
         let terms = super::Terms::of_query(&cctui_query::parse("ancient"));
         let snippets =
-            super::fetch_snippets(&pool, std::slice::from_ref(&sid), &terms, gap).await.unwrap();
+            super::fetch_snippets(&pool, std::slice::from_ref(&sid), &terms).await.unwrap();
         assert_eq!(snippets.len(), 1, "{snippets:?}");
-        assert!(snippets[0].1.contains("ancient unchunked phrase"), "{snippets:?}");
-        assert_eq!(snippets[0].2, old);
+        assert_eq!(snippets[0].2, id);
 
         sqlx::query("DELETE FROM sessions WHERE id = $1").bind(&sid).execute(&pool).await.unwrap();
     }
@@ -6983,7 +6820,7 @@ mod tests {
                 let (pool, sid) = (pool.clone(), sid.clone());
                 async move {
                     let mut q = sqlx::query_as::<_, super::ConvSearchRow>(sqlx::AssertSqlSafe(
-                        super::conv_search_sql(patterns.len(), None),
+                        super::conv_search_sql(patterns.len()),
                     ))
                     .bind(&sid);
                     for p in &patterns {
@@ -7945,7 +7782,7 @@ mod tests {
 
     #[test]
     fn snippet_sql_returns_one_row_per_session() {
-        let sql = snippet_sql(1, None);
+        let sql = snippet_sql(1);
         assert!(sql.contains("CROSS JOIN LATERAL"), "{sql}");
         assert!(sql.contains("ORDER BY c.event_id DESC LIMIT 50"), "ranks a bounded set: {sql}");
         assert!(sql.contains("plainto_tsquery('simple', $3)"), "{sql}");
@@ -7957,7 +7794,7 @@ mod tests {
 
     #[test]
     fn snippet_sql_binds_every_pattern_then_the_rank_terms() {
-        let sql = snippet_sql(3, None);
+        let sql = snippet_sql(3);
         for i in 2..=4 {
             assert!(sql.contains(&format!("c.body ILIKE ${i}")), "{sql}");
         }
@@ -7970,7 +7807,7 @@ mod tests {
 
     #[test]
     fn snippet_sql_ranks_by_distinct_terms_before_ts_rank() {
-        let sql = snippet_sql(2, None);
+        let sql = snippet_sql(2);
         let order = sql.find("ORDER BY ((m.body ILIKE $2 AND m.body ~* $5)::int").expect(&sql);
         assert!(sql[order..].contains("+ (m.body ILIKE $3 AND m.body ~* $6)::int) DESC"), "{sql}");
         assert!(order < sql.find("ts_rank(").unwrap(), "{sql}");
@@ -7980,7 +7817,7 @@ mod tests {
             ),
             "a chunk holding every term is always a candidate: {sql}"
         );
-        assert!(!snippet_sql(1, None).contains("LIMIT 1) UNION"), "one term needs no extra branch");
+        assert!(!snippet_sql(1).contains("LIMIT 1) UNION"), "one term needs no extra branch");
     }
 
     #[test]

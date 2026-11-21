@@ -251,7 +251,7 @@ async fn ledger(pool: &PgPool) -> Vec<(String, i64, Vec<u8>, String)> {
     .unwrap()
 }
 
-/// A session and one transcript row as ingest stores it with search off.
+/// A session and one transcript row.
 async fn ingest_transcript(pool: &PgPool, text: &str) -> (String, i64) {
     let (uid, machine) = (Uuid::new_v4(), Uuid::new_v4());
     sqlx::query("INSERT INTO users (id,name,key_hash) VALUES ($1,$2,$3)")
@@ -279,8 +279,8 @@ async fn ingest_transcript(pool: &PgPool, text: &str) -> (String, i64) {
     .execute(pool)
     .await
     .unwrap();
-    let id: i64 = sqlx::query_scalar("INSERT INTO stream_events (session_id,event_type,payload,search_text) \
-        VALUES ($1,'message',jsonb_build_object('role','assistant','text',$2::text),'') RETURNING id")
+    let id: i64 = sqlx::query_scalar("INSERT INTO stream_events (session_id,event_type,payload) \
+        VALUES ($1,'message',jsonb_build_object('role','assistant','text',$2::text)) RETURNING id")
         .bind(&sid).bind(text)
         .fetch_one(pool).await.unwrap();
     (sid, id)
@@ -330,8 +330,8 @@ async fn switching_search_on_over_a_searchless_database_finds_its_history() {
         migrate(&pool, true).await.unwrap();
         let on: Value = serde_json::json!({
             "extensions": ["btree_gin", "pg_trgm"],
-            "indexes": ["idx_search_chunks_session_body_trgm", "idx_stream_events_session_search_trgm"],
-            "stream": [1],
+            "indexes": ["idx_search_chunks_session_body_trgm"],
+            "stream": [1, 2],
         });
         assert_eq!(search_objects(&pool).await, on);
 
@@ -373,8 +373,20 @@ async fn current_without_search_step(pool: &PgPool, legacy: bool) {
     schema::install_package(&mut conn, "workspace", workspace, legacy).await.unwrap();
 }
 
+const SEARCH_TEXT_GIN: &str = "idx_stream_events_session_search_trgm";
+
+/// A [`catalog`] or [`schema_shape`] without the index the search step retires.
+fn without_search_text_gin(mut v: Value) -> Value {
+    for key in ["relations", "indexes"] {
+        if let Some(rows) = v.get_mut(key).and_then(Value::as_array_mut) {
+            rows.retain(|r| !r.to_string().contains(SEARCH_TEXT_GIN));
+        }
+    }
+    v
+}
+
 #[tokio::test]
-async fn the_search_step_changes_nothing_in_a_current_database() {
+async fn the_search_step_only_retires_the_search_text_index_in_a_current_database() {
     for legacy in [true, false] {
         let name = if legacy { "search_step_legacy_full" } else { "search_step_core" };
         with_isolated_database(name, |pool| async move {
@@ -382,6 +394,8 @@ async fn the_search_step_changes_nothing_in_a_current_database() {
             ingest_transcript(&pool, "kept").await;
             let (before, shape, history) =
                 (catalog(&pool).await, schema_shape(&pool).await, ledger(&pool).await);
+            assert!(before.to_string().contains(SEARCH_TEXT_GIN), "legacy={legacy}");
+            let (before, shape) = (without_search_text_gin(before), without_search_text_gin(shape));
 
             migrate(&pool, true).await.unwrap();
             assert_eq!(catalog(&pool).await, before, "legacy={legacy}");
@@ -389,7 +403,7 @@ async fn the_search_step_changes_nothing_in_a_current_database() {
             let mut after = ledger(&pool).await;
             let step: Vec<i64> =
                 after.iter().filter(|r| r.0 == "workspace_search").map(|r| r.1).collect();
-            assert_eq!(step, [1], "legacy={legacy}");
+            assert_eq!(step, [1, 2], "legacy={legacy}");
             after.retain(|r| r.0 != "workspace_search");
             assert_eq!(after, history, "legacy={legacy}");
 
