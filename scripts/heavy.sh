@@ -5,7 +5,7 @@
 #   CCTUI_HEAVY_VITEST_WORKERS  vitest --maxWorkers (default: CCTUI_HEAVY_JOBS)
 #   CCTUI_HEAVY_LOCK            lock file
 # In CI only the lock applies. Inside another heavy job (CCTUI_HEAVY=1) the
-# command runs directly.
+# command runs directly. svelte-check never touches cargo, so it skips the lock.
 set -euo pipefail
 
 if [ "$#" -eq 0 ]; then
@@ -46,7 +46,10 @@ fi
 if [ -n "${CCTUI_HEAVY:-}" ]; then
   exec "${cmd[@]}"
 fi
-export CCTUI_HEAVY=1
+
+locked=1
+[ "${1##*/}" = svelte-check ] && locked=""
+[ -z "$locked" ] || export CCTUI_HEAVY=1
 
 if [ -n "${XDG_RUNTIME_DIR:-}" ]; then
   lock="${CCTUI_HEAVY_LOCK:-${XDG_RUNTIME_DIR%/}/cctui-heavy.lock}"
@@ -56,7 +59,9 @@ else
 fi
 holder="$lock.holder"
 
-if command -v flock >/dev/null 2>&1; then
+if [ -z "$locked" ]; then
+  true
+elif command -v flock >/dev/null 2>&1; then
   exec 9>>"$lock"
   if ! flock -n 9; then
     who="$(cat "$holder" 2>/dev/null || true)"

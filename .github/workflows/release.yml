@@ -345,9 +345,9 @@ jobs:
             dist/cctui-darwin-arm64
             dist/cctui-daemon-darwin-arm64
 
-  # cctui-server links the distro OpenSSL (webauthn-rs), so it is not a musl
-  # build. The runner's glibc must not be newer than the trixie-slim runtime
-  # of deploy/Dockerfile (2.41); the build script enforces it.
+  # cctui-server is a glibc build: the runner's glibc must not be newer than
+  # the trixie-slim runtime of deploy/Dockerfile (2.41); the build script
+  # enforces it.
   build-server:
     needs: [meta, ci-bins]
     if: needs.meta.outputs.rust == 'true' && needs.ci-bins.outputs.found != 'true'
@@ -502,7 +502,7 @@ jobs:
           build-args: |
             CLIENT_VERSION=${{ needs.meta.outputs.version }}
           cache-from: type=gha,scope=cctui-ui
-          cache-to: type=gha,mode=max,scope=cctui-ui
+          cache-to: type=gha,mode=min,scope=cctui-ui
           tags: ghcr.io/dorskfr/cctui-ui
           outputs: type=image,push-by-digest=true,name-canonical=true,push=true
       - name: Record digest
@@ -591,7 +591,7 @@ jobs:
           build-args: |
             CCTUI_GIT_HASH=${{ needs.meta.outputs.sha }}
           cache-from: type=gha,scope=${{ matrix.image }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.image }}
+          cache-to: type=gha,mode=min,scope=${{ matrix.image }}
           tags: ${{ env.IMAGE }}
           outputs: type=image,push-by-digest=true,name-canonical=true,push=true
 

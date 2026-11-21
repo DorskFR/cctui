@@ -61,6 +61,8 @@ manifest 0.1.0-beta.1 1.0.0
 lock 0.1.0-beta.1 1.0.0
 write crates/cctui-a/src/lib.rs 'pub fn a() {}'
 write webui/src/app.ts 'export const a = 1;'
+write webui/e2e/tiles-docks.spec.ts 'test();'
+write webui/e2e/sessions-zz-probe.spec.ts 'test();'
 npm_lock 0.1.0-beta.1 1.0.0
 git add -A
 git commit -qm base
@@ -117,6 +119,13 @@ ui_nginx() { write webui/nginx.conf 'server {}'; }
 worker_base() { write deploy/worker.Dockerfile 'FROM scratch'; }
 worker_sample() { write deploy/examples/worker-agents/Dockerfile 'FROM scratch'; }
 harness_check() { write scripts/check-worker-image-harness.sh 'exit 0'; }
+e2e_spec() { write webui/e2e/tiles-docks.spec.ts 'test(1);'; }
+e2e_config() { write webui/playwright.config.ts 'export default {};'; }
+tile_src() { write webui/src/lib/components/Tiles/DockBar.svelte '<div></div>'; }
+tile_unit_test() { write webui/src/lib/components/Tiles/dock.test.ts 'test();'; }
+probe_area_src() { write webui/src/lib/sessions/list.ts 'export {};'; }
+session_binding() { write webui/src/lib/bindings/TileState.ts 'export type T = 1;'; }
+affected_script() { write scripts/affected-crates.sh 'exit 0'; }
 
 change "a version-only bump with a webui change is webui-only" \
   rust=false webui=true deps=false -- bump_and_ui
@@ -153,9 +162,43 @@ change "the agents sample builds itself" worker=true deploy=true -- worker_sampl
 change "the harness check builds the agents sample" worker=true deploy=false -- harness_check
 change "another Dockerfile skips the agents sample" worker=false -- deploy_file
 change "a crate change skips the agents sample" worker=false -- rust_src
+change "a spec change runs e2e" e2e=true webui=true -- e2e_spec
+change "the playwright config runs e2e" e2e=true -- e2e_config
+change "a source file in a spec's area runs e2e" e2e=true -- tile_src
+change "a unit test in a spec's area skips e2e" e2e=false webui=true -- tile_unit_test
+change "a probe spec names no area" e2e=false webui=true -- probe_area_src
+change "a regenerated binding skips e2e" e2e=false -- session_binding
+change "a source file outside every spec area skips e2e" e2e=false webui=true -- ui_src
+change "a crate change skips e2e" e2e=false -- rust_src
+change "a webui lockfile change runs e2e" e2e=true -- lockfile
+change "a version-only webui lockfile bump skips e2e" e2e=false -- npm_bump
+change "the crate scoping script reruns everything" ci=true -- affected_script
+
+files_case() {
+  local name="$1" expected="$2"; shift 2
+  git checkout -q --detach "$base"
+  "$@"
+  git add -A
+  git commit -qm change --allow-empty
+  local got
+  got="$(bash "$script" --rust-files "$base" HEAD)"
+  if [ "$got" = "$expected" ]; then
+    echo "ok   — $name"
+  else
+    echo "FAIL — $name"
+    diff <(echo "$expected") <(echo "$got") | sed 's/^/       /' || true
+    failures=$((failures + 1))
+  fi
+}
+files_case "--rust-files drops version-only manifest moves and webui paths" "" bump_and_ui
+files_case "--rust-files keeps a dependency bump next to a version-only manifest" "Cargo.lock" bump_and_dep_lock
+files_case "--rust-files keeps crate sources" "crates/cctui-a/src/lib.rs" rust_src
+files_case "--rust-files keeps non-crate Rust inputs" "keys/release.minisign.pub" release_key
+files_case "--rust-files keeps committed bindings" "webui/src/lib/bindings/A.ts" bindings
+files_case "--rust-files keeps journey specs" "docs/journeys/a/spec.md" journeys
 
 out="$(bash "$script" --all)"
-if [ "$(grep -c '=true$' <<<"$out")" -eq 7 ]; then
+if [ "$(grep -c '=true$' <<<"$out")" -eq 8 ]; then
   echo "ok   — --all turns every area on"
 else
   echo "FAIL — --all turns every area on"
