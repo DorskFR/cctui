@@ -8,7 +8,7 @@ use crate::AwsCredentials;
 use crate::sigv4::{self, Request, Scope, UNSIGNED_PAYLOAD};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
-const DEFAULT_TIMEOUT: Duration = Duration::from_secs(60);
+const DEFAULT_TIMEOUT: Duration = Duration::from_mins(1);
 const MAX_KEY_BYTES: usize = 1024;
 
 pub struct S3Client {
@@ -193,10 +193,10 @@ fn transport(op: &str, key: &str, e: reqwest::Error) -> anyhow::Error {
 async fn failure(resp: reqwest::Response, op: &str, key: &str) -> anyhow::Error {
     let status = resp.status();
     let body = resp.text().await.unwrap_or_default();
-    match xml_code(&body) {
-        Some(code) => anyhow::anyhow!("s3 {op} {key}: {status} {code}"),
-        None => anyhow::anyhow!("s3 {op} {key}: {status}"),
-    }
+    xml_code(&body).map_or_else(
+        || anyhow::anyhow!("s3 {op} {key}: {status}"),
+        |code| anyhow::anyhow!("s3 {op} {key}: {status} {code}"),
+    )
 }
 
 fn xml_code(xml: &str) -> Option<&str> {

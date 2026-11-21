@@ -156,12 +156,8 @@ pub async fn fetch_session_blob_with(
     .bind(session_id)
     .fetch_optional(pool)
     .await?;
-    match row {
-        Some((media_type, bytes, external, size)) => {
-            Ok(Some((media_type, resolve(store, hash, bytes, external, size).await?)))
-        }
-        None => Ok(None),
-    }
+    let Some((media_type, bytes, external, size)) = row else { return Ok(None) };
+    Ok(Some((media_type, resolve(store, hash, bytes, external, size).await?)))
 }
 
 async fn resolve(
@@ -192,12 +188,8 @@ pub async fn read_blob_with(
             .bind(hash)
             .fetch_optional(conn)
             .await?;
-    match row {
-        Some((bytes, external, size)) => {
-            Ok(Some(resolve(store, hash, bytes, external, size).await?))
-        }
-        None => Ok(None),
-    }
+    let Some((bytes, external, size)) = row else { return Ok(None) };
+    Ok(Some(resolve(store, hash, bytes, external, size).await?))
 }
 
 pub async fn get_blob(

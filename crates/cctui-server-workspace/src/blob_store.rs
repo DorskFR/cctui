@@ -164,10 +164,13 @@ impl BlobStore {
         }
         let result = match self {
             Self::Postgres => Ok(()),
-            Self::File(root) => match tokio::fs::remove_file(root.join(hash)).await {
-                Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(anyhow::Error::new(e)),
-                _ => Ok(()),
-            },
+            Self::File(root) => tokio::fs::remove_file(root.join(hash)).await.or_else(|e| {
+                if e.kind() == std::io::ErrorKind::NotFound {
+                    Ok(())
+                } else {
+                    Err(anyhow::Error::new(e))
+                }
+            }),
             Self::S3 { client, prefix } => client.delete_object(&format!("{prefix}{hash}")).await,
         };
         if let Err(e) = result {
@@ -183,13 +186,9 @@ fn load() -> Result<BlobStore, String> {
 }
 
 pub fn init() -> anyhow::Result<()> {
-    match STORE.get_or_init(load) {
-        Ok(store) => {
-            tracing::info!(backend = %store.describe(), "blob store");
-            Ok(())
-        }
-        Err(e) => Err(anyhow::anyhow!("blob store: {e}")),
-    }
+    let store = STORE.get_or_init(load).as_ref().map_err(|e| anyhow::anyhow!("blob store: {e}"))?;
+    tracing::info!(backend = %store.describe(), "blob store");
+    Ok(())
 }
 
 pub fn current() -> sqlx::Result<&'static BlobStore> {
@@ -199,10 +198,14 @@ pub fn current() -> sqlx::Result<&'static BlobStore> {
 /// Call after the transaction that deleted the row committed. A row stored
 /// again since then keeps its bytes.
 pub async fn delete_unreferenced(pool: &sqlx::PgPool, hash: &str) {
-    match current() {
-        Ok(store) => delete_unreferenced_with(pool, store, hash).await,
-        Err(e) => tracing::warn!(hash, "external blob delete skipped: {e}"),
-    }
+    let store = match current() {
+        Ok(store) => store,
+        Err(e) => {
+            tracing::warn!(hash, "external blob delete skipped: {e}");
+            return;
+        }
+    };
+    delete_unreferenced_with(pool, store, hash).await;
 }
 
 pub async fn delete_unreferenced_with(pool: &sqlx::PgPool, store: &BlobStore, hash: &str) {
