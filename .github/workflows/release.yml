@@ -330,6 +330,12 @@ jobs:
           SQLX_OFFLINE: "true"
         run: bash scripts/release-build-bins.sh darwin arm64 aarch64-apple-darwin
 
+      # Changing these UUIDs revokes every Mac's Local Network grant.
+      - name: Pin Mach-O UUIDs
+        run: |
+          bash scripts/pin-macho-uuid.sh dist/cctui-daemon-darwin-arm64 9C5902FD-F85D-30FC-B563-56FC272C7747
+          bash scripts/pin-macho-uuid.sh dist/cctui-darwin-arm64 6A59CA25-7779-4AF4-A7FA-A2D19FCC6BCE
+
       # Unsigned arm64 macOS binaries are SIGKILLed at exec; don't rely on the
       # linker's implicit ad-hoc signature.
       - name: Ad-hoc codesign
