@@ -565,8 +565,7 @@ mod tests {
      ) \
      SELECT src.ord, ins.id FROM ins JOIN src USING (id)";
 
-    const PREVIOUS_SESSION_ENDED: &str =
-        "INSERT INTO stream_events (session_id, event_type, payload) \
+    const PREVIOUS_SESSION_ENDED: &str = "INSERT INTO stream_events (session_id, event_type, payload) \
      SELECT $1, 'session_ended', $2 WHERE EXISTS ( \
          SELECT 1 FROM sessions WHERE id = $1 AND machine_uuid = $3 AND user_id = $4) \
      ON CONFLICT (session_id, event_type, content_hash, \
