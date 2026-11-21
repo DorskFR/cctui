@@ -59,14 +59,7 @@ impl S3Client {
             .timeout(timeout)
             .redirect(reqwest::redirect::Policy::none())
             .build()?;
-        Ok(Self {
-            http,
-            origin,
-            host,
-            bucket: bucket.to_owned(),
-            region: region.to_owned(),
-            creds,
-        })
+        Ok(Self { http, origin, host, bucket: bucket.to_owned(), region: region.to_owned(), creds })
     }
 
     pub async fn put_object(
@@ -157,10 +150,7 @@ impl S3Client {
 fn parse_endpoint(endpoint: &str) -> anyhow::Result<(String, String)> {
     let url = reqwest::Url::parse(endpoint.trim())
         .map_err(|e| anyhow::anyhow!("S3 endpoint is not a URL: {e}"))?;
-    anyhow::ensure!(
-        matches!(url.scheme(), "http" | "https"),
-        "S3 endpoint must use http or https"
-    );
+    anyhow::ensure!(matches!(url.scheme(), "http" | "https"), "S3 endpoint must use http or https");
     anyhow::ensure!(
         url.username().is_empty() && url.password().is_none(),
         "S3 endpoint must not carry credentials"
@@ -434,13 +424,9 @@ mod tests {
             parse_endpoint("https://s3.example.com:443/").unwrap(),
             ("https://s3.example.com".to_owned(), "s3.example.com".to_owned())
         );
-        for bad in [
-            "versitygw:7070",
-            "ftp://h/",
-            "http://user:pass@h/",
-            "http://h/base",
-            "http://h/?x=1",
-        ] {
+        for bad in
+            ["versitygw:7070", "ftp://h/", "http://user:pass@h/", "http://h/base", "http://h/?x=1"]
+        {
             assert!(parse_endpoint(bad).is_err(), "{bad}");
         }
         let creds = AwsCredentials::new(KEY_ID, SECRET);

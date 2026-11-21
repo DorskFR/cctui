@@ -279,10 +279,15 @@ async fn ingest_transcript(pool: &PgPool, text: &str) -> (String, i64) {
     .execute(pool)
     .await
     .unwrap();
-    let id: i64 = sqlx::query_scalar("INSERT INTO stream_events (session_id,event_type,payload) \
-        VALUES ($1,'message',jsonb_build_object('role','assistant','text',$2::text)) RETURNING id")
-        .bind(&sid).bind(text)
-        .fetch_one(pool).await.unwrap();
+    let id: i64 = sqlx::query_scalar(
+        "INSERT INTO stream_events (session_id,event_type,payload) \
+        VALUES ($1,'message',jsonb_build_object('role','assistant','text',$2::text)) RETURNING id",
+    )
+    .bind(&sid)
+    .bind(text)
+    .fetch_one(pool)
+    .await
+    .unwrap();
     (sid, id)
 }
 
@@ -335,7 +340,8 @@ async fn switching_search_on_over_a_searchless_database_finds_its_history() {
         });
         assert_eq!(search_objects(&pool).await, on);
 
-        let mut walk = crate::search_index::Backfill::without_lag(crate::search_index::BACKFILL, 50);
+        let mut walk =
+            crate::search_index::Backfill::without_lag(crate::search_index::BACKFILL, 50);
         let mut steps = 0;
         while walk.step(&pool).await.unwrap() > 0 {
             steps += 1;
@@ -343,8 +349,12 @@ async fn switching_search_on_over_a_searchless_database_finds_its_history() {
         }
         let found: Vec<i64> = sqlx::query_scalar(
             "SELECT DISTINCT event_id FROM search_chunks \
-             WHERE session_id=$1 AND body ILIKE '%phrase from searchless history%'")
-            .bind(&sid).fetch_all(&pool).await.unwrap();
+             WHERE session_id=$1 AND body ILIKE '%phrase from searchless history%'",
+        )
+        .bind(&sid)
+        .fetch_all(&pool)
+        .await
+        .unwrap();
         assert_eq!(found, [id]);
 
         let before = catalog(&pool).await;
