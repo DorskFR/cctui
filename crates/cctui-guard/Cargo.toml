@@ -6,6 +6,7 @@ license.workspace = true
 authors.workspace = true
 
 [lib]
+doctest = false
 name = "cctui_guard"
 path = "src/lib.rs"
 

@@ -5,13 +5,12 @@ edition.workspace = true
 license.workspace = true
 authors.workspace = true
 
+[lib]
+doctest = false
+
 [lints]
 workspace = true
-
-[features]
-ts = ["dep:ts-rs"]
 
 [dependencies]
 cctui-proto.workspace = true
 serde.workspace = true
-ts-rs = { workspace = true, optional = true }
