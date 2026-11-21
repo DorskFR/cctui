@@ -13,8 +13,7 @@ use sqlx::PgConnection;
 /// The workspace baseline corresponding to legacy schema 191.
 pub const BOOTSTRAP: &str = include_str!("../schema/0001_workspace.sql");
 
-mod search;
-pub use search::{SEARCH, SEARCH_PACKAGE};
+pub use cctui_server_search::schema::{SEARCH, SEARCH_PACKAGE};
 
 const SEARCH_BLOCKS: [&str; 4] = [
     "-- EXTENSION: btree_gin",

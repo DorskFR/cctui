@@ -1145,6 +1145,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "cctui-server-search"
+version = "0.32.0-beta.20"
+dependencies = [
+ "cctui-server-kernel",
+ "regex",
+ "serde_json",
+ "sqlx",
+ "tokio",
+ "tracing",
+ "unicode-normalization",
+ "uuid",
+]
+
+[[package]]
 name = "cctui-server-workspace"
 version = "0.32.0-beta.20"
 dependencies = [
@@ -1161,6 +1175,7 @@ dependencies = [
  "cctui-secrets",
  "cctui-server-core",
  "cctui-server-kernel",
+ "cctui-server-search",
  "cctui-telemetry",
  "chrono",
  "dashmap",
@@ -1195,7 +1210,6 @@ dependencies = [
  "tracing",
  "tracing-opentelemetry",
  "tracing-subscriber",
- "unicode-normalization",
  "uuid",
  "webauthn-rs",
  "webauthn-rs-proto",

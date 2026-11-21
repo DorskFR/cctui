@@ -54,7 +54,8 @@ See [features](features.md) for the file format and what each feature carries.
 
 The schema is split into packages, each a forward-only stream of numbered SQL
 files under `crates/<package>/schema/`, registered in that crate's `schema.rs`:
-`core` in `cctui-server-core` and `workspace` in `cctui-server-workspace`, run by
+`core` in `cctui-server-core`, `workspace` in `cctui-server-workspace` and
+`workspace_search` in `cctui-server-search`, run by
 the shared runner in `cctui-server-kernel`. The
 legacy `migrations/` stream is frozen at 191; `scripts/check-migrations.sh`
 rejects collisions.

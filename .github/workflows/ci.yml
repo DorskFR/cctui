@@ -218,6 +218,10 @@ jobs:
         if: env.WARM_ONLY != 'true' && contains(format(' {0} ', needs.changes.outputs.crates), ' cctui-server-kernel ')
         run: cargo check -p cctui-server-kernel --all-targets --locked
 
+      - name: Search builds on the kernel alone
+        if: env.WARM_ONLY != 'true' && contains(format(' {0} ', needs.changes.outputs.crates), ' cctui-server-search ')
+        run: cargo check -p cctui-server-search --all-targets --locked
+
   test:
     name: cargo test
     needs: changes

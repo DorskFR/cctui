@@ -1,6 +1,7 @@
 //! Daemon events are chunked on ingest; every other row, history included, is
 //! reached by the backfill, which `CCTUI_SEARCH_BACKFILL=0` pauses in place.
 
+pub mod schema;
 pub mod text;
 
 use std::collections::VecDeque;
@@ -39,18 +40,20 @@ pub struct Chunked {
 /// Only user and assistant messages and thinking are indexed.
 #[must_use]
 pub fn chunk_event(adapter_id: &str, event_type: &str, payload: Value) -> Vec<String> {
-    crate::normalize::for_client(adapter_id, event_type, payload).filter(is_searchable).map_or_else(
-        Vec::new,
-        |client| {
+    cctui_server_kernel::normalize::for_client(adapter_id, event_type, payload)
+        .filter(is_searchable)
+        .map_or_else(Vec::new, |client| {
             let text = text::client_text(&client);
             text::chunks(&text).into_iter().map(str::to_owned).collect()
-        },
-    )
+        })
 }
 
 fn is_searchable(client: &Value) -> bool {
     matches!(client.get("kind").and_then(Value::as_str), None | Some("thinking"))
-        && matches!(crate::normalize::client_category(client).0, "user" | "assistant" | "thinking")
+        && matches!(
+            cctui_server_kernel::normalize::client_category(client).0,
+            "user" | "assistant" | "thinking"
+        )
 }
 
 /// Insert chunks, skipping any already present and any whose event is gone.
@@ -177,6 +180,8 @@ pub async fn reindex(pool: &PgPool, ids: &[i64]) -> Result<(), sqlx::Error> {
     tx.commit().await
 }
 
+/// Backfill settings, read from the environment.
+///
 /// `CCTUI_SEARCH_BACKFILL` (on unless `0`/`false`/`off`/`no`),
 /// `CCTUI_SEARCH_BACKFILL_BATCH` (events per batch, default 50),
 /// `CCTUI_SEARCH_BACKFILL_PAUSE_MS` (sleep between batches, default 250) and
@@ -275,7 +280,7 @@ impl Backfill {
         }
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     #[must_use]
     pub fn without_lag(name: &str, batch: i64) -> Self {
         Self { horizon: Horizon::new(Duration::ZERO), ..Self::new(name, batch) }
@@ -511,7 +516,7 @@ mod tests {
     }
 
     async fn seeded(name: &str) -> Option<(PgPool, String)> {
-        let url = crate::routes::gateway::test_db_url(name)?;
+        let url = cctui_server_kernel::test_support::db_url(name)?;
         let pool = sqlx::postgres::PgPoolOptions::new()
             .max_connections(3)
             .connect(&url)

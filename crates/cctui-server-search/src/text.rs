@@ -1,6 +1,7 @@
-//! [`markdown_text`] ports `renderMarkdown` (`webui/src/lib/markdown.ts`) to
-//! its visible text and [`fold`] twins `foldSearchText` (`webui/src/lib/search.ts`):
-//! keep them in step, `fixtures/parity/searchText.json` replays both.
+//! [`markdown_text`] ports `renderMarkdown` (`webui/src/lib/markdown.ts`) to its visible text.
+//!
+//! [`fold`] twins `foldSearchText` (`webui/src/lib/search.ts`): keep them in
+//! step, `fixtures/parity/searchText.json` replays both.
 
 use std::sync::LazyLock;
 
@@ -238,7 +239,7 @@ fn tool_result_text(summary: &str) -> String {
     strip_ansi(summary)
 }
 
-/// The raw visible text of a canonical client payload ([`crate::normalize::for_client`]).
+/// The raw visible text of a canonical client payload ([`cctui_server_kernel::normalize::for_client`]).
 fn visible_text(v: &Value) -> String {
     let s = |k: &str| v.get(k).and_then(Value::as_str).unwrap_or_default();
     match s("type") {
@@ -320,8 +321,7 @@ mod tests {
     #[test]
     fn parity_with_the_webui_renderer() {
         let fx: Value =
-            serde_json::from_str(include_str!("../../../../fixtures/parity/searchText.json"))
-                .unwrap();
+            serde_json::from_str(include_str!("../../../fixtures/parity/searchText.json")).unwrap();
         let cases = |k: &str| fx[k].as_array().unwrap().clone();
         for c in cases("markdownText") {
             assert_eq!(rendered(c["md"].as_str().unwrap()), c["out"], "{c}");

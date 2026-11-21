@@ -68,7 +68,6 @@ mod routes;
 mod scheduled_messages;
 mod scheduled_spawns;
 mod sealed_env;
-mod search_index;
 mod session_emoji;
 mod session_plugins;
 mod session_viewers;
@@ -91,6 +90,7 @@ mod webauthn;
 mod webhook;
 mod ws;
 
+use cctui_server_search as search_index;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -1304,6 +1304,7 @@ mod tests {
                 !tracing::enabled!(target: "cctui_server_workspace::routes", tracing::Level::TRACE)
             );
             assert!(tracing::enabled!(target: "cctui_server_kernel::authz", tracing::Level::DEBUG));
+            assert!(tracing::enabled!(target: "cctui_server_search", tracing::Level::DEBUG));
         });
     }
 

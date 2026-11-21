@@ -1,4 +1,4 @@
-use cctui_server_core::schema::Migration;
+use cctui_server_kernel::schema::Migration;
 
 pub const SEARCH_PACKAGE: &str = "workspace_search";
 
