@@ -2585,7 +2585,7 @@ mod tests {
         removed
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn archived_jobs_frame_removes_leaked_jobs_once_per_retry_window() {
         let tmp = tempfile::tempdir().unwrap();
         let jobs = tmp.path().join("jobs");

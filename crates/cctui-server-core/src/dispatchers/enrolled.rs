@@ -437,7 +437,7 @@ mod tests {
     /// A fake dispatcher: register a channel, read the next frame the server
     /// sends, and reply by firing the parked oneshot — exactly what the real WS
     /// read loop does in `routes::dispatcher::process_frame`.
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn dispatch_round_trip_succeeds() {
         let bus = bus();
         let id = Uuid::new_v4();
@@ -508,7 +508,7 @@ mod tests {
 
     /// A rolling restart: the dispatcher is absent when the dispatch arrives and
     /// re-enrols inside the hold. The caller must see a success, not an error.
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn dispatch_survives_a_dispatcher_restart_within_the_hold() {
         let bus = bus();
         let id = Uuid::new_v4();
@@ -550,7 +550,7 @@ mod tests {
 
     /// Past the bound the dispatch fails loudly. Nothing was ever sent, so no
     /// dedup key / Job exists for it — the caller is free to retry.
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn dispatch_beyond_the_hold_errors_and_sends_nothing() {
         let bus = bus();
         let id = Uuid::new_v4();
@@ -570,7 +570,7 @@ mod tests {
     /// With every permit taken, a dispatch that would need to hold fails at
     /// once instead of joining the hold. Once a held dispatch ends its permit is
     /// free again, and a dispatcher that is present never needs one.
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn held_dispatches_are_capped() {
         let held = std::sync::Arc::new(Semaphore::new(1));
         let bus = bus();
@@ -658,7 +658,7 @@ mod tests {
         })
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn a_live_worker_answers_deduplicated_with_its_handle_and_queue_position() {
         let bus = bus();
         let id = Uuid::new_v4();
@@ -675,7 +675,7 @@ mod tests {
         assert_eq!(sent.dedup_key.as_deref(), Some("dedup-1"));
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn no_live_worker_an_error_or_another_reply_falls_through() {
         let replies: [fn(Uuid) -> DispatcherFrameUp; 3] = [
             |rid| dedup_reply(rid, None),
@@ -707,7 +707,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn an_unanswered_check_falls_through_within_its_timeout() {
         let bus = bus();
         let id = Uuid::new_v4();
@@ -729,7 +729,7 @@ mod tests {
 
     /// A dispatcher that never announced the check (an older build that would
     /// drop its connection on the unknown frame) is never sent one.
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn a_dispatcher_without_the_feature_is_never_asked() {
         let bus = bus();
         let id = Uuid::new_v4();
@@ -760,7 +760,7 @@ mod tests {
         fake.await.unwrap();
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn offline_dispatcher_errors_fast() {
         let bus = bus();
         let request_id = Uuid::new_v4();
@@ -776,7 +776,7 @@ mod tests {
         assert!(matches!(err, DispatchError::Backend(m) if m.contains("offline")));
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn closed_connection_errors_fast() {
         // Register a live channel whose receiver is gone: send fails →
         // "connection closed" (the parked request is cleaned up inside the bus).

@@ -568,7 +568,7 @@ mod tests {
 
     use super::*;
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn auth_retry_returns_promptly_on_shutdown() {
         let shutdown = CancellationToken::new();
         let cancel = shutdown.clone();

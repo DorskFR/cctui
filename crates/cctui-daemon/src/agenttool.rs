@@ -18,7 +18,7 @@ use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use cctui_proto::api::context::{
     ContextMatch, ContextToolEntry, ContextToolRequest, ContextToolResponse,
@@ -35,6 +35,7 @@ use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, DuplexStream, Lines};
 use tokio::net::UnixStream;
 use tokio::sync::oneshot;
+use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
 use crate::childwatch::{Assessment, WatchHandle, snippet};
@@ -846,11 +847,11 @@ async fn follow_child_with(
         let Some(snap) = handle.snapshot() else {
             return FollowResult::Superseded;
         };
-        match snap.assess(now) {
+        match snap.assess(now.into_std()) {
             Assessment::Finished(outcome) => return FollowResult::Finished(outcome),
             Assessment::Running(line) => {
                 let silent = now.duration_since(started) >= silent_grace && !showed_activity(&snap);
-                if silent && !snap.process_alive(now) {
+                if silent && !snap.process_alive(now.into_std()) {
                     return FollowResult::Error(json!({
                         "ok": false,
                         "error": format!(
@@ -2721,7 +2722,7 @@ mod tests {
         assert!(silent["result"].as_str().unwrap().contains("without producing any output"));
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn follow_child_streams_progress_then_final_result() {
         let watch = std::sync::Arc::new(crate::childwatch::ChildWatch::default());
         let handle = watch.register("child-1");
@@ -2755,7 +2756,7 @@ mod tests {
         assert!(frame["result"].as_str().unwrap().starts_with("all done"));
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn a_follow_up_queued_behind_a_peer_turn_returns_its_own_turns_answer() {
         let msg = |role: &str, text: &str, stop: Option<&str>| {
             cctui_proto::adapter::AdapterEvent::Message {
@@ -2791,7 +2792,7 @@ mod tests {
         assert!(frame["result"].as_str().unwrap().starts_with("QA turn done"), "{frame}");
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn follow_waits_out_a_background_task_and_returns_the_self_started_turns_answer() {
         use cctui_proto::adapter::AdapterEvent;
         let msg = |role: &str, text: &str, stop: Option<&str>| AdapterEvent::Message {
@@ -2849,7 +2850,7 @@ mod tests {
         assert!(text.starts_with("build passed: all green"), "{text}");
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn follow_keeps_waiting_through_narration_and_returns_the_real_answer() {
         // acceptance: the live failure — narration was returned while the child
         // kept working. The follow must hold until the model says end_turn.
@@ -2901,7 +2902,7 @@ mod tests {
         assert!(!text.contains("Sanity-checking"), "narration must never be the answer: {text}");
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn follow_returns_the_answer_of_a_child_that_self_reports_blocked() {
         // acceptance: the follow window must not be waited out by a child whose
         // answer ended in a question, which leaves its job state `blocked`.
@@ -2946,7 +2947,7 @@ mod tests {
         assert!(frame["result"].as_str().unwrap().starts_with("which skill did you mean?"));
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn follow_child_times_out_with_a_follow_up_hint() {
         let watch = std::sync::Arc::new(crate::childwatch::ChildWatch::default());
         let handle = watch.register("child-1");
@@ -2975,7 +2976,7 @@ mod tests {
         assert!(out.is_empty(), "proto 1 must never receive progress frames");
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn a_silent_child_fails_fast_instead_of_waiting_out_the_timeout() {
         let watch = std::sync::Arc::new(crate::childwatch::ChildWatch::default());
         let handle = watch.register("child-1");
@@ -3001,7 +3002,7 @@ mod tests {
         assert!(text.contains("died at startup"), "{text}");
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn a_live_hookless_child_with_no_events_is_followed_not_declared_dead() {
         let watch = std::sync::Arc::new(crate::childwatch::ChildWatch::default());
         let handle = watch.register_follow_up("child-1", "run the release");
@@ -3031,7 +3032,7 @@ mod tests {
         assert!(text.contains("NOT A CRASH"), "{text}");
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn transcript_growth_behind_a_pending_follow_up_keeps_the_follow_alive() {
         let watch = std::sync::Arc::new(crate::childwatch::ChildWatch::default());
         let handle = watch.register_follow_up("child-1", "run the release");
@@ -3058,7 +3059,7 @@ mod tests {
         assert!(text.contains("NOT A CRASH"), "{text}");
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn a_child_that_showed_activity_is_never_failed_fast() {
         let watch = std::sync::Arc::new(crate::childwatch::ChildWatch::default());
         let handle = watch.register("child-1");
@@ -3089,7 +3090,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn a_crashed_child_returns_before_the_timeout() {
         let watch = std::sync::Arc::new(crate::childwatch::ChildWatch::default());
         let handle = watch.register("child-1");
@@ -3190,7 +3191,7 @@ mod tests {
             reason: cctui_proto::adapter::EndReason::Completed,
         });
         let snap = handle.snapshot().unwrap();
-        let Assessment::Finished(outcome) = snap.assess(Instant::now()) else {
+        let Assessment::Finished(outcome) = snap.assess(std::time::Instant::now()) else {
             panic!("ended child must be finished");
         };
         assert!(outcome.tail_is_thinking);
@@ -3212,7 +3213,7 @@ mod tests {
             reason: cctui_proto::adapter::EndReason::Completed,
         });
         let snap = handle.snapshot().unwrap();
-        let Assessment::Finished(outcome) = snap.assess(Instant::now()) else {
+        let Assessment::Finished(outcome) = snap.assess(std::time::Instant::now()) else {
             panic!("ended child must be finished");
         };
         assert!(!outcome.tail_is_thinking);
@@ -3233,7 +3234,7 @@ mod tests {
             reason: cctui_proto::adapter::EndReason::Killed,
         });
         let snap = handle.snapshot().unwrap();
-        let Assessment::Finished(outcome) = snap.assess(Instant::now()) else {
+        let Assessment::Finished(outcome) = snap.assess(std::time::Instant::now()) else {
             panic!("killed child must be finished");
         };
         assert!(outcome.error.as_deref().unwrap().contains("killed"));

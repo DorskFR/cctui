@@ -1507,7 +1507,7 @@ mod tests {
         h
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn a_cut_turns_leftovers_never_play_in_the_next_turn() {
         let mut h = cut_a_turn_with_a_new_utterance().await;
         h.signals.send(delta("m:0", "Late del")).await.unwrap();
@@ -1521,7 +1521,7 @@ mod tests {
         assert_eq!(Mock::log(&h.mock.synthesized), vec!["Alpha.", "Fresh."]);
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn a_cut_turn_without_a_turn_end_does_not_silence_the_next_one() {
         let mut h = cut_a_turn_with_a_new_utterance().await;
         h.signals.send(Signal::Text("Leftover.".into())).await.unwrap();
@@ -1532,7 +1532,7 @@ mod tests {
         assert_eq!(Mock::log(&h.mock.synthesized), vec!["Alpha.", "Fresh."]);
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn a_cut_turn_followed_by_a_turn_without_a_prompt_echo_is_heard() {
         let mut h = cut_a_turn_with_a_new_utterance().await;
         h.signals.send(Signal::Text("Leftover.".into())).await.unwrap();
@@ -1580,7 +1580,7 @@ mod tests {
         h
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn a_reply_opening_with_a_short_sentence_is_spoken_in_full_from_awkward_deltas() {
         let mut h = start(Mock::default(), Prefs::default()).await;
         stream_peer_reply(&h, "m:0").await;
@@ -1589,7 +1589,7 @@ mod tests {
         assert_eq!(Mock::log(&h.mock.synthesized), PEER_SPOKEN);
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn a_peer_prompted_reply_after_a_spoken_turn_is_spoken_in_full() {
         let mut h = spoken_turn().await;
         h.signals.send(Signal::TurnStart("peer: anything for me?".into())).await.unwrap();
@@ -1600,7 +1600,7 @@ mod tests {
         assert_eq!(Mock::log(&h.mock.synthesized), expected);
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn a_reply_without_a_prompt_echo_after_a_spoken_turn_is_spoken_in_full() {
         let mut h = spoken_turn().await;
         stream_peer_reply(&h, "m:1").await;
@@ -1610,7 +1610,7 @@ mod tests {
         assert_eq!(Mock::log(&h.mock.synthesized), expected);
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn an_utterance_landing_mid_reply_keeps_the_replys_pending_text() {
         let mock = Mock { transcript: Mutex::new("go".into()), ..Mock::default() };
         let mut h = start(mock, Prefs { barge_in: true, ..Prefs::default() }).await;
@@ -1630,7 +1630,7 @@ mod tests {
         assert_eq!(Mock::log(&h.mock.synthesized), PEER_SPOKEN);
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn an_utterance_landing_while_a_reply_is_spoken_does_not_cut_it() {
         let mock = Mock { transcript: Mutex::new("go".into()), stall: true, ..Mock::default() };
         let mut h = start(mock, Prefs { barge_in: true, ..Prefs::default() }).await;
@@ -1662,7 +1662,7 @@ mod tests {
         h
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn a_skip_silences_the_talked_over_reply_but_not_the_turn_nor_the_next_reply() {
         let mut h = talked_over_reply(true).await;
         h.inbound.send(Inbound::Control(VoiceClientMsg::Skip {})).await.unwrap();
@@ -1675,7 +1675,7 @@ mod tests {
         assert_eq!(Mock::log(&h.mock.interrupts), 0);
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn a_skip_after_the_talked_over_turn_ended_leaves_the_next_reply_alone() {
         let mut h = talked_over_reply(false).await;
         h.signals.send(Signal::TurnEnd).await.unwrap();
@@ -1688,7 +1688,7 @@ mod tests {
         assert_eq!(Mock::log(&h.mock.interrupts), 0);
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn a_barge_in_before_the_prompt_echo_cuts_that_prompts_turn() {
         let mock = Mock { transcript: Mutex::new("go".into()), ..Mock::default() };
         let mut h = start(mock, Prefs { barge_in: true, ..Prefs::default() }).await;
@@ -1708,7 +1708,7 @@ mod tests {
         assert_eq!(Mock::log(&h.mock.synthesized), vec!["Next."]);
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn a_reply_racing_ahead_of_the_send_is_counted_once() {
         let gate = Arc::new(Semaphore::new(0));
         let mock = Mock {
@@ -1734,7 +1734,7 @@ mod tests {
         h.collect_until(|f| *f == Outbound::Audio(Bytes::from_static(b"Next."))).await;
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn a_slow_transcription_does_not_block_signals_or_a_barge_in() {
         let gate = Arc::new(Semaphore::new(0));
         let mock = Mock {
@@ -1755,7 +1755,7 @@ mod tests {
         h.collect_until(is_transcript).await;
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn utterances_are_sent_in_the_order_they_were_spoken() {
         let gate = Arc::new(Semaphore::new(0));
         let mock = Mock { echo: true, stt_gate: Some(gate.clone()), ..Mock::default() };
@@ -1773,7 +1773,7 @@ mod tests {
         assert!(sent[0].ends_with("one") && sent[1].ends_with("two"), "{sent:?}");
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn closing_the_socket_aborts_an_in_flight_transcription() {
         let mock = Mock { stt_gate: Some(Arc::new(Semaphore::new(0))), ..Mock::default() };
         let mut h = start(mock, Prefs::default()).await;
@@ -1792,7 +1792,7 @@ mod tests {
         assert!(Mock::log(&mock.sent).is_empty());
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn an_utterance_is_transcribed_and_sent_in_spoken_style() {
         let mock = Mock { transcript: Mutex::new("what time is it".into()), ..Mock::default() };
         let mut h =
@@ -1816,7 +1816,7 @@ mod tests {
         assert!(sent[0].contains("one to three short sentences"));
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn an_empty_transcript_goes_back_to_listening_without_a_message() {
         let mut h = start(Mock::default(), Prefs::default()).await;
         h.inbound.send(Inbound::Audio(Bytes::from_static(&[0, 0]))).await.unwrap();
@@ -1825,7 +1825,7 @@ mod tests {
         assert!(Mock::log(&h.mock.sent).is_empty());
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn a_reply_is_spoken_sentence_by_sentence_then_listening_resumes() {
         let mut h = start(Mock::default(), Prefs::default()).await;
         h.signals.send(Signal::Text("**Sure.** Here is `one`.\n\n- two".into())).await.unwrap();
@@ -1863,7 +1863,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn a_drained_notice_keeps_speaking_while_a_later_sentence_is_queued() {
         let (out_tx, mut out) = mpsc::channel(64);
         let (notice_tx, _notices) = mpsc::unbounded_channel();
@@ -1893,7 +1893,7 @@ mod tests {
         assert!(!engine.speaking);
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn streamed_deltas_start_speech_early_and_the_final_block_is_not_repeated() {
         let mut h = start(Mock::default(), Prefs::default()).await;
         h.signals.send(delta("m:0", "The first sentence is long enough to sp")).await.unwrap();
@@ -1911,7 +1911,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn a_late_final_block_is_not_spoken_again_over_the_next_blocks_deltas() {
         let mut h = start(Mock::default(), Prefs::default()).await;
         let first = "The first block opens with a long sentence. Its tail";
@@ -1935,7 +1935,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn a_final_block_delivered_again_is_not_spoken_until_the_next_prompt() {
         let mut h = spoken_turn().await;
         h.signals.send(Signal::Text(NOON.into())).await.unwrap();
@@ -1951,7 +1951,7 @@ mod tests {
         assert_eq!(Mock::log(&h.mock.synthesized), vec![NOON, NOON]);
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn a_short_line_said_twice_in_one_turn_is_spoken_twice() {
         let mut h = start(Mock::default(), Prefs::default()).await;
         let done = |seq| Signal::Text(Block { content: "Done.".into(), seq: Some(seq) });
@@ -1966,7 +1966,7 @@ mod tests {
         assert_eq!(Mock::log(&h.mock.synthesized), vec!["Done.", "Done."]);
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn deltas_that_miss_a_blocks_end_speak_only_the_missing_part() {
         let mut h = start(Mock::default(), Prefs::default()).await;
         let streamed = "The reply starts streaming with this sentence. And then";
@@ -1980,7 +1980,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn the_main_requests_gateway_text_is_spoken_before_its_block_and_once() {
         let (mut h, sent) = sent_a_prompt().await;
         let reminded = format!("<system-reminder>r</system-reminder>\n{sent}");
@@ -2004,7 +2004,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn a_claude_code_turn_ends_on_its_first_end_marker_and_the_second_is_harmless() {
         let (mut h, sent) = sent_a_prompt().await;
         h.signals.send(Signal::TurnStart(sent.clone())).await.unwrap();
@@ -2025,7 +2025,7 @@ mod tests {
         assert_eq!(Mock::log(&h.mock.synthesized), vec!["Looking it up.", "It is noon.", "Again."]);
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn each_request_of_a_tool_loop_is_spoken_once() {
         let (mut h, sent) = sent_a_prompt().await;
         h.signals.send(request("r1", &sent)).await.unwrap();
@@ -2049,7 +2049,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn gateway_text_of_an_unclaimed_request_is_never_spoken() {
         let (mut h, _) = sent_a_prompt().await;
         h.signals.send(request("task", "Summarize the repository layout")).await.unwrap();
@@ -2073,7 +2073,7 @@ mod tests {
         h.signals.send(delta("m:0", upto)).await.unwrap();
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn a_short_streamed_reply_then_its_block_is_spoken_once() {
         let mut h = start(Mock::default(), Prefs::default()).await;
         stream_short(&h, " explicitly ask me to post.").await;
@@ -2084,7 +2084,7 @@ mod tests {
         assert_eq!(Mock::log(&h.mock.synthesized), SHORT_SPOKEN);
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn a_turn_end_ahead_of_its_final_block_does_not_speak_it_again() {
         let mut h = start(Mock::default(), Prefs::default()).await;
         stream_short(&h, " explicitly ask me to post.").await;
@@ -2140,7 +2140,7 @@ mod tests {
         assert_eq!(Mock::log(&h.mock.synthesized), vec!["Blue."]);
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn a_block_ahead_of_its_last_delta_is_spoken_once() {
         let mut h = start(Mock::default(), Prefs::default()).await;
         stream_short(&h, " explicitly ask me").await;
@@ -2233,7 +2233,7 @@ mod tests {
         assert!(streamed * 5 < done, "{streamed:?} vs {done:?}");
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn a_failed_synthesis_is_retried_once_before_its_sentence_is_skipped() {
         let mock = Mock { synth_failures: Mutex::new(1), ..Mock::default() };
         let mut h = start(mock, Prefs::default()).await;
@@ -2249,7 +2249,7 @@ mod tests {
         assert_eq!(Mock::log(&h.mock.synthesized), vec!["Kept.", "Next."]);
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn a_block_longer_than_both_queues_is_spoken_to_the_end() {
         let mut h = start(Mock::default(), Prefs::default()).await;
         let block = (1..=200).map(|i| format!("Line {i}.")).collect::<Vec<_>>().join(" ");
@@ -2260,7 +2260,7 @@ mod tests {
         .await;
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn barge_in_cancels_synthesis_and_interrupts_a_running_turn() {
         let mock = Mock { transcript: Mutex::new("go".into()), stall: true, ..Mock::default() };
         let mut h = start(mock, Prefs { barge_in: true, ..Prefs::default() }).await;
@@ -2284,7 +2284,7 @@ mod tests {
         assert_eq!(Mock::log(&h.mock.synthesized), vec!["Alpha."]);
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn barge_in_without_the_pref_only_stops_playback() {
         let mock = Mock { transcript: Mutex::new("go".into()), stall: true, ..Mock::default() };
         let mut h = start(mock, Prefs::default()).await;
@@ -2298,7 +2298,7 @@ mod tests {
         assert_eq!(Mock::log(&h.mock.interrupts), 0);
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn mode_updates_apply_to_later_sentences() {
         let mut h = start(Mock::default(), Prefs::default()).await;
         h.inbound
@@ -2319,7 +2319,7 @@ mod tests {
         assert!(Mock::log(&h.mock.sent)[0].contains("as much detail as needed"));
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn an_out_of_range_speed_keeps_the_previous_one() {
         let mut h = start(Mock::default(), Prefs::default()).await;
         for speed in [1.5, 9.0, f32::NAN] {
@@ -2372,7 +2372,7 @@ mod tests {
         frames
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn a_five_minute_utterance_sent_whole_is_heard_in_chunks_and_sent_once() {
         let mock = Mock { numbered: true, ..Mock::default() };
         let mut h = start(mock, Prefs::default()).await;
@@ -2386,7 +2386,7 @@ mod tests {
         assert!(sent[0].ends_with(&ten_chunks()), "{sent:?}");
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn a_five_minute_utterance_streamed_in_parts_is_sent_once_in_order() {
         let mock = Mock { numbered: true, ..Mock::default() };
         let mut h = start(mock, Prefs::default()).await;
@@ -2404,7 +2404,7 @@ mod tests {
         assert!(sent[0].ends_with(&ten_chunks()), "{sent:?}");
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn streamed_parts_are_transcribed_as_they_arrive_and_joined() {
         let mock = Mock { echo: true, ..Mock::default() };
         let mut h = start(mock, Prefs::default()).await;
@@ -2420,7 +2420,7 @@ mod tests {
         assert!(sent[0].ends_with("one two three"), "{sent:?}");
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn a_streamed_utterance_may_end_without_a_last_part() {
         let mock = Mock { echo: true, ..Mock::default() };
         let mut h = start(mock, Prefs::default()).await;
@@ -2435,7 +2435,7 @@ mod tests {
         assert!(sent[0].ends_with("one"), "{sent:?}");
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn a_failed_chunk_is_retried_before_the_utterance_goes_on() {
         let mock = Mock { echo: true, stt_failures: Mutex::new(1), ..Mock::default() };
         let mut h = start(mock, Prefs::default()).await;
@@ -2446,7 +2446,7 @@ mod tests {
         assert!(Mock::log(&h.mock.sent)[0].ends_with("one two"));
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn a_chunk_that_keeps_failing_is_reported_and_the_rest_is_still_sent() {
         let mock = Mock { echo: true, stt_failures: Mutex::new(3), ..Mock::default() };
         let mut h = start(mock, Prefs::default()).await;
@@ -2460,7 +2460,7 @@ mod tests {
         assert!(sent[0].ends_with("two three"), "{sent:?}");
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn the_model_warms_on_open_and_an_early_utterance_waits_for_it() {
         let gate = Arc::new(Semaphore::new(0));
         let mock = Mock {
@@ -2509,7 +2509,7 @@ mod tests {
         assert!(!h.quiet().await.contains(&state(VoiceState::Warming)), "keepalives stay silent");
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn a_language_pick_rewarms_and_routes_later_utterances() {
         let mut h = start(Mock::default(), Prefs::default()).await;
         let pick = |language: &str| {
@@ -2552,7 +2552,7 @@ mod tests {
         h
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn a_live_utterance_relays_partials_as_parts_arrive_and_is_sent_once() {
         let mut h = start_live(Mock::live()).await;
         h.inbound.send(Inbound::Part(Bytes::from_static(b"one"))).await.unwrap();
@@ -2574,7 +2574,7 @@ mod tests {
         assert_eq!(h.mock.streams_closed.load(Ordering::SeqCst), 1, "closed after its final");
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn live_utterances_each_get_a_stream_and_are_sent_in_order() {
         let mut h = start_live(Mock::live()).await;
         h.inbound.send(Inbound::Part(Bytes::from_static(b"first"))).await.unwrap();
@@ -2587,7 +2587,7 @@ mod tests {
         assert_eq!(h.mock.calls("stream"), 2);
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn a_live_stream_failing_mid_utterance_falls_back_to_batch_for_that_utterance() {
         let mock = Mock { stream_closes: Mutex::new(vec![1013]), ..Mock::live() };
         let mut h = start_live(mock).await;
@@ -2607,7 +2607,7 @@ mod tests {
         assert_eq!(h.mock.calls("hear"), 1, "the second utterance was heard live");
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn a_stream_that_will_not_open_leaves_the_utterance_to_batch() {
         let mock = Mock { stream_open_failures: Mutex::new(1), ..Mock::live() };
         let mut h = start_live(mock).await;
@@ -2619,7 +2619,7 @@ mod tests {
         assert_eq!(h.mock.calls("stream"), 1, "opened once per utterance");
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn a_refused_stream_asks_for_big_parts_until_the_language_changes() {
         let mock = Mock { stream_closes: Mutex::new(vec![1008]), ..Mock::live() };
         let mut h = start_live(mock).await;
@@ -2644,7 +2644,7 @@ mod tests {
         assert_eq!(h.mock.calls("stream"), 2);
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn closing_the_socket_discards_a_live_utterance() {
         let mut h = start_live(Mock::live()).await;
         h.inbound.send(Inbound::Part(Bytes::from_static(b"one"))).await.unwrap();
@@ -2660,7 +2660,7 @@ mod tests {
         assert!(Mock::log(&mock.sent).is_empty());
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn a_batch_model_never_asks_the_browser_for_small_parts() {
         let mut h = start(Mock { echo: true, ..Mock::default() }, Prefs::default()).await;
         h.inbound.send(Inbound::Audio(Bytes::from_static(b"one"))).await.unwrap();
@@ -2671,7 +2671,7 @@ mod tests {
         assert_eq!(h.mock.calls("stream"), 0);
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn a_batch_model_asks_the_browser_for_the_instance_part_length() {
         let mock = Mock { echo: true, min_part_ms: Some(2_000), ..Mock::default() };
         let mut h = start_cold(mock, Prefs::default());
@@ -2684,7 +2684,7 @@ mod tests {
         assert!(!frames.contains(&part), "told once: {frames:?}");
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn a_refused_stream_keeps_the_instance_part_length() {
         let mock = Mock {
             stream_closes: Mutex::new(vec![1008]),
