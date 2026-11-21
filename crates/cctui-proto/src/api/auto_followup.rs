@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-#[cfg(feature = "ts")]
+#[cfg(test)]
 use ts_rs::TS;
 
 pub const DEFAULT_THRESHOLD_TOKENS: u64 = 150_000;
@@ -8,7 +8,7 @@ pub const CLAUDE_1M_WINDOW: u64 = 1_000_000;
 pub const CODEX_WINDOW: u64 = 272_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 #[serde(rename_all = "snake_case")]
 pub enum ThresholdUnit {
     Tokens,
@@ -17,7 +17,7 @@ pub enum ThresholdUnit {
 
 /// `percent`: 1 to 100 of the context window; `tokens`: above 0.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct AutoFollowupThreshold {
     pub unit: ThresholdUnit,
     pub value: u64,
@@ -50,7 +50,7 @@ impl Default for AutoFollowupThreshold {
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct AutoFollowupSetting {
     pub enabled: bool,
     pub threshold: AutoFollowupThreshold,
@@ -75,7 +75,7 @@ impl AutoFollowupSetting {
 
 /// `null` fields inherit.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct AutoFollowupOverride {
     #[serde(default)]
     pub enabled: Option<bool>,
@@ -100,7 +100,7 @@ impl AutoFollowupOverride {
 
 /// `never` is "Send here".
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 #[serde(rename_all = "snake_case")]
 pub enum SendFollowup {
     #[default]

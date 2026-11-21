@@ -5,13 +5,13 @@ pub const DEFAULT_STEP_PCT: u32 = 10;
 /// Per-(account, provider) rate limits. Both optional; `None` ⇒ that dimension is
 /// unlimited. Persisted as `{ "rpm": int?, "tpm": int? }` on the provider row.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export))]
 pub struct RateLimits {
     /// Max requests admitted per rolling 60s window.
-    #[cfg_attr(feature = "ts", ts(type = "number | null", optional))]
+    #[cfg_attr(test, ts(type = "number | null", optional))]
     pub rpm: Option<u32>,
     /// Max tokens counted per rolling 60s window.
-    #[cfg_attr(feature = "ts", ts(type = "number | null", optional))]
+    #[cfg_attr(test, ts(type = "number | null", optional))]
     pub tpm: Option<u64>,
 }
 
@@ -35,7 +35,7 @@ impl RateLimits {
 
 /// `{ "enabled": bool, "step_pct": int }` on the provider row. NULL ⇒ off.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export))]
 pub struct UsageNotices {
     pub enabled: bool,
     pub step_pct: u32,

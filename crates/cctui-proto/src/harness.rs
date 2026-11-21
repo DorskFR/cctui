@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
-#[cfg(feature = "ts")]
+#[cfg(test)]
 use ts_rs::TS;
 
 pub const HARNESS_CLAUDE_CODE: &str = "claude-code";
@@ -22,7 +22,7 @@ fn default_harnesses() -> Vec<String> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct HarnessUpdatePolicy {
     #[serde(default)]
     pub enabled: bool,
@@ -72,7 +72,7 @@ impl HarnessUpdatePolicy {
 /// CLI version on disk and the version of the long-lived process serving
 /// sessions (`claude daemon`, `codex app-server daemon`).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct HarnessVersion {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cli: Option<String>,
@@ -84,7 +84,7 @@ pub struct HarnessVersion {
 /// `gemini`, …). A daemon from before the map sent two fixed fields; its
 /// `claude_code` key is read as `claude-code`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 #[serde(transparent)]
 pub struct HarnessVersions(pub BTreeMap<String, HarnessVersion>);
 
@@ -122,12 +122,12 @@ impl<'de> Deserialize<'de> for HarnessVersions {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct HarnessOutcome {
     pub harness: String,
     /// `updated a→b`, `up to date`, `failed: …`, `deferred: busy`, `not installed`.
     pub outcome: String,
-    #[cfg_attr(feature = "ts", ts(type = "string"))]
+    #[cfg_attr(test, ts(type = "string"))]
     pub at: chrono::DateTime<chrono::Utc>,
 }
 
@@ -138,7 +138,7 @@ pub struct HarnessOutcome {
 /// bwrap `AppArmor` profile makes every sandboxed command fail. Codex reports the
 /// sandbox as healthy in that state, so cctui probes it itself.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum CodexSandbox {
     /// A sandboxed command ran.
@@ -181,7 +181,7 @@ pub const CODEX_SANDBOX_FIX: &str = "codex's sandbox (bubblewrap) cannot start o
 /// next worker is denied with no output cctui can see. The probe runs after
 /// every such update so the machine card warns before a spawn hangs.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum MachineHealth {
     Ok,
@@ -241,13 +241,13 @@ pub fn version_skew(versions: &HarnessVersions) -> Vec<(&str, &str, &str)> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct AdapterBinary {
     pub bin: String,
     pub config_key: String,
     /// `None`: not found on the daemon's `PATH`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(feature = "ts", ts(optional))]
+    #[cfg_attr(test, ts(optional))]
     pub path: Option<String>,
 }
 
@@ -275,7 +275,7 @@ impl AdapterBinary {
 /// server resends [`crate::ws::DaemonFrameDown::HarnessUpdatePolicy`] only on
 /// a difference, and only to a daemon that can parse it.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct HarnessReport {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub policy: Option<HarnessUpdatePolicy>,

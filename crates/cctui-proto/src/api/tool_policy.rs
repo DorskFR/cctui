@@ -2,7 +2,7 @@
 
 /// The stored, editable form of an account's policy.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export))]
 pub struct ToolPolicy {
     /// Case-insensitive literals.
     #[serde(default)]
@@ -22,7 +22,7 @@ pub struct ToolPolicy {
 /// The account policy page: the gateway policy plus the hook rules every
 /// session the account launches carries.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export))]
 pub struct AccountToolPolicy {
     #[serde(flatten)]
     pub guard: ToolPolicy,

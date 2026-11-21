@@ -1,7 +1,7 @@
 //! `/api/v1/redteam/runs` and `/api/v1/admin/redteam`: red-team run results.
 
 use serde::{Deserialize, Serialize};
-#[cfg(feature = "ts")]
+#[cfg(test)]
 use ts_rs::TS;
 
 pub const REDTEAM_REPORT_SCHEMA: u32 = 1;
@@ -12,7 +12,7 @@ pub const REDTEAM_MAX_REASONS: usize = 32;
 pub const REDTEAM_MAX_TEXT: usize = 512;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 #[serde(rename_all = "lowercase")]
 pub enum RedteamTier {
     T2,
@@ -31,7 +31,7 @@ impl RedteamTier {
 
 /// Probes report `blocked`, `escaped` or `skipped`; runs and cells the others.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 #[serde(rename_all = "snake_case")]
 pub enum RedteamOutcome {
     Contained,
@@ -57,7 +57,7 @@ impl RedteamOutcome {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct RedteamProbe {
     pub id: String,
     pub verdict: RedteamOutcome,
@@ -65,7 +65,7 @@ pub struct RedteamProbe {
 
 /// One matrix cell (T2) or one scenario (T3).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct RedteamCell {
     pub cell: String,
     pub verdict: RedteamOutcome,
@@ -78,7 +78,7 @@ pub struct RedteamCell {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct RedteamRunReport {
     pub schema: u32,
     pub tier: RedteamTier,
@@ -92,10 +92,10 @@ pub struct RedteamRunReport {
     pub model: Option<String>,
     /// Unix seconds.
     #[serde(default)]
-    #[cfg_attr(feature = "ts", ts(type = "number | null"))]
+    #[cfg_attr(test, ts(type = "number | null"))]
     pub started_at: Option<i64>,
     /// Unix seconds.
-    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    #[cfg_attr(test, ts(type = "number"))]
     pub finished_at: i64,
     #[serde(default)]
     pub run_url: Option<String>,
@@ -107,7 +107,7 @@ pub struct RedteamRunReport {
 /// An escaped cell, with the probe that escaped when one did. An empty `cell`
 /// is a run-level escape no cell accounts for.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct RedteamEscape {
     pub cell: String,
     pub probe: Option<String>,
@@ -193,19 +193,19 @@ pub fn is_safe_version(v: &str) -> bool {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct RedteamRunAccepted {
-    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    #[cfg_attr(test, ts(type = "number"))]
     pub id: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct RedteamRun {
-    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    #[cfg_attr(test, ts(type = "number"))]
     pub id: i64,
     /// Unix seconds.
-    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    #[cfg_attr(test, ts(type = "number"))]
     pub received_at: i64,
     pub posted_by: Option<String>,
     pub report: RedteamRunReport,
@@ -214,7 +214,7 @@ pub struct RedteamRun {
 
 /// The latest T2 run and the latest T3 run per lane on one version.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct RedteamVersion {
     pub version: String,
     pub t2: Option<RedteamRun>,
@@ -222,7 +222,7 @@ pub struct RedteamVersion {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct RedteamOverview {
     pub current_version: String,
     /// Most recently reported first.

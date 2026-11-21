@@ -16,7 +16,7 @@ pub const SOURCES: &[(&str, &str, &str)] = &[
 /// no reading yet, or a reading we could not parse.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export, rename = "ProviderIndicator"))]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export, rename = "ProviderIndicator"))]
 pub enum Indicator {
     Unknown,
     None,
@@ -49,7 +49,7 @@ impl Indicator {
 
 /// One component the provider reports as anything but operational.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export))]
 pub struct DegradedComponent {
     pub name: String,
     /// Statuspage component status (`degraded_performance`, `major_outage`, …).
@@ -58,21 +58,21 @@ pub struct DegradedComponent {
 
 /// One unresolved incident, as much of it as a badge can use.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export))]
 pub struct IncidentSummary {
     pub name: String,
     /// `none` | `minor` | `major` | `critical`.
     pub impact: String,
     /// Short public link to the incident, when the page gives one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(feature = "ts", ts(type = "string | null", optional))]
+    #[cfg_attr(test, ts(type = "string | null", optional))]
     pub url: Option<String>,
 }
 
 /// What a client gets for one family. Serializable and cheap to clone: it is
 /// embedded in every usage row.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export))]
 pub struct ProviderStatus {
     /// `anthropic` | `openai`.
     pub family: String,
@@ -86,7 +86,7 @@ pub struct ProviderStatus {
     pub incidents: Vec<IncidentSummary>,
     /// When the poller last got an answer (a 304 counts). `None` ⇒ never.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(feature = "ts", ts(type = "string | null", optional))]
+    #[cfg_attr(test, ts(type = "string | null", optional))]
     pub checked_at: Option<DateTime<Utc>>,
 }
 

@@ -7,7 +7,7 @@ use uuid::Uuid;
 /// When an item applies. Keys are AND-ed, the values of one key are OR-ed, and
 /// an empty key matches anything, so an empty filter matches every launch.
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export))]
 pub struct ContextMatch {
     #[serde(default)]
     pub machines: Vec<String>,
@@ -31,11 +31,11 @@ impl ContextMatch {
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export))]
 pub struct ContextItem {
-    #[cfg_attr(feature = "ts", ts(type = "string"))]
+    #[cfg_attr(test, ts(type = "string"))]
     pub id: Uuid,
-    #[cfg_attr(feature = "ts", ts(type = "string"))]
+    #[cfg_attr(test, ts(type = "string"))]
     pub user_id: Uuid,
     /// `memory`, `prompt` or `rule`.
     pub kind: String,
@@ -60,15 +60,15 @@ pub struct ContextItem {
     pub created_by_session: Option<String>,
     #[serde(default)]
     pub updated_by_session: Option<String>,
-    #[cfg_attr(feature = "ts", ts(type = "string"))]
+    #[cfg_attr(test, ts(type = "string"))]
     pub created_at: DateTime<Utc>,
-    #[cfg_attr(feature = "ts", ts(type = "string"))]
+    #[cfg_attr(test, ts(type = "string"))]
     pub updated_at: DateTime<Utc>,
 }
 
 /// The editable half of an item.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export))]
 pub struct ContextItemSpec {
     pub kind: String,
     pub name: String,
@@ -78,7 +78,7 @@ pub struct ContextItemSpec {
     #[serde(default = "user_scope")]
     pub scope: String,
     #[serde(default)]
-    #[cfg_attr(feature = "ts", ts(type = "string | null", optional))]
+    #[cfg_attr(test, ts(type = "string | null", optional))]
     pub scope_ref: Option<String>,
     /// Wins over `scope`/`scope_ref` when non-empty.
     #[serde(rename = "match", default)]
@@ -107,16 +107,16 @@ impl Default for ContextItemSpec {
 }
 
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export))]
 pub struct UpdateContextItemRequest {
     #[serde(default)]
-    #[cfg_attr(feature = "ts", ts(optional))]
+    #[cfg_attr(test, ts(optional))]
     pub spec: Option<ContextItemSpec>,
 }
 
 /// `GET /context/resolve`: what a launch into these coordinates gets.
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export))]
 pub struct ResolvedContextResponse {
     /// Enabled rules whose filter matches; always attached.
     pub rules: Vec<ContextItem>,
@@ -126,14 +126,14 @@ pub struct ResolvedContextResponse {
 
 /// `POST /sessions/{id}/context`.
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export))]
 pub struct AttachContextRequest {
     #[serde(default)]
     pub names: Vec<String>,
 }
 
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export))]
 pub struct AttachContextResponse {
     pub attached: Vec<String>,
     /// Names that matched no memory of the caller's.
@@ -142,7 +142,7 @@ pub struct AttachContextResponse {
 
 /// One item a session received, at the version it received.
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export))]
 pub struct AttachedContextRef {
     pub id: String,
     pub kind: String,
@@ -153,7 +153,7 @@ pub struct AttachedContextRef {
 
 /// `GET /sessions/{id}/context`.
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export))]
 pub struct SessionContextResponse {
     /// The rules the latest launch delivered.
     pub rules: Vec<AttachedContextRef>,

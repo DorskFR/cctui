@@ -10,7 +10,7 @@ use crate::adapter::SessionChild;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
-#[cfg(feature = "ts")]
+#[cfg(test)]
 use ts_rs::TS;
 
 /// The session buckets clients group on.
@@ -19,7 +19,7 @@ use ts_rs::TS;
 /// by the TUI and web UI as the on-wire grouping signal. `review` is what older
 /// servers sent for a session whose PR needs attention.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 #[serde(rename_all = "snake_case")]
 pub enum Bucket {
     Working,

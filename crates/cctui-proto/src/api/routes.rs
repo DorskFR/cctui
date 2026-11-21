@@ -5,7 +5,7 @@
 //! strand a client. The same table is emitted to TypeScript as `routes.ts`.
 
 use serde::{Deserialize, Serialize};
-#[cfg(feature = "ts")]
+#[cfg(test)]
 use ts_rs::TS;
 
 pub use crate::features::Feature;
@@ -14,7 +14,7 @@ pub use crate::features::Feature;
 pub const API_PREFIX: &str = "/api/v1";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export, rename = "ApiMethod"))]
+#[cfg_attr(test, derive(TS), ts(export, rename = "ApiMethod"))]
 #[serde(rename_all = "UPPERCASE")]
 pub enum Method {
     Get,
@@ -58,7 +58,7 @@ impl std::fmt::Display for Method {
 
 /// One `/api/v1` endpoint.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export, rename = "ApiRoute"))]
+#[cfg_attr(test, derive(TS), ts(export, rename = "ApiRoute"))]
 pub struct Route {
     /// Stable identifier, `{method}_{path}` slugged. What a client names.
     pub id: &'static str,
@@ -3198,7 +3198,7 @@ mod tests {
 /// The TypeScript form of [`ROUTES`], emitted next to the ts-rs bindings so
 /// the webui endpoint helpers read the same table the server is asserted
 /// against.
-#[cfg(feature = "ts")]
+#[cfg(test)]
 #[must_use]
 pub fn typescript() -> String {
     use std::fmt::Write as _;
@@ -3251,7 +3251,7 @@ pub fn typescript() -> String {
     out
 }
 
-#[cfg(all(test, feature = "ts"))]
+#[cfg(test)]
 mod ts_export {
     /// Named to match the `export_bindings` filter `webui/scripts/gen-bindings.sh`
     /// runs, so the table lands beside the ts-rs output.

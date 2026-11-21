@@ -1,6 +1,6 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-#[cfg(feature = "ts")]
+#[cfg(test)]
 use ts_rs::TS;
 use uuid::Uuid;
 
@@ -11,7 +11,7 @@ use uuid::Uuid;
 /// With `max_usd` set, deliveries are refused while the sessions the hook
 /// reached in the last `budget_window_hours` cost that much or more.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct Webhook {
     pub id: Uuid,
     pub user_id: Uuid,
@@ -31,7 +31,7 @@ pub struct Webhook {
 /// `prompt_template` interpolates `{{payload.<path>}}` from the delivery's
 /// JSON body, plus `{{event}}` and `{{delivery}}` from its headers.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 #[serde(deny_unknown_fields)]
 pub struct WebhookRequest {
     pub preset_id: Uuid,
@@ -50,14 +50,14 @@ pub struct WebhookRequest {
 /// Reply of `POST /webhooks` and `POST /webhooks/{id}/secret`: the only time
 /// the signing secret is shown.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct WebhookSecret {
     pub webhook: Webhook,
     pub secret: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 #[serde(rename_all = "snake_case")]
 pub enum WebhookOutcome {
     Dispatched,
@@ -95,9 +95,9 @@ impl WebhookOutcome {
 /// One entry of a webhook's delivery log. `session_id` is set once the
 /// delivery's inbox event reached a session.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct WebhookDelivery {
-    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    #[cfg_attr(test, ts(type = "number"))]
     pub id: i64,
     pub delivery_id: Option<String>,
     pub outcome: WebhookOutcome,
@@ -109,7 +109,7 @@ pub struct WebhookDelivery {
 
 /// Reply of `POST /hooks/{id}`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct WebhookReceipt {
     pub status: WebhookOutcome,
     pub event_id: Option<Uuid>,

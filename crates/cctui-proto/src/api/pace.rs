@@ -16,7 +16,7 @@ const MIN_EXPECTED_PCT: f64 = 1.0;
 
 /// Pace of one window relative to its linear budget.
 #[derive(Debug, Clone, Copy, PartialEq, serde::Serialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export, rename = "UsagePace"))]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export, rename = "UsagePace"))]
 pub struct Pace {
     /// 0..1: share of the window already elapsed.
     pub elapsed_fraction: f64,
@@ -26,12 +26,12 @@ pub struct Pace {
     pub ratio: f64,
     /// When utilization reaches 100% at the current rate; `None` when idle.
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(feature = "ts", ts(type = "string | null", optional))]
+    #[cfg_attr(test, ts(type = "string | null", optional))]
     pub projected_wall_at: Option<DateTime<Utc>>,
     /// Length, in hours, of the base the rate was measured over when it came
     /// from an earlier sample; `None` when the rate is the window average.
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(feature = "ts", ts(type = "number | null", optional))]
+    #[cfg_attr(test, ts(type = "number | null", optional))]
     pub slope_hours: Option<f64>,
 }
 

@@ -2,13 +2,13 @@
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-#[cfg(feature = "ts")]
+#[cfg(test)]
 use ts_rs::TS;
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "sqlx", derive(sqlx::FromRow))]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct Bookmark {
     pub id: Uuid,
     /// Source session, or `None` once that session has been deleted.
@@ -29,7 +29,7 @@ pub struct Bookmark {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct CreateBookmark {
     #[serde(default)]
     pub session_id: Option<String>,
@@ -50,7 +50,7 @@ pub struct CreateBookmark {
 
 /// `PATCH` payload — title and note only; the snapshot itself is immutable.
 #[derive(Debug, Clone, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct UpdateBookmark {
     #[serde(default)]
     pub title: Option<String>,

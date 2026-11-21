@@ -2,13 +2,13 @@ use std::collections::BTreeMap;
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-#[cfg(feature = "ts")]
+#[cfg(test)]
 use ts_rs::TS;
 use uuid::Uuid;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "sqlx", derive(sqlx::FromRow))]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct Notification {
     pub id: Uuid,
     pub user_id: Uuid,
@@ -44,7 +44,7 @@ pub struct Notification {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct NotificationList {
     pub notifications: Vec<Notification>,
     pub unread: i64,
@@ -52,14 +52,14 @@ pub struct NotificationList {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct NotificationTransition {
     pub notification: Notification,
     pub applied: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 #[serde(deny_unknown_fields)]
 pub struct NotificationActRequest {
     pub action: String,
@@ -71,7 +71,7 @@ pub struct NotificationActRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct NotificationReadAll {
     pub read: i64,
     pub unread: i64,
@@ -80,7 +80,7 @@ pub struct NotificationReadAll {
 /// Per-user settings under `user_settings.data.notifications`. Stored sparse: a channel or
 /// a `routes` cell left out takes the server default.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 #[serde(default)]
 pub struct NotificationSettings {
     pub enabled: bool,
@@ -109,13 +109,13 @@ impl Default for NotificationSettings {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct NotificationChannelPref {
     pub enabled: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 #[serde(tag = "mode", rename_all = "snake_case")]
 pub enum NotificationStage {
     Off,
@@ -125,7 +125,7 @@ pub enum NotificationStage {
 
 /// `start` and `end` are `HH:MM` local to `tz` (IANA); a window may cross midnight.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct QuietHours {
     pub start: String,
     pub end: String,
@@ -134,7 +134,7 @@ pub struct QuietHours {
 
 /// Secrets in `config` are never returned: an ntfy token shows as `has_token`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct NotificationEndpoint {
     pub id: Uuid,
     pub channel: String,
@@ -148,7 +148,7 @@ pub struct NotificationEndpoint {
 /// `config` per channel: ntfy `{url, topic, token?}`, `web_push` the browser's
 /// `PushSubscription` (or `{subscription}`), email `{address}`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 #[serde(deny_unknown_fields)]
 pub struct CreateNotificationEndpoint {
     pub channel: String,
@@ -158,13 +158,13 @@ pub struct CreateNotificationEndpoint {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct NotificationTestSent {
     pub delivery_id: Uuid,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct VapidKey {
     /// Uncompressed P-256 point, base64url: `pushManager.subscribe`'s `applicationServerKey`.
     pub public_key: String,

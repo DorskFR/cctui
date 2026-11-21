@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-#[cfg(feature = "ts")]
+#[cfg(test)]
 use ts_rs::TS;
 
 use crate::adapter::{AdapterCommand, AdapterEvent, BootstrapFile};
@@ -555,7 +555,7 @@ pub enum DispatcherFrameUp {
 // --- Agent → Server (stream events) ---
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum AgentEvent {
     /// `meta` marks text injected into the agent rather than typed by the human.
@@ -706,7 +706,7 @@ impl AgentEvent {
 // --- TUI → Server ---
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum TuiCommand {
     Subscribe {
@@ -757,7 +757,7 @@ pub enum TuiCommand {
 
 /// Transition a scheduled draft launch just made.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 #[serde(rename_all = "snake_case")]
 pub enum ScheduledLaunchState {
     Scheduled,
@@ -770,7 +770,7 @@ pub enum ScheduledLaunchState {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ServerEvent {
     Stream {

@@ -2,14 +2,14 @@
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-#[cfg(feature = "ts")]
+#[cfg(test)]
 use ts_rs::TS;
 use uuid::Uuid;
 
 /// One enrolled daemon machine and its last-known resource snapshot, for the
 /// Settings › Resource monitoring list and the header gauge.
 #[derive(Debug, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct MachineResourcesRow {
     pub machine_id: Uuid,
     pub name: String,

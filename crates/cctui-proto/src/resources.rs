@@ -5,12 +5,12 @@
 //! an older server (unknown block) keep interoperating.
 
 use serde::{Deserialize, Serialize};
-#[cfg(feature = "ts")]
+#[cfg(test)]
 use ts_rs::TS;
 
 /// Last-known host resource usage of one machine. Percentages are 0..=100.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct MachineResources {
     /// CPU busy share over the last heartbeat interval, 0..=100, across all
     /// cores (a 4-core box with one saturated core reads 25).

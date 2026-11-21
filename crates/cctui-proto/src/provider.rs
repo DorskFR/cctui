@@ -1,14 +1,14 @@
 //! Account-provider metadata: display names, families, credential kind.
 
 use serde::{Deserialize, Serialize};
-#[cfg(feature = "ts")]
+#[cfg(test)]
 use ts_rs::TS;
 
 /// An account may hold at most one provider per family.
 ///
 /// Mirrors the server's generated `family` column.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 #[serde(rename_all = "snake_case")]
 pub enum ProviderFamily {
     #[default]
@@ -20,7 +20,7 @@ pub enum ProviderFamily {
 
 /// One selectable provider kind, in the order the pickers list them.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct ProviderInfo {
     pub id: String,
     /// Short display name (`anthropic` → `Claude`).
@@ -34,7 +34,7 @@ pub struct ProviderInfo {
 
 /// A quota probe the server's registry serves, for the `usage_probe` picker.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct UsageProbeInfo {
     pub id: String,
     pub label: String,

@@ -11,7 +11,7 @@
 //! See `docs/update-hook.md` for the deployment-side contract.
 
 use serde::{Deserialize, Serialize};
-#[cfg(feature = "ts")]
+#[cfg(test)]
 use ts_rs::TS;
 
 /// Tail of the hook's merged stdout/stderr kept for the UI. Enough to see why
@@ -24,7 +24,7 @@ pub const OUTPUT_TAIL_BYTES: usize = 8 * 1024;
 /// to `RollingBack` → `RolledBack` when a rollback command is configured, and
 /// straight to `Failed` when none is (or when the rollback itself failed).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 #[serde(rename_all = "snake_case")]
 pub enum UpdateHookPhase {
     /// The daemon accepted the run and the update command is executing.
@@ -88,7 +88,7 @@ impl UpdateHookPhase {
 /// One progress report from the daemon about a hook run, the body of
 /// `POST /api/v1/daemon/update-hook/{run_id}`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct UpdateHookReport {
     pub phase: UpdateHookPhase,
     /// Exit status of the command this phase ran, once it has exited.

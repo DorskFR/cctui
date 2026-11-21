@@ -4,7 +4,7 @@
 //! rendering (wording, pluralisation, age formatting) stays client-side.
 
 use serde::{Deserialize, Serialize};
-#[cfg(feature = "ts")]
+#[cfg(test)]
 use ts_rs::TS;
 
 use crate::diagnose::{CodexDiagnose, OpenCodeDiagnose};
@@ -17,7 +17,7 @@ pub const STALLED_RPC_MS: i64 = 60_000;
 /// Each variant carries the numbers its message needs; the client owns the
 /// wording.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum SilenceReason {
     /// Requests outstanding with no frame for longer than [`STALLED_RPC_MS`].

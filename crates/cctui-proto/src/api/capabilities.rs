@@ -1,7 +1,7 @@
 //! `GET /api/v1/capabilities` — supported server features and optional integrations.
 
 use serde::{Deserialize, Serialize};
-#[cfg(feature = "ts")]
+#[cfg(test)]
 use ts_rs::TS;
 
 use crate::features::{Feature, FeatureSet};
@@ -31,7 +31,7 @@ const fn workspace_default() -> bool {
 /// configured integrations and the caller's permissions. Missing flags from
 /// older full servers preserve workspace support.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct CapabilitiesResponse {
     pub langfuse: LangfuseCapability,
     #[serde(default = "full_distribution")]
@@ -83,7 +83,7 @@ impl CapabilitiesResponse {
 /// `<host>/project/<id>/sessions/<uuid>` deep link. All `None` when the sink is unconfigured;
 /// `project_id` alone `None` when the id could not be resolved.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct LangfuseCapability {
     pub available: bool,
     pub host: Option<String>,

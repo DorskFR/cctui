@@ -2,7 +2,7 @@
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-#[cfg(feature = "ts")]
+#[cfg(test)]
 use ts_rs::TS;
 use uuid::Uuid;
 
@@ -13,7 +13,7 @@ use uuid::Uuid;
 /// is gone and the id columns are null.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "sqlx", derive(sqlx::FromRow))]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct EventRecord {
     pub id: i64,
     pub occurred_at: DateTime<Utc>,
@@ -34,7 +34,7 @@ pub struct EventRecord {
 ///
 /// Pass the last row's `id` back as `before` for the next one.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct EventPage {
     pub events: Vec<EventRecord>,
     pub has_more: bool,
