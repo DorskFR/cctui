@@ -13,7 +13,7 @@ pub(super) fn register(r: Routes) -> Routes {
         &[GET],
         "/voice/config",
         "Whether speech is enabled and its effective models and voice.",
-        get(routes::voice::config),
+        get(routes::voice::config::<crate::state::AppState>),
         Authn::Bearer,
         Human,
     )
@@ -21,7 +21,7 @@ pub(super) fn register(r: Routes) -> Routes {
         &[GET],
         "/voice/voices",
         "The voices the instance speech service offers.",
-        get(routes::voice::voices),
+        get(routes::voice::voices::<crate::state::AppState>),
         Authn::Bearer,
         Human,
     )
@@ -29,7 +29,7 @@ pub(super) fn register(r: Routes) -> Routes {
         &[Method::POST],
         "/voice/transcribe",
         "Transcribe a multipart `file` audio part (size-capped) to text.",
-        post(routes::voice::transcribe)
+        post(routes::voice::transcribe::<crate::state::AppState>)
             .layer(DefaultBodyLimit::max(routes::voice::TRANSCRIBE_BODY_LIMIT)),
         Authn::Bearer,
         Human,
@@ -38,7 +38,7 @@ pub(super) fn register(r: Routes) -> Routes {
         &[Method::POST],
         "/voice/speak",
         "Synthesize text to audio with the instance speech service.",
-        post(routes::voice::speak),
+        post(routes::voice::speak::<crate::state::AppState>),
         Authn::Bearer,
         Human,
     )

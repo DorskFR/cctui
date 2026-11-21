@@ -17,6 +17,7 @@ cctui-server-blobs.workspace = true
 cctui-server-core.workspace = true
 cctui-server-kernel.workspace = true
 cctui-server-search.workspace = true
+cctui-server-voice.workspace = true
 cctui-proto = { workspace = true, features = ["sqlx"] }
 cctui-crypto.workspace = true
 cctui-query.workspace = true

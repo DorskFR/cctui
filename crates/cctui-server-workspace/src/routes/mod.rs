@@ -79,7 +79,7 @@ pub mod usage_history;
 pub mod usage_ledger;
 pub mod usage_probes;
 pub mod user_actions;
-pub mod voice;
+pub use cctui_server_voice::routes as voice;
 pub mod voice_notes;
 pub mod web;
 pub mod web_push;

@@ -6,8 +6,11 @@
 //! JSON.
 
 mod audio;
+pub mod context;
 mod engine;
 mod mainline;
+pub mod routes;
+pub mod speech;
 pub mod text;
 
 use std::sync::Arc;
@@ -26,10 +29,10 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
 
-use crate::auth::{AuthContext, Scope};
-use crate::bus::{VOICE_WATCH_REFRESH, VoiceEvent};
+use crate::context::VoiceContext;
 use crate::speech::{SpeechClient, SpeechError, SttStream};
-use crate::state::AppState;
+use cctui_server_kernel::auth::{AuthContext, Scope};
+use cctui_server_kernel::bus::{VOICE_WATCH_REFRESH, VoiceEvent};
 pub use engine::{
     AudioStream, Block, Inbound, Outbound, Prefs, Signal, VoiceBackend, picked_language,
     run_voice_loop,
@@ -65,26 +68,25 @@ pub fn principal_permitted(ctx: &AuthContext) -> Result<(), StatusCode> {
     Ok(())
 }
 
-pub async fn voice_ws(
+pub async fn voice_ws<S: VoiceContext>(
     ws: WebSocketUpgrade,
-    State(state): State<AppState>,
+    State(state): State<S>,
     Query(query): Query<VoiceQuery>,
     headers: axum::http::HeaderMap,
 ) -> Result<impl IntoResponse, StatusCode> {
-    if !crate::ws::origin_permitted(&state.config, &headers) {
+    if !cctui_server_kernel::config::origin_permitted(state.config(), &headers) {
         return Err(StatusCode::FORBIDDEN);
     }
-    let token = crate::auth::bearer_or_cookie(&headers).ok_or(StatusCode::UNAUTHORIZED)?;
-    let ctx = state.auth_config.validate(&token).await.ok_or(StatusCode::UNAUTHORIZED)?;
+    let token =
+        cctui_server_kernel::auth::bearer_or_cookie(&headers).ok_or(StatusCode::UNAUTHORIZED)?;
+    let ctx = state.auth_config().validate(&token).await.ok_or(StatusCode::UNAUTHORIZED)?;
     principal_permitted(&ctx)?;
     let session_id = query.session.trim().to_owned();
     if session_id.is_empty() {
         return Err(StatusCode::BAD_REQUEST);
     }
-    crate::authz::authorize_session_write(&ctx, &session_id, &state.pool).await?;
-    crate::routes::sessions::authorize_reply(&state, &ctx, &session_id)
-        .await
-        .map_err(|_| StatusCode::FORBIDDEN)?;
+    cctui_server_kernel::authz::authorize_session_write(&ctx, &session_id, state.pool()).await?;
+    state.authorize_reply(&ctx, &session_id).await.map_err(|_| StatusCode::FORBIDDEN)?;
     let language = query.language.as_deref().and_then(picked_language);
     let ws = ws.max_message_size(MAX_WS_MESSAGE_BYTES).max_frame_size(MAX_WS_MESSAGE_BYTES);
     Ok(ws.on_upgrade(move |socket| handle_voice_ws(socket, state, ctx, session_id, language)))
@@ -92,14 +94,14 @@ pub async fn voice_ws(
 
 /// Speech through the instance speech service, the session through the same
 /// reply and interrupt paths as the typed UI.
-struct ServerBackend {
-    state: AppState,
+struct ServerBackend<S> {
+    state: S,
     session_id: String,
     user_id: uuid::Uuid,
     client: SpeechClient,
 }
 
-impl VoiceBackend for ServerBackend {
+impl<S: VoiceContext> VoiceBackend for ServerBackend<S> {
     async fn transcribe(&self, audio: Bytes, language: Option<&str>) -> Result<String, String> {
         let wav = Bytes::from(pcm16_to_wav(&audio, UTTERANCE_SAMPLE_RATE));
         self.client.transcribe(wav, "audio/wav", language, None).await.map_err(|e| e.to_string())
@@ -141,13 +143,13 @@ impl VoiceBackend for ServerBackend {
     }
 
     async fn send_message(&self, text: String) -> Result<(), String> {
-        let (_, dispatch) =
-            crate::ws::dispatch_reply(&self.state, &self.session_id, text, None, None).await;
+        let (_, dispatch) = self.state.dispatch_reply(&self.session_id, text, None, None).await;
         dispatch.map_err(|e| e.to_string())
     }
 
     async fn interrupt(&self) -> Result<(), String> {
-        crate::routes::sessions::dispatch_interrupt(&self.state, &self.session_id, self.user_id)
+        self.state
+            .dispatch_interrupt(&self.session_id, self.user_id)
             .await
             .map(|_| ())
             .map_err(|e| e.to_string())
@@ -254,16 +256,16 @@ fn voice_signal(event: VoiceEvent, session_id: &str) -> Option<Signal> {
 /// Holds the text watch for the socket's lifetime so the daemon streams
 /// deltas, and the cluster-wide voice watch so the gateway does, and
 /// releases both when `cancel` fires.
-async fn relay_signals(
-    state: AppState,
+async fn relay_signals<S: VoiceContext>(
+    state: S,
     session_id: String,
     signals: mpsc::Sender<Signal>,
     cancel: CancellationToken,
 ) {
-    let mut server_rx = state.bus.subscribe_server();
-    let mut voice_rx = state.bus.subscribe_voice();
-    if state.bus.text_watch_inc(&session_id) {
-        crate::ws::set_daemon_text_watch(&state, &session_id, true).await;
+    let mut server_rx = state.bus().subscribe_server();
+    let mut voice_rx = state.bus().subscribe_voice();
+    if state.bus().text_watch_inc(&session_id) {
+        state.set_daemon_text_watch(&session_id, true).await;
     }
     let watcher = uuid::Uuid::new_v4();
     let beacon = |on| VoiceEvent::Watch { session_id: session_id.clone(), watcher, on };
@@ -272,7 +274,7 @@ async fn relay_signals(
         let signal = tokio::select! {
             () = cancel.cancelled() => break,
             _ = refresh.tick() => {
-                state.bus.publish_voice(beacon(true));
+                state.bus().publish_voice(beacon(true));
                 None
             }
             frame = voice_rx.recv() => match frame {
@@ -302,15 +304,15 @@ async fn relay_signals(
             break;
         }
     }
-    state.bus.publish_voice(beacon(false));
-    if state.bus.text_watch_dec(&session_id) {
-        crate::ws::set_daemon_text_watch(&state, &session_id, false).await;
+    state.bus().publish_voice(beacon(false));
+    if state.bus().text_watch_dec(&session_id) {
+        state.set_daemon_text_watch(&session_id, false).await;
     }
 }
 
-async fn handle_voice_ws(
+async fn handle_voice_ws<S: VoiceContext>(
     socket: WebSocket,
-    state: AppState,
+    state: S,
     ctx: AuthContext,
     session_id: String,
     language: Option<String>,
@@ -319,7 +321,7 @@ async fn handle_voice_ws(
     let (out_tx, out_rx) = mpsc::channel::<Outbound>(256);
     let writer = spawn_writer(sink, out_rx);
 
-    let client = match crate::routes::server_settings::speech_client(&state).await {
+    let client = match state.speech_client().await {
         Ok(c) => c,
         Err(err) => {
             let message = err.to_string();

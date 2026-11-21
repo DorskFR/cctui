@@ -22,6 +22,8 @@ that you are blocked.
   `workspace_search` schema stream; depends only on the kernel.
 - `crates/cctui-server-blobs` — content-addressed blob store, its HTTP routes,
   image externalization and the blob/image backfills; depends only on the kernel.
+- `crates/cctui-server-voice` — live voice socket, `/voice/*` routes and the
+  speech client; reaches sessions through `VoiceContext`, depends only on the kernel.
 - `crates/cctui-daemon` — long-lived per-machine daemon that spawns/observes sessions.
 - `crates/cctui-admin`, `crates/cctui-proto` — share the workspace version.
 - `crates/cctui-tui` — the terminal client (`cctui`). Maintained; see

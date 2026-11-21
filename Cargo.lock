@@ -1182,6 +1182,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "cctui-server-voice"
+version = "0.32.0-beta.20"
+dependencies = [
+ "axum",
+ "bytes",
+ "cctui-proto",
+ "cctui-server-kernel",
+ "futures-util",
+ "http",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-tungstenite 0.30.0",
+ "tokio-util",
+ "tower",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "cctui-server-workspace"
 version = "0.32.0-beta.20"
 dependencies = [
@@ -1199,6 +1221,7 @@ dependencies = [
  "cctui-server-core",
  "cctui-server-kernel",
  "cctui-server-search",
+ "cctui-server-voice",
  "cctui-telemetry",
  "chrono",
  "dashmap",

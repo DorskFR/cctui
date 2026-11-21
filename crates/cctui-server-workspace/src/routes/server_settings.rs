@@ -610,17 +610,7 @@ pub async fn update_speech(
     Ok(Json(speech_info(speech_row(&state.pool).await?.as_ref())))
 }
 
-pub fn speech_error(e: &crate::speech::SpeechError) -> AppError {
-    use crate::speech::SpeechError as E;
-    let status = match e {
-        E::NotConfigured => StatusCode::CONFLICT,
-        E::InputTooLong | E::Url(_) => StatusCode::BAD_REQUEST,
-        E::Transport(_) | E::Upstream { .. } | E::Decode(_) | E::StreamClosed { .. } => {
-            StatusCode::BAD_GATEWAY
-        }
-    };
-    AppError::new(status, e.to_string())
-}
+pub use cctui_server_voice::routes::speech_error;
 
 pub async fn speech_client(state: &AppState) -> Result<crate::speech::SpeechClient, AppError> {
     let (config, key) = read_speech(&state.pool).await?;

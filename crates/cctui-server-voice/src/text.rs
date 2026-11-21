@@ -250,6 +250,7 @@ impl SentenceBuffer {
     }
 
     #[cfg(test)]
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.raw.trim().is_empty() && self.held.is_empty()
     }
@@ -281,6 +282,7 @@ impl SentenceBuffer {
     }
 
     /// Text a [`Self::pause`] would speak.
+    #[must_use]
     pub fn has_pending(&self) -> bool {
         !self.held.is_empty() || !self.raw[..self.pause_end()].trim().is_empty()
     }

@@ -226,6 +226,10 @@ jobs:
         if: env.WARM_ONLY != 'true' && contains(format(' {0} ', needs.changes.outputs.crates), ' cctui-server-blobs ')
         run: cargo check -p cctui-server-blobs --all-targets --locked
 
+      - name: Voice builds on the kernel alone
+        if: env.WARM_ONLY != 'true' && contains(format(' {0} ', needs.changes.outputs.crates), ' cctui-server-voice ')
+        run: cargo check -p cctui-server-voice --all-targets --locked
+
   test:
     name: cargo test
     needs: changes

@@ -1160,6 +1160,7 @@ fn apply_mode(
 }
 
 /// A language pick as the speech service takes it; `None` for auto.
+#[must_use]
 pub fn picked_language(raw: &str) -> Option<String> {
     Some(raw.trim().to_ascii_lowercase()).filter(|l| !l.is_empty() && l != "auto")
 }

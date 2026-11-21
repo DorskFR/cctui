@@ -72,7 +72,6 @@ mod settings_catalog;
 mod skill_store;
 mod soft_limit;
 mod spawn_labels;
-mod speech;
 mod state;
 mod storage_stats;
 mod store;
@@ -82,7 +81,7 @@ mod update_check;
 mod uploads;
 mod usage_history;
 mod usage_probe;
-mod voice_live;
+mod voice_context;
 mod webauthn;
 mod webhook;
 mod ws;
@@ -92,6 +91,8 @@ mod image_blobs_search_tests;
 
 use cctui_server_blobs::{blob_move, blob_store, image_blobs};
 use cctui_server_search as search_index;
+use cctui_server_voice as voice_live;
+use cctui_server_voice::speech;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -586,7 +587,7 @@ fn outer_routes(features: FeatureSet) -> OuterRoutes {
         .route("/llms.txt", get(openapi::llms_txt))
         .route("/api/v1/openapi.json", get(openapi::openapi_json))
         .route("/api/v1/ws", get(ws::tui_ws))
-        .feature(Feature::Voice, "/api/v1/ws/voice", get(voice_live::voice_ws))
+        .feature(Feature::Voice, "/api/v1/ws/voice", get(voice_live::voice_ws::<AppState>))
         // Browser auth-cookie endpoints. Self-authenticating: `login`
         // validates the presented token and sets the `HttpOnly` cookie, `logout`
         // clears it — both live outside the `auth_middleware` group.
@@ -1307,6 +1308,7 @@ mod tests {
             assert!(tracing::enabled!(target: "cctui_server_kernel::authz", tracing::Level::DEBUG));
             assert!(tracing::enabled!(target: "cctui_server_search", tracing::Level::DEBUG));
             assert!(tracing::enabled!(target: "cctui_server_blobs::routes", tracing::Level::DEBUG));
+            assert!(tracing::enabled!(target: "cctui_server_voice::engine", tracing::Level::DEBUG));
         });
     }
 

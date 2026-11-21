@@ -11,20 +11,22 @@ pub use cctui_proto::api::settings::{
     VoiceConfigInfo, VoiceSpeakRequest, VoiceTranscript, VoiceVoices,
 };
 
-use crate::auth::AuthContext;
-use crate::error::AppError;
-use crate::routes::server_settings::{read_speech, speech_client, speech_error};
+use cctui_server_kernel::auth::AuthContext;
+use cctui_server_kernel::error::AppError;
+
+use crate::context::VoiceContext;
 use crate::speech::{MAX_TTS_INPUT_CHARS, SpeechConfig};
-use crate::state::AppState;
 
 pub const MAX_AUDIO_BYTES: usize = 10 * 1024 * 1024;
-/// Body ceiling for `/voice/transcribe`: the audio cap plus multipart framing
-/// headroom, so an over-cap recording reaches the handler's 413 instead of
-/// axum's 2 MB default tripping mid-stream as a malformed part.
+/// Body ceiling for `/voice/transcribe`: the audio cap plus multipart framing headroom.
+///
+/// An over-cap recording then reaches the handler's 413 instead of axum's 2 MB
+/// default tripping mid-stream as a malformed part.
 pub const TRANSCRIBE_BODY_LIMIT: usize = MAX_AUDIO_BYTES + 64 * 1024;
 /// Text up to this length is read as written even when a summary is asked for.
 pub const SUMMARY_MIN_CHARS: usize = 600;
 
+#[must_use]
 pub fn audio_mime(format: &str) -> String {
     match format {
         "opus" => "audio/ogg".to_owned(),
@@ -49,11 +51,11 @@ fn config_info(c: SpeechConfig) -> VoiceConfigInfo {
     }
 }
 
-pub async fn config(
-    State(state): State<AppState>,
+pub async fn config<S: VoiceContext>(
+    State(state): State<S>,
     Extension(_ctx): Extension<AuthContext>,
 ) -> Result<Json<VoiceConfigInfo>, AppError> {
-    Ok(Json(config_info(read_speech(&state.pool).await?.0)))
+    Ok(Json(config_info(state.read_speech().await?.0)))
 }
 
 struct AudioForm {
@@ -105,13 +107,13 @@ async fn read_audio_form(mut multipart: Multipart) -> Result<AudioForm, AppError
     Ok(AudioForm { audio, mime, language: trimmed(language), model: trimmed(model) })
 }
 
-pub async fn transcribe(
-    State(state): State<AppState>,
+pub async fn transcribe<S: VoiceContext>(
+    State(state): State<S>,
     Extension(_ctx): Extension<AuthContext>,
     multipart: Multipart,
 ) -> Result<Json<VoiceTranscript>, AppError> {
     let form = read_audio_form(multipart).await?;
-    let client = speech_client(&state).await?;
+    let client = state.speech_client().await?;
     let text = client
         .transcribe(form.audio, &form.mime, form.language.as_deref(), form.model.as_deref())
         .await
@@ -119,8 +121,8 @@ pub async fn transcribe(
     Ok(Json(VoiceTranscript { text }))
 }
 
-pub async fn speak(
-    State(state): State<AppState>,
+pub async fn speak<S: VoiceContext>(
+    State(state): State<S>,
     Extension(_ctx): Extension<AuthContext>,
     Json(req): Json<VoiceSpeakRequest>,
 ) -> Result<Response, AppError> {
@@ -130,8 +132,8 @@ pub async fn speak(
     if req.speed.is_some_and(|s| !(0.25..=4.0).contains(&s)) {
         return Err(AppError::new(StatusCode::BAD_REQUEST, "speed must be between 0.25 and 4"));
     }
-    let client = speech_client(&state).await?;
-    let plain = crate::voice_live::text::strip_markdown(&req.text);
+    let client = state.speech_client().await?;
+    let plain = crate::text::strip_markdown(&req.text);
     let text = if plain.is_empty() { req.text.as_str() } else { plain.as_str() };
     let summary = if req.summarize == Some(true)
         && client.can_summarize()
@@ -163,13 +165,26 @@ fn clip_for_speech(text: &str) -> &str {
     head.rfind(['.', '!', '?', '\n']).map_or(head, |i| &head[..=i])
 }
 
-pub async fn voices(
-    State(state): State<AppState>,
+pub async fn voices<S: VoiceContext>(
+    State(state): State<S>,
     Extension(_ctx): Extension<AuthContext>,
 ) -> Result<Json<VoiceVoices>, AppError> {
-    let client = speech_client(&state).await?;
+    let client = state.speech_client().await?;
     let voices = client.voices().await.map_err(|e| speech_error(&e))?;
     Ok(Json(VoiceVoices { voices }))
+}
+
+#[must_use]
+pub fn speech_error(e: &crate::speech::SpeechError) -> AppError {
+    use crate::speech::SpeechError as E;
+    let status = match e {
+        E::NotConfigured => StatusCode::CONFLICT,
+        E::InputTooLong | E::Url(_) => StatusCode::BAD_REQUEST,
+        E::Transport(_) | E::Upstream { .. } | E::Decode(_) | E::StreamClosed { .. } => {
+            StatusCode::BAD_GATEWAY
+        }
+    };
+    AppError::new(status, e.to_string())
 }
 
 #[cfg(test)]

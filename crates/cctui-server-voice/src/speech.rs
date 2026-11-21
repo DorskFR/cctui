@@ -30,7 +30,7 @@ pub enum SpeechError {
     #[error("speech service is not configured")]
     NotConfigured,
     #[error("speech service URL {0}")]
-    Url(crate::outbound::OutboundUrlError),
+    Url(cctui_server_kernel::outbound::OutboundUrlError),
     #[error("text is longer than {MAX_TTS_INPUT_CHARS} characters")]
     InputTooLong,
     #[error("speech service unreachable: {0}")]
@@ -46,6 +46,7 @@ pub enum SpeechError {
 impl SpeechError {
     /// The service cannot stream this model or language at all, as opposed
     /// to being busy or unreachable for now.
+    #[must_use]
     pub const fn refuses_streaming(&self) -> bool {
         match self {
             Self::StreamClosed { code, .. } => *code == 1008,
@@ -55,6 +56,7 @@ impl SpeechError {
     }
 }
 
+#[must_use]
 pub fn stt_streams(model: &str) -> bool {
     STREAMING_STT_MODELS.contains(&model)
 }
@@ -94,6 +96,7 @@ type SttEvents = mpsc::UnboundedSender<Result<SttEvent, SpeechError>>;
 
 impl SttStream {
     /// A stream fed by whatever holds the other ends.
+    #[must_use]
     pub fn channel() -> (Self, mpsc::UnboundedReceiver<SttInput>, SttEvents) {
         let (input, input_rx) = mpsc::unbounded_channel();
         let (events_tx, events) = mpsc::unbounded_channel();
@@ -208,7 +211,7 @@ pub struct SpeechClient {
     config: SpeechConfig,
     api_key: Option<String>,
     /// Websocket connections resolve through the SSRF guard, as
-    /// [`crate::outbound::upstream_client`] does.
+    /// [`cctui_server_kernel::outbound::upstream_client`] does.
     guarded: bool,
 }
 
@@ -290,6 +293,7 @@ fn extension(mime: &str) -> &'static str {
 }
 
 impl SpeechClient {
+    #[must_use]
     pub const fn new(http: reqwest::Client, config: SpeechConfig, api_key: Option<String>) -> Self {
         Self { http, config, api_key, guarded: false }
     }
@@ -302,22 +306,27 @@ impl SpeechClient {
         if !config.enabled || config.base_url.trim().is_empty() {
             return Err(SpeechError::NotConfigured);
         }
-        crate::outbound::upstream_url_permitted(&config.base_url).map_err(SpeechError::Url)?;
-        let mut client = Self::new(crate::outbound::upstream_client().clone(), config, api_key);
+        cctui_server_kernel::outbound::upstream_url_permitted(&config.base_url)
+            .map_err(SpeechError::Url)?;
+        let mut client =
+            Self::new(cctui_server_kernel::outbound::upstream_client().clone(), config, api_key);
         client.guarded = true;
         Ok(client)
     }
 
+    #[must_use]
     pub const fn config(&self) -> &SpeechConfig {
         &self.config
     }
 
     /// Speech-to-text is on: an empty model turns it off.
+    #[must_use]
     pub const fn can_transcribe(&self) -> bool {
         !self.config.stt_model.is_empty()
     }
 
     /// Text-to-speech is on: an empty model turns it off.
+    #[must_use]
     pub const fn can_speak(&self) -> bool {
         !self.config.tts_model.is_empty()
     }
@@ -347,6 +356,7 @@ impl SpeechClient {
     /// The model and language a transcription uses. An explicit `model` wins;
     /// a picked non-English `language` moves an English-first instance model
     /// to [`MULTILINGUAL_STT_MODEL`]; with neither, the instance setting.
+    #[must_use]
     pub fn stt_route<'a>(
         &'a self,
         language: Option<&'a str>,
@@ -398,6 +408,7 @@ impl SpeechClient {
     }
 
     /// Whether `language` routes to a model that streams.
+    #[must_use]
     pub fn stt_streams(&self, language: Option<&str>) -> bool {
         stt_streams(self.stt_route(language, None).0)
     }
@@ -414,19 +425,21 @@ impl SpeechClient {
         }
         let (model, language) = self.stt_route(language, None);
         let base = self.config.base_url.trim_end_matches('/');
-        let mut url = reqwest::Url::parse(&format!("{base}/audio/transcriptions/stream"))
-            .map_err(|_| SpeechError::Url(crate::outbound::OutboundUrlError::Malformed))?;
+        let mut url =
+            reqwest::Url::parse(&format!("{base}/audio/transcriptions/stream")).map_err(|_| {
+                SpeechError::Url(cctui_server_kernel::outbound::OutboundUrlError::Malformed)
+            })?;
         let scheme = if url.scheme() == "https" { "wss" } else { "ws" };
-        url.set_scheme(scheme)
-            .map_err(|()| SpeechError::Url(crate::outbound::OutboundUrlError::Malformed))?;
+        url.set_scheme(scheme).map_err(|()| {
+            SpeechError::Url(cctui_server_kernel::outbound::OutboundUrlError::Malformed)
+        })?;
         url.query_pairs_mut().append_pair("model", model);
         if let Some(lang) = language {
             url.query_pairs_mut().append_pair("language", lang);
         }
-        let mut req = url
-            .as_str()
-            .into_client_request()
-            .map_err(|_| SpeechError::Url(crate::outbound::OutboundUrlError::Malformed))?;
+        let mut req = url.as_str().into_client_request().map_err(|_| {
+            SpeechError::Url(cctui_server_kernel::outbound::OutboundUrlError::Malformed)
+        })?;
         if let Some(key) = &self.api_key {
             let value = format!("Bearer {key}")
                 .parse()
@@ -439,8 +452,8 @@ impl SpeechClient {
             }
             let host = url.host_str().unwrap_or_default();
             let port = url.port_or_known_default().unwrap_or(443);
-            let allow = crate::outbound::upstream_allowlist();
-            let addrs = crate::outbound::permitted_addrs(host, port, &allow).await?;
+            let allow = cctui_server_kernel::outbound::upstream_allowlist();
+            let addrs = cctui_server_kernel::outbound::permitted_addrs(host, port, &allow).await?;
             let tcp = tokio::net::TcpStream::connect(&*addrs).await?;
             tokio_tungstenite::client_async_tls(req, tcp).await
         };
@@ -540,6 +553,7 @@ impl SpeechClient {
         Ok(self.models().await?.into_iter().map(|m| m.id).collect())
     }
 
+    #[must_use]
     pub const fn can_summarize(&self) -> bool {
         !self.config.summary_model.is_empty()
     }
@@ -665,7 +679,7 @@ mod tests {
     }
 
     fn http() -> reqwest::Client {
-        crate::install_crypto_provider();
+        cctui_server_kernel::client::install_crypto_provider();
         reqwest::Client::new()
     }
 
