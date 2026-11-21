@@ -2,6 +2,7 @@
 
 use std::time::Duration;
 
+use futures_util::StreamExt;
 use serde_json::Value;
 use sqlx::{Connection, PgPool};
 
@@ -11,6 +12,7 @@ pub const NAME: &str = "backfill";
 
 const DEFAULT_SCAN: i64 = 500;
 const DEFAULT_ROWS: usize = 20;
+const DEFAULT_CONCURRENCY: usize = 1;
 const DEFAULT_PAUSE: Duration = Duration::from_secs(1);
 const DEFAULT_BUDGET_MB: u64 = 512;
 const IDLE: Duration = Duration::from_mins(1);
@@ -23,6 +25,7 @@ const COMMIT_LAG: Duration = Duration::from_secs(30);
 pub struct Config {
     pub scan: i64,
     pub rows: usize,
+    pub concurrency: usize,
     pub pause: Duration,
     pub budget_bytes: u64,
 }
@@ -41,7 +44,8 @@ impl Config {
         if !on {
             return None;
         }
-        let num = |k: &str| get(k).and_then(|v| v.trim().parse::<u64>().ok()).filter(|n| *n > 0);
+        let any = |k: &str| get(k).and_then(|v| v.trim().parse::<u64>().ok());
+        let num = |k: &str| any(k).filter(|n| *n > 0);
         Some(Self {
             scan: num("CCTUI_IMAGE_BACKFILL_SCAN")
                 .and_then(|n| i64::try_from(n).ok())
@@ -49,7 +53,10 @@ impl Config {
             rows: num("CCTUI_IMAGE_BACKFILL_ROWS")
                 .and_then(|n| usize::try_from(n).ok())
                 .unwrap_or(DEFAULT_ROWS),
-            pause: num("CCTUI_IMAGE_BACKFILL_PAUSE_MS")
+            concurrency: num("CCTUI_IMAGE_BACKFILL_CONCURRENCY")
+                .and_then(|n| usize::try_from(n).ok())
+                .unwrap_or(DEFAULT_CONCURRENCY),
+            pause: any("CCTUI_IMAGE_BACKFILL_PAUSE_MS")
                 .map_or(DEFAULT_PAUSE, Duration::from_millis),
             budget_bytes: num("CCTUI_IMAGE_BACKFILL_BUDGET_MB")
                 .unwrap_or(DEFAULT_BUDGET_MB)
@@ -94,7 +101,9 @@ pub async fn rewrite_event(conn: &mut sqlx::PgConnection, id: i64) -> Result<Out
     let Some(blob_bytes) = super::store_verified(&mut tx, &blobs).await? else {
         return Ok(Outcome::BadBlob);
     };
-    let hashes: Vec<String> = blobs.into_iter().map(|b| b.hash).chain(intact).collect();
+    let mut hashes: Vec<String> = blobs.into_iter().map(|b| b.hash).chain(intact).collect();
+    hashes.sort_unstable();
+    hashes.dedup();
     sqlx::query(
         "INSERT INTO session_blob_links (session_id, hash) \
          SELECT $1, * FROM UNNEST($2::text[]) ON CONFLICT DO NOTHING",
@@ -149,6 +158,7 @@ pub struct Walk {
     pub name: String,
     pub scan: i64,
     pub rows: usize,
+    pub concurrency: usize,
     pub lag: Duration,
     pub scope: Option<Vec<String>>,
 }
@@ -160,6 +170,7 @@ impl Walk {
             name: NAME.to_owned(),
             scan: config.scan,
             rows: config.rows.max(1),
+            concurrency: config.concurrency.max(1),
             lag: COMMIT_LAG,
             scope: None,
         }
@@ -214,9 +225,15 @@ impl Walk {
             (&ids[..], last.unwrap_or(ceiling))
         };
         let mut step = Step { more: next < ceiling, ..Step::default() };
-        let mut conn = pool.acquire().await?;
-        for &id in todo {
-            match rewrite_event(&mut conn, id).await? {
+        let mut outcomes = futures_util::stream::iter(todo.iter().copied())
+            .map(|id| async move {
+                let mut conn = pool.acquire().await?;
+                rewrite_event(&mut conn, id).await.map(|outcome| (id, outcome))
+            })
+            .buffer_unordered(self.concurrency);
+        while let Some(result) = outcomes.next().await {
+            let (id, outcome) = result?;
+            match outcome {
                 Outcome::Rewritten { blob_bytes, tally } => {
                     step.rewritten += 1;
                     step.blob_bytes += blob_bytes;

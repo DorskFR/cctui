@@ -249,7 +249,9 @@ pub async fn store_verified(
     blobs: &[Extracted],
 ) -> Result<Option<u64>, sqlx::Error> {
     let mut written = 0u64;
-    for b in blobs {
+    let mut ordered: Vec<&Extracted> = blobs.iter().collect();
+    ordered.sort_unstable_by(|a, b| a.hash.cmp(&b.hash));
+    for b in ordered {
         let stored = crate::routes::blobs::store_blob_in(
             &mut *conn,
             &b.bytes,

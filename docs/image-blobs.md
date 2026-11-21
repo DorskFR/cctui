@@ -103,7 +103,8 @@ newest row, then polls every minute.
 | `CCTUI_IMAGE_BACKFILL` | off | `1`/`true`/`on`/`yes` starts the walk |
 | `CCTUI_IMAGE_BACKFILL_SCAN` | `500` | events scanned per batch |
 | `CCTUI_IMAGE_BACKFILL_ROWS` | `20` | events rewritten per batch (about 10 MB of screenshots) |
-| `CCTUI_IMAGE_BACKFILL_PAUSE_MS` | `1000` | sleep between batches |
+| `CCTUI_IMAGE_BACKFILL_CONCURRENCY` | `1` | events of a batch rewritten at once, each on its own pooled connection; keep it well under `CCTUI_DB_MAX_CONNECTIONS` (4 with the default pool of 20) |
+| `CCTUI_IMAGE_BACKFILL_PAUSE_MS` | `1000` | sleep between batches; `0` for none |
 | `CCTUI_IMAGE_BACKFILL_BUDGET_MB` | `512` | new blob bytes this process writes before the walk stops; restart to continue |
 
 Disk grows by the new blob bytes until autovacuum frees the old TOAST chunks of
