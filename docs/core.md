@@ -98,6 +98,7 @@ Leave these unset:
 | `CCTUI_CLAUDE_LITELLM_*` | A retired compatibility path. Add an account with a compatible provider instead. |
 | `CCTUI_SPAWN_MAX_CHILDREN`, `CCTUI_SPAWN_MAX_DEPTH`, `CCTUI_SPAWN_MAX_TREE_BUDGET_USD` | Child sessions are off. |
 | `CCTUI_BLOB_PATH` | Unset keeps transcript images in Postgres. Set it only to a directory every replica shares durably. |
+| `CCTUI_BLOB_S3_*` | Unset keeps transcript images in Postgres. `CCTUI_BLOB_S3_BUCKET` stores them in an S3 bucket instead, and cannot be combined with `CCTUI_BLOB_PATH`; see [External blob stores](./image-blobs.md#external-blob-stores). |
 
 The server is a single replica with the `Recreate` strategy: two pods would
 each hold their own command bus, and a command sent through one would not

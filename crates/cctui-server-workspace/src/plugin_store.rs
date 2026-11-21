@@ -150,16 +150,20 @@ pub async fn uninstall(pool: &PgPool, registry: &PluginRegistry, id: &str) -> sq
             .fetch_optional(pool)
             .await?;
     let Some(hash) = hash else { return Ok(false) };
-    sqlx::query(
+    let external: Option<bool> = sqlx::query_scalar(
         "DELETE FROM daemon_blobs WHERE hash = $1 \
          AND NOT EXISTS (SELECT 1 FROM plugins WHERE archive_hash = $1) \
-         AND NOT EXISTS (SELECT 1 FROM session_attachments WHERE hash = $1)",
+         AND NOT EXISTS (SELECT 1 FROM session_attachments WHERE hash = $1) \
+         RETURNING file_stored",
     )
     .bind(&hash)
-    .execute(pool)
+    .fetch_optional(pool)
     .await?;
     crate::plugin_settings::delete(pool, id).await?;
     registry.remove_installed(id);
+    if external == Some(true) {
+        crate::blob_store::delete_unreferenced(pool, &hash).await;
+    }
     Ok(true)
 }
 

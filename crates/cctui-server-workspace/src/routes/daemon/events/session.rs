@@ -68,11 +68,17 @@ pub(super) fn publish_session_ended(state: &AppState, local_id: &str, reason: &E
     });
 }
 
-/// `search` off stores the end row with an empty `search_text`, as
-/// `insert_event` does, so the trigger does not index it.
-struct TranscriptJournal {
-    search: bool,
-}
+/// `WHERE EXISTS` guard: a `session_ended` can arrive for a session the server
+/// never registered (its `SessionStarted` was dropped, or an ephemeral subagent
+/// session); a bare INSERT trips `stream_events_session_id_fkey`.
+const SESSION_ENDED_SQL: &str = "INSERT INTO stream_events (session_id, event_type, payload) \
+     SELECT $1, 'session_ended', $2 WHERE EXISTS ( \
+         SELECT 1 FROM sessions WHERE id = $1 AND machine_uuid = $3 AND user_id = $4) \
+     ON CONFLICT (session_id, event_type, content_hash, \
+                  COALESCE(turn_id, '00000000-0000-0000-0000-000000000000'::uuid)) \
+     DO NOTHING";
+
+struct TranscriptJournal;
 
 impl cctui_server_core::lifecycle::SessionEndJournal for TranscriptJournal {
     async fn before_end(
@@ -84,42 +90,30 @@ impl cctui_server_core::lifecycle::SessionEndJournal for TranscriptJournal {
         reason: &EndReason,
     ) -> Result<(), sqlx::Error> {
         let payload = json!({ "reason": reason });
-        // `WHERE EXISTS` guard: a session_ended can arrive for a session the server
-        // never registered (its SessionStarted was dropped, or an ephemeral subagent
-        // session) — a bare INSERT trips `stream_events_session_id_fkey`. No-op
-        // cleanly instead of erroring; the UPDATE below is already missing-safe.
-        sqlx::query(
-            "INSERT INTO stream_events (session_id, event_type, payload, search_text) \
-         SELECT $1, 'session_ended', $2, CASE WHEN $5 THEN NULL ELSE '' END WHERE EXISTS ( \
-             SELECT 1 FROM sessions WHERE id = $1 AND machine_uuid = $3 AND user_id = $4) \
-         ON CONFLICT (session_id, event_type, content_hash, \
-                      COALESCE(turn_id, '00000000-0000-0000-0000-000000000000'::uuid)) \
-         DO NOTHING",
-        )
-        .bind(local_id)
-        .bind(&payload)
-        .bind(machine_id)
-        .bind(user_id)
-        .bind(self.search)
-        .execute(pool)
-        .await?;
+        sqlx::query(SESSION_ENDED_SQL)
+            .bind(local_id)
+            .bind(&payload)
+            .bind(machine_id)
+            .bind(user_id)
+            .execute(pool)
+            .await?;
         Ok(())
     }
 }
 
 pub(super) async fn persist_failed_spawn(
     pool: &sqlx::PgPool,
-    search: bool,
+    _search: bool,
     row: &crate::state::FailedSpawnRow,
     reason: &EndReason,
 ) -> anyhow::Result<bool> {
-    let journal = TranscriptJournal { search };
+    let journal = TranscriptJournal;
     Ok(cctui_server_core::lifecycle::persist_failed_spawn(pool, &journal, row, reason).await?)
 }
 
 pub(in crate::routes::daemon) async fn persist_session_end(
     pool: &sqlx::PgPool,
-    search: bool,
+    _search: bool,
     machine_id: Uuid,
     user_id: Uuid,
     local_id: &str,
@@ -127,7 +121,7 @@ pub(in crate::routes::daemon) async fn persist_session_end(
 ) -> anyhow::Result<bool> {
     Ok(cctui_server_core::lifecycle::persist_session_end(
         pool,
-        &TranscriptJournal { search },
+        &TranscriptJournal,
         machine_id,
         user_id,
         local_id,
@@ -627,7 +621,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_session_ended_row_carries_no_search_text_with_search_off() {
+    async fn the_session_ended_row_is_stored_without_search_text() {
+        assert!(!super::SESSION_ENDED_SQL.contains("search_text"));
         let Some(url) = crate::routes::gateway::test_db_url("session_end_search_off") else {
             return;
         };
@@ -644,19 +639,15 @@ mod tests {
             super::persist_session_end(&pool, search, mid, uid, &sid, &reason)
                 .await
                 .expect("persist");
-            let text: Option<String> = sqlx::query_scalar(
-                "SELECT search_text FROM stream_events \
+            let rows: i64 = sqlx::query_scalar(
+                "SELECT count(*) FROM stream_events \
                  WHERE session_id = $1 AND event_type = 'session_ended'",
             )
             .bind(&sid)
             .fetch_one(&pool)
             .await
-            .expect("read the end row");
-            if search {
-                assert_ne!(text.as_deref(), Some(""), "the trigger fills it with search on");
-            } else {
-                assert_eq!(text.as_deref(), Some(""), "empty with search off");
-            }
+            .expect("count the end row");
+            assert_eq!(rows, 1, "search {search}");
             sids.push(sid);
         }
         crate::routes::daemon::test_support::drop_machines(&pool, &sids, &[(uid, mid)]).await;

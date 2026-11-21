@@ -2,6 +2,7 @@
 //! `CryptoProvider`.
 
 mod creds;
+pub mod s3;
 pub mod sigv4;
 
 pub use creds::{

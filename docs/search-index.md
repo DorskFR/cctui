@@ -10,19 +10,33 @@ A quoted query is an exact phrase over that text; unquoted words must all
 appear. Queries are folded the same way, so a phrase copied from the rendered
 conversation matches.
 
+> **Upgrading from 0.32.0-beta.14 or older.** Search no longer falls back to the
+> `stream_events.search_text` column. Right after the upgrade, search finds only
+> events that already have chunks; older history becomes searchable as the
+> backfill below walks it (on by default). This is the trade for faster search
+> and smaller storage. A server older than this release refuses to start on a
+> database this release migrated.
+
 ## Backfill
 
 Daemon events are chunked on ingest. Every other row, including history from
 before the table existed, is reached by a background walk over
 `stream_events` in id order: small batches, one short transaction each, cursor
-in `search_index_state` (`name = 'backfill'`). It is idempotent and resumes
-where it stopped after a restart. One replica walks at a time (advisory lock).
+in `search_index_state` (`name = 'backfill'`). The walk skips events that
+already have chunks, so rows chunked on ingest are not chunked again. It is
+idempotent and resumes where it stopped after a restart. One replica walks at a
+time (advisory lock). An event is found by search only once it has chunks.
 
 | Variable | Default | Effect |
 | --- | --- | --- |
 | `CCTUI_SEARCH_BACKFILL` | on | `0`/`false`/`off`/`no` pauses the walk; the cursor stays put |
 | `CCTUI_SEARCH_BACKFILL_BATCH` | `50` | events per batch |
 | `CCTUI_SEARCH_BACKFILL_PAUSE_MS` | `250` | sleep between full batches |
+| `CCTUI_SEARCH_BACKFILL_BUDGET_MB` | unlimited | chunk body bytes this process writes before the walk stops; restart to continue from the cursor |
+
+Every 100 batches the walk logs `search backfill progress` with its cursor,
+`max_id`, and the chunks and bytes it wrote. It logs
+`search backfill budget spent` when it stops on the budget.
 
 Progress:
 
@@ -32,20 +46,3 @@ FROM search_index_state s WHERE s.name = 'backfill';
 
 SELECT pg_size_pretty(pg_total_relation_size('search_chunks'));
 ```
-
-## Unchunked history
-
-`search_index_state` row `live_from` holds the first event id chunked on
-ingest (written once; migration 187 seeds it on installs that already chunk).
-Events with an id past the backfill cursor and below `live_from` have no chunks,
-so search also matches them the way it did before chunks existed: the unfolded
-query against `left(search_text, 8192)`, through
-`idx_stream_events_session_search_trgm`. That matching skips the 8 KB tail and
-the folding. The fallback goes away once the cursor reaches `live_from`.
-
-```sql
-SELECT name, last_event_id FROM search_index_state WHERE name IN ('backfill', 'live_from');
-```
-
-Rows written after `live_from` by paths other than daemon ingest are still only
-found once the walk reaches them.

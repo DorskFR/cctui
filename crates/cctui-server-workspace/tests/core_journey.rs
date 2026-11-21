@@ -82,7 +82,7 @@ async fn journey(server: &Server, pool: &sqlx::PgPool) {
     stream_a_transcript(&mut worker, &session).await;
     the_session_list_and_conversation_return_it(server, &operator, &session).await;
     fork_resume_and_service_tokens_are_not_mounted(server, &operator, &session, &account).await;
-    its_events_carry_no_search_text(pool, &session).await;
+    its_transcript_is_stored_without_search_chunks(pool, &session).await;
     kill_the_session(server, &operator, &mut worker, &session).await;
     the_archive_lists_it_but_a_text_search_is_refused(server, &operator, &session).await;
     logout_clears_the_cookie(server, &operator).await;
@@ -607,17 +607,18 @@ async fn the_schema_has_no_search_objects(pool: &sqlx::PgPool) {
     assert!(indexes.is_empty(), "trigram indexes in a core database: {indexes:?}");
 }
 
-async fn its_events_carry_no_search_text(pool: &sqlx::PgPool, session: &str) {
-    let texts: Vec<Option<String>> = sqlx::query_scalar(
-        "SELECT search_text FROM stream_events \
-         WHERE session_id = $1 AND event_type IN ('message', 'tool_use')",
+async fn its_transcript_is_stored_without_search_chunks(pool: &sqlx::PgPool, session: &str) {
+    let (events, chunks): (i64, i64) = sqlx::query_as(
+        "SELECT (SELECT count(*) FROM stream_events \
+                 WHERE session_id = $1 AND event_type IN ('message', 'tool_use')), \
+                (SELECT count(*) FROM search_chunks WHERE session_id = $1)",
     )
     .bind(session)
-    .fetch_all(pool)
+    .fetch_one(pool)
     .await
     .unwrap();
-    assert!(!texts.is_empty(), "the transcript is stored");
-    assert!(texts.iter().all(|t| t.as_deref() == Some("")), "{texts:?}");
+    assert!(events > 0, "the transcript is stored");
+    assert_eq!(chunks, 0, "search off chunks nothing");
 }
 
 async fn kill_the_session(server: &Server, operator: &Operator, worker: &mut Ws, session: &str) {

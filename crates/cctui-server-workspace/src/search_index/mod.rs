@@ -118,53 +118,6 @@ async fn record_live_from(pool: &PgPool, first: i64) -> Result<(), sqlx::Error> 
     Ok(())
 }
 
-/// Event ids no chunk covers yet: past the backfill cursor and below the first
-/// id chunked on ingest. Search matches them on `stream_events.search_text`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Unchunked {
-    pub after: i64,
-    pub before: i64,
-}
-
-impl Unchunked {
-    /// No `live_from` yet means nothing past the cursor has been chunked.
-    pub const fn between(cursor: i64, live_from: Option<i64>) -> Option<Self> {
-        let before = match live_from {
-            Some(id) => id,
-            None => i64::MAX,
-        };
-        if before.saturating_sub(cursor) > 1 { Some(Self { after: cursor, before }) } else { None }
-    }
-}
-
-/// The production [`Unchunked`] range; `None` once the backfill has reached
-/// the first inline-indexed event.
-pub async fn unchunked<'e, E>(ex: E) -> Result<Option<Unchunked>, sqlx::Error>
-where
-    E: sqlx::PgExecutor<'e>,
-{
-    unchunked_of(ex, BACKFILL, LIVE_FROM).await
-}
-
-async fn unchunked_of<'e, E>(
-    ex: E,
-    walk: &str,
-    live_from: &str,
-) -> Result<Option<Unchunked>, sqlx::Error>
-where
-    E: sqlx::PgExecutor<'e>,
-{
-    let (cursor, first): (i64, Option<i64>) = sqlx::query_as(
-        "SELECT COALESCE((SELECT last_event_id FROM search_index_state WHERE name = $1), 0), \
-                (SELECT last_event_id FROM search_index_state WHERE name = $2)",
-    )
-    .bind(walk)
-    .bind(live_from)
-    .fetch_one(ex)
-    .await?;
-    Ok(Unchunked::between(cursor, first))
-}
-
 #[derive(sqlx::FromRow)]
 struct SourceRow {
     id: i64,
@@ -216,11 +169,14 @@ pub async fn reindex(pool: &PgPool, ids: &[i64]) -> Result<(), sqlx::Error> {
 }
 
 /// `CCTUI_SEARCH_BACKFILL` (on unless `0`/`false`/`off`/`no`),
-/// `CCTUI_SEARCH_BACKFILL_BATCH` (events per batch, default 50) and
-/// `CCTUI_SEARCH_BACKFILL_PAUSE_MS` (sleep between batches, default 250).
+/// `CCTUI_SEARCH_BACKFILL_BATCH` (events per batch, default 50),
+/// `CCTUI_SEARCH_BACKFILL_PAUSE_MS` (sleep between batches, default 250) and
+/// `CCTUI_SEARCH_BACKFILL_BUDGET_MB` (chunk body bytes this process writes
+/// before the walk stops, unlimited by default).
 pub struct BackfillConfig {
     pub batch: i64,
     pub pause: Duration,
+    pub budget: Option<u64>,
 }
 
 impl BackfillConfig {
@@ -243,6 +199,7 @@ impl BackfillConfig {
                 .unwrap_or(DEFAULT_BATCH),
             pause: num("CCTUI_SEARCH_BACKFILL_PAUSE_MS")
                 .map_or(DEFAULT_PAUSE, Duration::from_millis),
+            budget: num("CCTUI_SEARCH_BACKFILL_BUDGET_MB").map(|mb| mb.saturating_mul(1 << 20)),
         })
     }
 }
@@ -269,15 +226,27 @@ impl Horizon {
     }
 }
 
+#[derive(Default)]
+struct Written {
+    batches: u64,
+    chunks: u64,
+    bytes: u64,
+}
+
 /// One resumable walk over `stream_events`, keyed by its `search_index_state`
-/// name.
+/// name. It skips events that already have chunks.
 pub struct Backfill {
     name: String,
     batch: i64,
     horizon: Horizon,
+    written: Written,
     #[cfg(test)]
     session: Option<String>,
 }
+
+const PROGRESS_EVERY: u64 = 100;
+
+const UNCHUNKED: &str = " AND NOT EXISTS (SELECT 1 FROM search_chunks k WHERE k.event_id = e.id)";
 
 #[cfg(not(test))]
 const SESSION_SCOPE: &str = "";
@@ -291,6 +260,7 @@ impl Backfill {
             name: name.to_owned(),
             batch,
             horizon: Horizon::new(COMMIT_LAG),
+            written: Written::default(),
             #[cfg(test)]
             session: None,
         }
@@ -329,7 +299,8 @@ impl Backfill {
             return Ok(0);
         }
         let query = sqlx::query_as(sqlx::AssertSqlSafe(format!(
-            "{SOURCE_SELECT} WHERE e.id > $1 AND e.id <= $2{SESSION_SCOPE} ORDER BY e.id LIMIT $3"
+            "{SOURCE_SELECT} WHERE e.id > $1 AND e.id <= $2{UNCHUNKED}{SESSION_SCOPE} \
+             ORDER BY e.id LIMIT $3"
         )))
         .bind(cursor)
         .bind(ceiling)
@@ -343,7 +314,8 @@ impl Backfill {
         } else {
             rows.last().map_or(ceiling, |r| r.id)
         };
-        insert_chunks(&mut *tx, &chunk_rows(rows)).await?;
+        let chunked = chunk_rows(rows);
+        let chunks = insert_chunks(&mut *tx, &chunked).await?;
         sqlx::query(
             "INSERT INTO search_index_state (name, last_event_id) VALUES ($1, $2) \
              ON CONFLICT (name) DO UPDATE SET last_event_id = EXCLUDED.last_event_id, \
@@ -354,17 +326,45 @@ impl Backfill {
         .execute(&mut *tx)
         .await?;
         tx.commit().await?;
+        self.note_batch(&chunked, chunks, next, max_id);
         Ok(read)
+    }
+
+    fn note_batch(&mut self, chunked: &[Chunked], chunks: u64, cursor: i64, max_id: i64) {
+        let bytes = chunked.iter().flat_map(|c| &c.bodies).map(String::len).sum::<usize>();
+        let w = &mut self.written;
+        w.batches += 1;
+        w.chunks += chunks;
+        w.bytes = w.bytes.saturating_add(u64::try_from(bytes).unwrap_or(u64::MAX));
+        if w.batches.is_multiple_of(PROGRESS_EVERY) {
+            tracing::info!(
+                walk = %self.name,
+                cursor,
+                max_id,
+                batches = w.batches,
+                chunks = w.chunks,
+                bytes = w.bytes,
+                "search backfill progress"
+            );
+        }
+    }
+
+    fn spent(&self, budget: Option<u64>) -> bool {
+        budget.is_some_and(|b| self.written.bytes >= b)
     }
 }
 
 /// The production backfill loop: a batch, a pause, and a slow poll once it
 /// has caught up so new rows from every insert path are reached too.
 pub async fn task(pool: PgPool, config: BackfillConfig) {
-    let mut walk = Backfill::new(BACKFILL, config.batch);
+    run(&pool, &mut Backfill::new(BACKFILL, config.batch), &config).await;
+}
+
+/// Walks until the budget is spent; a restart resumes from the cursor.
+async fn run(pool: &PgPool, walk: &mut Backfill, config: &BackfillConfig) {
     let full = usize::try_from(config.batch).unwrap_or(usize::MAX);
     loop {
-        let wait = match walk.step(&pool).await {
+        let wait = match walk.step(pool).await {
             Ok(n) if n >= full => config.pause,
             Ok(_) => IDLE,
             Err(err) => {
@@ -372,6 +372,16 @@ pub async fn task(pool: PgPool, config: BackfillConfig) {
                 ERROR_BACKOFF
             }
         };
+        if walk.spent(config.budget) {
+            let w = &walk.written;
+            tracing::info!(
+                batches = w.batches,
+                chunks = w.chunks,
+                bytes = w.bytes,
+                "search backfill budget spent; restart to continue"
+            );
+            return;
+        }
         tokio::time::sleep(wait).await;
     }
 }
@@ -387,7 +397,7 @@ mod tests {
     fn config_defaults_on_and_can_be_paused() {
         let none = |_: &str| None;
         let on = BackfillConfig::from_lookup(none).expect("on by default");
-        assert_eq!((on.batch, on.pause), (DEFAULT_BATCH, DEFAULT_PAUSE));
+        assert_eq!((on.batch, on.pause, on.budget), (DEFAULT_BATCH, DEFAULT_PAUSE, None));
         for v in ["0", "false", "OFF", " no "] {
             let get = |k: &str| (k == "CCTUI_SEARCH_BACKFILL").then(|| v.to_owned());
             assert!(BackfillConfig::from_lookup(get).is_none(), "{v}");
@@ -395,10 +405,12 @@ mod tests {
         let tuned = BackfillConfig::from_lookup(|k: &str| match k {
             "CCTUI_SEARCH_BACKFILL_BATCH" => Some("10".into()),
             "CCTUI_SEARCH_BACKFILL_PAUSE_MS" => Some("1000".into()),
+            "CCTUI_SEARCH_BACKFILL_BUDGET_MB" => Some("3".into()),
             _ => None,
         })
         .unwrap();
         assert_eq!((tuned.batch, tuned.pause), (10, Duration::from_secs(1)));
+        assert_eq!(tuned.budget, Some(3 << 20));
     }
 
     #[test]
@@ -410,19 +422,6 @@ mod tests {
         assert_eq!(h.observe(t0 + Duration::from_secs(31), 30), Some(10));
         assert_eq!(h.observe(t0 + Duration::from_secs(45), 40), Some(20));
         assert_eq!(h.observe(t0 + Duration::from_secs(100), 50), Some(40));
-    }
-
-    #[test]
-    fn the_unchunked_range_closes_once_the_cursor_reaches_live_from() {
-        assert_eq!(Unchunked::between(10, Some(50)), Some(Unchunked { after: 10, before: 50 }));
-        assert_eq!(Unchunked::between(49, Some(50)), None, "no id lies strictly between");
-        assert_eq!(Unchunked::between(50, Some(50)), None);
-        assert_eq!(Unchunked::between(70, Some(50)), None);
-        assert_eq!(
-            Unchunked::between(10, None),
-            Some(Unchunked { after: 10, before: i64::MAX }),
-            "nothing chunked on ingest yet: all of it past the cursor"
-        );
     }
 
     #[test]
@@ -511,8 +510,123 @@ mod tests {
             name: name.to_owned(),
             batch: 2,
             horizon: Horizon::new(Duration::ZERO),
+            written: Written::default(),
             session: Some(sid.to_owned()),
         }
+    }
+
+    async fn start_walk_before(pool: &PgPool, walk_name: &str, first: i64) {
+        sqlx::query("INSERT INTO search_index_state (name, last_event_id) VALUES ($1, $2)")
+            .bind(walk_name)
+            .bind(first - 1)
+            .execute(pool)
+            .await
+            .unwrap();
+    }
+
+    async fn cursor_of(pool: &PgPool, walk_name: &str) -> i64 {
+        sqlx::query_scalar("SELECT last_event_id FROM search_index_state WHERE name = $1")
+            .bind(walk_name)
+            .fetch_one(pool)
+            .await
+            .unwrap()
+    }
+
+    async fn event_chunks(pool: &PgPool, id: i64) -> i64 {
+        sqlx::query_scalar("SELECT count(*) FROM search_chunks WHERE event_id = $1")
+            .bind(id)
+            .fetch_one(pool)
+            .await
+            .unwrap()
+    }
+
+    async fn drop_walk(pool: &PgPool, walk_name: &str, sid: &str) {
+        sqlx::query("DELETE FROM search_index_state WHERE name = $1")
+            .bind(walk_name)
+            .execute(pool)
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM sessions WHERE id = $1").bind(sid).execute(pool).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn the_walk_skips_events_that_already_have_chunks() {
+        let Some((pool, sid)) = seeded("search_backfill_skip_chunked").await else { return };
+        let walk_name = format!("test-{sid}");
+        let first = insert_message(&pool, &sid, "a plain event").await;
+        let long = format!("{} tail", "pre chunked ".repeat(1000));
+        let pre = insert_message(&pool, &sid, &long).await;
+        insert_message(&pool, &sid, "another plain event").await;
+        let one =
+            vec![Chunked { event_id: pre, session_id: sid.clone(), bodies: vec!["x".into()] }];
+        insert_chunks(&pool, &one).await.unwrap();
+        start_walk_before(&pool, &walk_name, first).await;
+
+        let mut walk = scoped_walk(&walk_name, &sid);
+        drain(&mut walk, &pool).await;
+        assert_eq!(event_chunks(&pool, pre).await, 1, "the pre-chunked event is not re-chunked");
+        assert_eq!(event_chunks(&pool, first).await, 1);
+        let total = chunk_count(&pool, &sid).await;
+        assert_eq!(total, 3);
+        assert_eq!(walk.written.chunks, 2, "only the two unchunked events are written");
+
+        sqlx::query("UPDATE search_index_state SET last_event_id = $2 WHERE name = $1")
+            .bind(&walk_name)
+            .bind(first - 1)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let mut rerun = scoped_walk(&walk_name, &sid);
+        drain(&mut rerun, &pool).await;
+        assert_eq!(chunk_count(&pool, &sid).await, total, "a re-run adds nothing");
+        assert_eq!((rerun.written.chunks, rerun.written.bytes), (0, 0), "and reads nothing");
+        assert!(cursor_of(&pool, &walk_name).await > first, "the cursor still moves on");
+
+        drop_walk(&pool, &walk_name, &sid).await;
+    }
+
+    #[tokio::test]
+    async fn the_walk_stops_once_its_budget_is_spent_and_a_restart_resumes() {
+        let Some((pool, sid)) = seeded("search_backfill_budget").await else { return };
+        let walk_name = format!("test-{sid}");
+        let mut ids = Vec::new();
+        for i in 0..6 {
+            ids.push(insert_message(&pool, &sid, &format!("budgeted event {i}")).await);
+        }
+        start_walk_before(&pool, &walk_name, ids[0]).await;
+        let config = BackfillConfig { batch: 2, pause: Duration::ZERO, budget: Some(1) };
+
+        let mut walk = scoped_walk(&walk_name, &sid);
+        let stopped = tokio::time::timeout(Duration::from_secs(30), run(&pool, &mut walk, &config));
+        stopped.await.expect("the walk stops on its budget");
+        assert_eq!(walk.written.batches, 1, "one batch spends a one-byte budget");
+        assert_eq!(cursor_of(&pool, &walk_name).await, ids[1]);
+        assert_eq!(chunk_count(&pool, &sid).await, 2);
+
+        let mut restarted = scoped_walk(&walk_name, &sid);
+        drain(&mut restarted, &pool).await;
+        assert_eq!(chunk_count(&pool, &sid).await, 6, "a restart picks up at the cursor");
+        assert_eq!(restarted.written.chunks, 4);
+
+        drop_walk(&pool, &walk_name, &sid).await;
+    }
+
+    #[tokio::test]
+    async fn the_progress_line_does_not_break_its_batch() {
+        let Some((pool, sid)) = seeded("search_backfill_progress").await else { return };
+        let walk_name = format!("test-{sid}");
+        let first = insert_message(&pool, &sid, "logged event one").await;
+        insert_message(&pool, &sid, "logged event two").await;
+        start_walk_before(&pool, &walk_name, first).await;
+
+        let mut walk = scoped_walk(&walk_name, &sid);
+        walk.written.batches = PROGRESS_EVERY - 1;
+        assert_eq!(walk.step(&pool).await.unwrap(), 2);
+        assert_eq!(walk.written.batches, PROGRESS_EVERY);
+        assert_eq!(walk.written.chunks, 2);
+        assert_eq!(chunk_count(&pool, &sid).await, 2, "the logged batch is committed");
+
+        drop_walk(&pool, &walk_name, &sid).await;
     }
 
     #[tokio::test]
@@ -620,45 +734,6 @@ mod tests {
             .unwrap();
         sqlx::query("DELETE FROM sessions WHERE id = $1").bind(&sid).execute(&pool).await.unwrap();
         assert_eq!(chunk_count(&pool, &sid).await, 0, "chunks follow their session out");
-    }
-
-    #[tokio::test]
-    async fn unchunked_reads_the_cursor_and_live_from_rows() {
-        let Some((pool, sid)) = seeded("search_unchunked_state").await else { return };
-        let (walk, live) = (format!("walk-{sid}"), format!("live-{sid}"));
-        let set = |name: String, id: i64| {
-            let pool = pool.clone();
-            async move {
-                sqlx::query(
-                    "INSERT INTO search_index_state (name, last_event_id) VALUES ($1, $2) \
-                     ON CONFLICT (name) DO UPDATE SET last_event_id = EXCLUDED.last_event_id",
-                )
-                .bind(name)
-                .bind(id)
-                .execute(&pool)
-                .await
-                .unwrap();
-            }
-        };
-        assert_eq!(
-            unchunked_of(&pool, &walk, &live).await.unwrap(),
-            Some(Unchunked { after: 0, before: i64::MAX })
-        );
-        set(walk.clone(), 100).await;
-        set(live.clone(), 500).await;
-        assert_eq!(
-            unchunked_of(&pool, &walk, &live).await.unwrap(),
-            Some(Unchunked { after: 100, before: 500 })
-        );
-        set(walk.clone(), 500).await;
-        assert_eq!(unchunked_of(&pool, &walk, &live).await.unwrap(), None);
-        sqlx::query("DELETE FROM search_index_state WHERE name IN ($1, $2)")
-            .bind(&walk)
-            .bind(&live)
-            .execute(&pool)
-            .await
-            .unwrap();
-        sqlx::query("DELETE FROM sessions WHERE id = $1").bind(&sid).execute(&pool).await.unwrap();
     }
 
     #[tokio::test]

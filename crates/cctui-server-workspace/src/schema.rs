@@ -180,6 +180,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "profile_auto_followup",
         sql: include_str!("../schema/0029_profile_auto_followup.sql"),
     },
+    Migration {
+        version: 30,
+        name: "retire_search_text_trigger",
+        sql: include_str!("../schema/0030_retire_search_text_trigger.sql"),
+    },
 ];
 
 /// Expand a core installation, or adopt the already migrated full schema.
@@ -338,7 +343,8 @@ mod tests {
                     (26, "bootstrap".to_owned()),
                     (27, "bootstrap".to_owned()),
                     (28, "bootstrap".to_owned()),
-                    (29, "bootstrap".to_owned())
+                    (29, "bootstrap".to_owned()),
+                    (30, "bootstrap".to_owned())
                 ]
             );
 
@@ -366,127 +372,175 @@ mod tests {
         .await;
     }
 
+    async fn search_text_objects(pool: &sqlx::PgPool) -> (bool, i64, bool) {
+        sqlx::query_as(
+            "SELECT EXISTS (SELECT 1 FROM pg_trigger \
+                     WHERE tgname = 'stream_events_search_text' AND NOT tgisinternal), \
+                    (SELECT count(*) FROM pg_proc p \
+                     JOIN pg_namespace n ON n.oid = p.pronamespace \
+                     WHERE n.nspname = 'public' AND p.proname \
+                       IN ('stream_events_search_text', 'stream_events_search_text_of')), \
+                    to_regclass('public.idx_stream_events_session_search_trgm') IS NOT NULL",
+        )
+        .fetch_one(pool)
+        .await
+        .unwrap()
+    }
+
+    async fn insert_plain_event(pool: &sqlx::PgPool) -> Option<String> {
+        sqlx::raw_sql(
+            "INSERT INTO sessions (id, machine_id, working_dir) VALUES ('plain', 'm', '/w') \
+             ON CONFLICT DO NOTHING",
+        )
+        .execute(pool)
+        .await
+        .unwrap();
+        sqlx::query_scalar(
+            "INSERT INTO stream_events (session_id, event_type, payload) \
+             VALUES ('plain', 'message', '{\"text\": \"t\"}') RETURNING search_text",
+        )
+        .fetch_one(pool)
+        .await
+        .unwrap()
+    }
+
     #[tokio::test]
-    async fn search_text_keeps_the_former_generated_value_unless_given() {
-        with_isolated_database("search_text_on_insert", |pool| async move {
+    async fn the_search_text_trigger_functions_and_index_are_retired() {
+        with_isolated_database("search_text_retired", |pool| async move {
             provisioned(&pool).await;
-            sqlx::raw_sql(
-                "INSERT INTO sessions (id, machine_id, working_dir) VALUES ('s', 'm', '/w')",
-            )
-            .execute(&pool)
-            .await
-            .unwrap();
-            let payloads = [
-                serde_json::json!({ "text": "hello" }),
-                serde_json::json!({ "content": "out", "tool": "Bash", "input": { "cmd": "ls" } }),
-                serde_json::json!({ "content": [{ "type": "text", "text": "x" }] }),
-                serde_json::json!({ "input": null, "text": null }),
-                serde_json::json!({}),
-            ];
-            for payload in &payloads {
-                let (stored, former): (String, String) = sqlx::query_as(
-                    "INSERT INTO stream_events (session_id, event_type, payload) \
-                     VALUES ('s', 'tool_use', $1) \
-                     RETURNING search_text, \
-                       COALESCE(payload ->> 'text', '') || ' ' \
-                       || COALESCE(payload ->> 'content', '') || ' ' \
-                       || COALESCE(payload ->> 'tool', '') || ' ' \
-                       || COALESCE((payload -> 'input')::text, '')",
-                )
-                .bind(payload)
-                .fetch_one(&pool)
-                .await
-                .unwrap();
-                assert_eq!(stored, former, "{payload}");
-            }
-            let given: String = sqlx::query_scalar(
-                "INSERT INTO stream_events (session_id, event_type, payload, search_text) \
-                 VALUES ('s', 'message', '{\"text\": \"t\"}', '') RETURNING search_text",
-            )
-            .fetch_one(&pool)
-            .await
-            .unwrap();
-            assert_eq!(given, "");
+            assert_eq!(search_text_objects(&pool).await, (false, 0, false));
+            assert_eq!(insert_plain_event(&pool).await, None, "nothing fills search_text");
         })
         .await;
     }
 
     #[tokio::test]
-    async fn search_text_drops_base64_attachments_and_keeps_every_other_row() {
-        with_isolated_database("search_text_without_base64", |pool| async move {
+    async fn a_searchless_install_migrates_through_the_search_text_retirement() {
+        with_isolated_database("search_text_retired_searchless", |pool| async move {
+            cctui_server_core::schema::bootstrap(&pool).await.unwrap();
+            let mut conn = cctui_server_core::schema::migration_connection(&pool).await.unwrap();
+            super::provision(&mut conn, false).await.unwrap();
+            drop(conn);
+            let versions: Vec<i64> =
+                installations(&pool, "workspace").await.into_iter().map(|(v, _)| v).collect();
+            assert_eq!(versions.last(), Some(&30));
+            assert!(installations(&pool, super::SEARCH_PACKAGE).await.is_empty());
+            assert_eq!(search_text_objects(&pool).await, (false, 0, false));
+            assert_eq!(insert_plain_event(&pool).await, None);
+        })
+        .await;
+    }
+
+    const PREVIOUS_INSERT_ONE: &str = "INSERT INTO stream_events \
+         (session_id, event_type, payload, turn_id, search_text) \
+         SELECT $1, $2, $3, $4, CASE WHEN $7 THEN '' END WHERE EXISTS ( \
+             SELECT 1 FROM sessions WHERE id = $1 AND machine_uuid = $5 AND user_id = $6) \
+         ON CONFLICT DO NOTHING \
+         RETURNING id";
+
+    const PREVIOUS_INSERT_MANY: &str = "WITH src AS ( \
+         SELECT nextval(pg_get_serial_sequence('stream_events', 'id')) AS id, r.* \
+         FROM ( \
+             SELECT u.* \
+             FROM unnest($1::text[], $2::text[], $3::jsonb[], $4::uuid[], $7::bool[]) \
+                  WITH ORDINALITY AS u(session_id, event_type, payload, turn_id, chunked, ord) \
+             WHERE EXISTS ( \
+                 SELECT 1 FROM sessions s \
+                 WHERE s.id = u.session_id AND s.machine_uuid = $5 AND s.user_id = $6) \
+             ORDER BY u.ord \
+         ) r \
+     ), ins AS ( \
+         INSERT INTO stream_events (id, session_id, event_type, payload, turn_id, search_text) \
+         SELECT id, session_id, event_type, payload, turn_id, CASE WHEN chunked THEN '' END \
+         FROM src ORDER BY ord \
+         ON CONFLICT DO NOTHING \
+         RETURNING id \
+     ) \
+     SELECT src.ord, ins.id FROM ins JOIN src USING (id)";
+
+    const PREVIOUS_SESSION_ENDED: &str = "INSERT INTO stream_events \
+         (session_id, event_type, payload, search_text) \
+         SELECT $1, 'session_ended', $2, CASE WHEN $5 THEN NULL ELSE '' END WHERE EXISTS ( \
+             SELECT 1 FROM sessions WHERE id = $1 AND machine_uuid = $3 AND user_id = $4) \
+         ON CONFLICT (session_id, event_type, content_hash, \
+                      COALESCE(turn_id, '00000000-0000-0000-0000-000000000000'::uuid)) \
+         DO NOTHING";
+
+    #[tokio::test]
+    async fn the_previous_release_ingest_inserts_still_succeed_after_the_retirement() {
+        with_isolated_database("search_text_mixed_version", |pool| async move {
             provisioned(&pool).await;
-            sqlx::raw_sql(
-                "INSERT INTO sessions (id, machine_id, working_dir) VALUES ('s', 'm', '/w')",
+            let (user, machine) = (uuid::Uuid::new_v4(), uuid::Uuid::new_v4());
+            sqlx::query("INSERT INTO users (id, name, key_hash) VALUES ($1, $2, $2)")
+                .bind(user)
+                .bind(format!("u-{user}"))
+                .execute(&pool)
+                .await
+                .unwrap();
+            sqlx::query(
+                "INSERT INTO machines (id, user_id, name, key_hash) VALUES ($1, $2, 'm', $3)",
             )
+            .bind(machine)
+            .bind(user)
+            .bind(format!("mk-{machine}"))
             .execute(&pool)
             .await
             .unwrap();
-            let insert = |payload: serde_json::Value| {
-                let pool = pool.clone();
-                async move {
-                    sqlx::query_as::<_, (String, String)>(
-                        "INSERT INTO stream_events (session_id, event_type, payload) \
-                         VALUES ('s', 'tool_use', $1) \
-                         RETURNING search_text, \
-                           COALESCE(payload ->> 'text', '') || ' ' \
-                           || COALESCE(payload ->> 'content', '') || ' ' \
-                           || COALESCE(payload ->> 'tool', '') || ' ' \
-                           || COALESCE((payload -> 'input')::text, '')",
-                    )
-                    .bind(payload)
-                    .fetch_one(&pool)
-                    .await
-                    .unwrap()
-                }
-            };
-            let data = "iVBORw0KGgoAAAANSUhEUgAA+/".repeat(40);
-            let image = serde_json::json!({ "kind": "tool_result", "content": [
-                { "type": "text", "text": "Screenshot saved" },
-                { "type": "image", "source": {
-                    "type": "base64", "media_type": "image/png", "data": data } },
-            ]});
-            let (stored, _) = insert(image).await;
-            assert!(!stored.contains(&data[..200]), "{stored}");
-            assert!(stored.contains("Screenshot saved") && stored.contains("\"data\": \"\""));
-            let text = format!("see data:image/png;base64,{data}= ok");
-            let url = serde_json::json!({ "text": text });
-            let (stored, _) = insert(url).await;
-            assert!(stored.starts_with("see data:image/png;base64, ok"), "{stored}");
-
-            let plain = [
-                serde_json::json!({ "text": "decode the base64 output" }),
-                serde_json::json!({ "tool": "Bash", "input": { "command": "base64 -d f" } }),
-                serde_json::json!({ "content": format!("base64 {}", "ab".repeat(300)) }),
-                serde_json::json!({
-                    "text": "base64", "input": { "data": "hello world ".repeat(30) } }),
-                serde_json::json!({ "content": [{ "type": "image", "source": {
-                    "type": "base64", "media_type": "image/png", "data": "iVBORw0KGgo=" } }] }),
-            ];
-            for payload in plain {
-                let shown = payload.to_string();
-                let (stored, former) = insert(payload).await;
-                assert_eq!(stored, former, "{shown}");
-            }
-
-            let legacy: i64 = sqlx::query_scalar(
-                "INSERT INTO stream_events (session_id, event_type, payload, search_text) \
-                 VALUES ('s', 'tool_use', $1, $2) RETURNING id",
+            sqlx::query(
+                "INSERT INTO sessions (id, machine_id, machine_uuid, user_id, working_dir) \
+                 VALUES ('old-pod', 'm', $1, $2, '/w')",
             )
-            .bind(serde_json::json!({ "content": [{ "type": "image", "source": {
-                "type": "base64", "media_type": "image/png", "data": format!("{data}x") } }] }))
-            .bind(format!("legacy {data}"))
-            .fetch_one(&pool)
+            .bind(machine)
+            .bind(user)
+            .execute(&pool)
             .await
             .unwrap();
-            let recomputed: String = sqlx::query_scalar(
-                "UPDATE stream_events SET payload = payload WHERE id = $1 RETURNING search_text",
+
+            let one: Option<i64> = sqlx::query_scalar(PREVIOUS_INSERT_ONE)
+                .bind("old-pod")
+                .bind("message")
+                .bind(serde_json::json!({ "role": "user", "text": "single" }))
+                .bind(None::<uuid::Uuid>)
+                .bind(machine)
+                .bind(user)
+                .bind(false)
+                .fetch_optional(&pool)
+                .await
+                .unwrap();
+            assert!(one.is_some(), "the single-row insert");
+
+            let text = |t: &str| serde_json::json!({ "text": t });
+            let many: Vec<(i64, i64)> = sqlx::query_as(PREVIOUS_INSERT_MANY)
+                .bind(vec!["old-pod", "old-pod"])
+                .bind(vec!["message", "tool_use"])
+                .bind(vec![text("chunked"), text("raw")])
+                .bind(vec![None::<uuid::Uuid>, None])
+                .bind(machine)
+                .bind(user)
+                .bind(vec![true, false])
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+            assert_eq!(many.len(), 2, "the batched insert");
+
+            let ended = sqlx::query(PREVIOUS_SESSION_ENDED)
+                .bind("old-pod")
+                .bind(serde_json::json!({ "reason": "killed" }))
+                .bind(machine)
+                .bind(user)
+                .bind(true)
+                .execute(&pool)
+                .await
+                .unwrap();
+            assert_eq!(ended.rows_affected(), 1, "the session-ended row");
+
+            let stored: Vec<Option<String>> = sqlx::query_scalar(
+                "SELECT search_text FROM stream_events WHERE session_id = 'old-pod' ORDER BY id",
             )
-            .bind(legacy)
-            .fetch_one(&pool)
+            .fetch_all(&pool)
             .await
             .unwrap();
-            assert!(!recomputed.contains(&data[..200]), "{recomputed}");
-            assert!(!recomputed.starts_with("legacy"));
+            assert_eq!(stored, [None, Some(String::new()), None, None]);
         })
         .await;
     }
@@ -822,7 +876,8 @@ mod tests {
                     (26, "bootstrap".to_owned()),
                     (27, "bootstrap".to_owned()),
                     (28, "bootstrap".to_owned()),
-                    (29, "bootstrap".to_owned())
+                    (29, "bootstrap".to_owned()),
+                    (30, "bootstrap".to_owned())
                 ]
             );
             let rows: i64 =

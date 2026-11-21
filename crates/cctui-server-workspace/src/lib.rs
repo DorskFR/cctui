@@ -12,6 +12,8 @@ mod auto_followup;
 mod auto_redeem;
 mod auto_resume;
 mod bandwidth_watch;
+mod blob_move;
+mod blob_store;
 mod brief;
 mod bus;
 mod cache_bust;
@@ -119,6 +121,7 @@ pub async fn run() -> anyhow::Result<()> {
         env!("CARGO_PKG_VERSION"),
         "cctui_server=info,sqlx::query=warn",
     );
+    blob_store::init()?;
     let secrets = Arc::new(cctui_secrets::SecretRegistry::from_env());
     let (config, pool, auth_config, migrations) = bootstrap(&secrets).await?;
     tracing::info!("features: {}", config.features);
@@ -432,6 +435,9 @@ async fn start_background_tasks(state: &AppState) {
     }
     if let Some(config) = image_blobs::backfill::Config::from_env() {
         tokio::spawn(image_blobs::backfill::task(state.pool.clone(), config));
+    }
+    if let Some(config) = blob_move::Config::from_env() {
+        tokio::spawn(blob_move::task(state.pool.clone(), config));
     }
     tokio::spawn(storage_stats::task(state.pool.clone()));
 
