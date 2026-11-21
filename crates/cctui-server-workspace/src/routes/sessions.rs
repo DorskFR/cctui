@@ -6403,7 +6403,7 @@ mod tests {
             "a phrase pasted between smart quotes"
         );
         assert_eq!(hits("\"first line second line third\"").await, 1, "multi-line copy");
-        assert_eq!(hits("screenshot saved").await, 1);
+        assert_eq!(hits("screenshot saved").await, 0, "tool output is not indexed");
         assert_eq!(hits("iVBORw0KGgo").await, 0, "image payloads are not indexed");
         assert_eq!(hits("gate dots").await, 1, "unquoted words must all appear");
         assert_eq!(hits("gate absentword").await, 0);

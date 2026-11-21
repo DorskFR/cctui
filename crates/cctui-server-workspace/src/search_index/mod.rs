@@ -36,12 +36,21 @@ pub struct Chunked {
 }
 
 /// The chunks of one stored event, from the canonical shape the webui renders.
+/// Only user and assistant messages and thinking are indexed.
 #[must_use]
 pub fn chunk_event(adapter_id: &str, event_type: &str, payload: Value) -> Vec<String> {
-    crate::normalize::for_client(adapter_id, event_type, payload).map_or_else(Vec::new, |client| {
-        let text = text::client_text(&client);
-        text::chunks(&text).into_iter().map(str::to_owned).collect()
-    })
+    crate::normalize::for_client(adapter_id, event_type, payload).filter(is_searchable).map_or_else(
+        Vec::new,
+        |client| {
+            let text = text::client_text(&client);
+            text::chunks(&text).into_iter().map(str::to_owned).collect()
+        },
+    )
+}
+
+fn is_searchable(client: &Value) -> bool {
+    matches!(client.get("kind").and_then(Value::as_str), None | Some("thinking"))
+        && matches!(crate::normalize::client_category(client).0, "user" | "assistant" | "thinking")
 }
 
 /// Insert chunks, skipping any already present and any whose event is gone.
@@ -425,9 +434,9 @@ mod tests {
     }
 
     #[test]
-    fn image_tool_results_chunk_to_their_text_only() {
+    fn tool_calls_and_results_yield_no_chunks() {
         let blob = "iVBORw0KGgoAAAANSUhEUgAA".repeat(40);
-        let payload = json!({
+        let image_result = json!({
             "kind": "tool_result",
             "tool_use_id": "t1",
             "content": [
@@ -435,7 +444,70 @@ mod tests {
                 {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": blob}},
             ],
         });
-        assert_eq!(chunk_event("claude-code", "tool_use", payload), vec!["captured".to_owned()]);
+        let text_result = json!({"kind": "tool_result", "tool_use_id": "t2", "content": "total 0"});
+        let call = json!({"tool": "Bash", "id": "t2", "input": {"command": "ls -la"}});
+        let server_call = json!({"kind": "server_tool_use", "tool": "web_search", "id": "t3",
+            "input": {"query": "rust"}});
+        for payload in [image_result, text_result, call, server_call] {
+            assert!(
+                chunk_event("claude-code", "tool_use", payload.clone()).is_empty(),
+                "{payload}"
+            );
+        }
+        let codex_call = json!({"type": "response_item", "payload": {"type": "function_call",
+            "name": "shell", "call_id": "c1", "arguments": "{\"command\":[\"ls\"]}"}});
+        let codex_out = json!({"type": "response_item", "payload": {"type": "function_call_output",
+            "call_id": "c1", "output": "file.txt"}});
+        for payload in [codex_call, codex_out] {
+            assert!(chunk_event("codex", "tool_use", payload.clone()).is_empty(), "{payload}");
+        }
+    }
+
+    #[test]
+    fn markers_annotations_and_summaries_yield_no_chunks() {
+        let message = |p: Value| chunk_event("claude-code", "message", p);
+        for payload in [
+            json!({"role": "system_marker", "marker": "ai-title", "text": "title: deploy"}),
+            json!({"role": "system_marker", "marker": "queue-operation", "operation": "enqueue",
+                "text": "enqueue: ship it", "queue_text": "ship it"}),
+            json!({"role": "turn_annotation", "annotation": "turn_duration", "text": "turn_duration:1234"}),
+            json!({"role": "summary", "status_category": "done", "status_detail": "shipped the fix"}),
+            json!({"role": "compact_summary", "text": "summary of the conversation"}),
+            json!({"role": "assistant_redacted_thinking", "text": "[redacted]"}),
+            json!({"role": "assistant_attachment", "text": "attached file"}),
+            json!({"role": "assistant_voice", "text": "hello there", "message_id": "n1"}),
+            json!({"role": "user", "text": "<task-notification/>", "meta": true}),
+        ] {
+            assert!(message(payload.clone()).is_empty(), "{payload}");
+        }
+        let ended = json!({"reason": {"kind": "completed", "detail": "all done"}});
+        assert!(chunk_event("claude-code", "session_ended", ended).is_empty());
+    }
+
+    #[test]
+    fn user_assistant_and_thinking_messages_are_chunked() {
+        let message = |p: Value| chunk_event("claude-code", "message", p);
+        assert_eq!(message(json!({"role": "user", "text": "ship the **fix**"})), ["ship the fix"]);
+        assert_eq!(
+            message(json!({"role": "assistant", "text": "on it", "message_id": "m1"})),
+            ["on it"]
+        );
+        assert_eq!(
+            message(json!({"role": "assistant_thinking", "text": "pondering", "message_id": "m1"})),
+            ["pondering"]
+        );
+        let codex = |p: Value| chunk_event("codex", "message", p);
+        assert_eq!(codex(json!({"type": "agentMessage", "text": "done"})), ["done"]);
+        assert_eq!(
+            codex(json!({"type": "reasoning", "summary": ["weighing it"]})),
+            ["weighing it"]
+        );
+        assert_eq!(
+            codex(
+                json!({"type": "event_msg", "payload": {"type": "user_message", "message": "go"}})
+            ),
+            ["go"]
+        );
     }
 
     async fn seeded(name: &str) -> Option<(PgPool, String)> {
