@@ -52,17 +52,6 @@ pub struct TraceCapture {
     pub response_summary: Option<ResponseSummary>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ResponseSummary {
-    pub output_chars: Option<usize>,
-    pub usage: Option<serde_json::Value>,
-}
-
-pub trait ResponseDigest: Send {
-    fn feed(&mut self, chunk: &[u8]);
-    fn finish(self: Box<Self>) -> ResponseSummary;
-}
-
 /// Optional tracing sink. Sampling is decided once per request.
 pub trait TraceSink: Send + Sync {
     fn should_sample(&self) -> bool;
@@ -77,9 +66,9 @@ pub trait TraceSink: Send + Sync {
     }
 }
 
-pub const TRACE_KEPT_FIELDS: [&str; 6] =
-    ["model", "stream", "max_tokens", "temperature", "service_tier", "thinking"];
-pub const TRACE_COUNTED_FIELDS: [&str; 3] = ["messages", "system", "tools"];
+pub use cctui_server_kernel::gateway_trace::{
+    ResponseDigest, ResponseSummary, TRACE_COUNTED_FIELDS, TRACE_KEPT_FIELDS,
+};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RequestShape {

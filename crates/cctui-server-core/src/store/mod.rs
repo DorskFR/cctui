@@ -6,12 +6,12 @@
 pub mod account_pools;
 pub mod account_providers;
 pub mod account_redirects;
-pub mod acls;
+pub use cctui_server_kernel::store::acls;
 pub mod dispatch_records;
 pub mod spawn_capabilities;
 pub mod tokens;
 
-pub mod shares;
+pub use cctui_server_kernel::store::shares;
 
 pub mod sessions;
 

@@ -6,7 +6,7 @@
 
 pub mod account_pick;
 pub mod account_resolve;
-pub mod auth;
+pub use cctui_server_kernel::auth;
 pub mod commands;
 pub mod cost;
 pub mod fireworks_billing;
@@ -15,14 +15,13 @@ pub mod store;
 pub mod usage_probe;
 
 #[cfg(any(test, feature = "test-support"))]
-pub mod test_support;
+pub use cctui_server_kernel::test_support;
 
-pub mod bus;
+pub use cctui_server_kernel::bus;
 pub mod dispatchers;
 pub mod registry;
 
-pub mod client;
-pub mod outbound;
+pub use cctui_server_kernel::{client, outbound};
 
 pub mod hook_policy;
 pub mod launch;
@@ -39,7 +38,7 @@ pub mod dispatch_policy;
 
 pub mod provider_status;
 
-pub mod error;
+pub use cctui_server_kernel::error;
 pub mod machine_spawn;
 
 pub mod execution_settings;
@@ -51,7 +50,7 @@ pub mod state;
 pub mod identity;
 pub mod targets;
 
-pub mod normalize;
+pub use cctui_server_kernel::normalize;
 
 pub mod results;
 
@@ -60,7 +59,7 @@ pub mod launch_credentials;
 pub mod spawn_defaults;
 
 pub mod accounts;
-pub mod resource_owners;
+pub use cctui_server_kernel::resource_owners;
 pub mod settings_catalog;
 
 pub mod machine_adapters;
@@ -83,5 +82,5 @@ pub mod child_exec;
 
 pub mod session_limits;
 
-pub mod envelope_guard;
+pub use cctui_server_kernel::envelope_guard;
 pub mod peer_session;

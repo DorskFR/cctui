@@ -312,13 +312,7 @@ pub fn single_emoji(reply: &str) -> Option<String> {
     (bases >= 1 && joiners + 1 == bases || bases == 1).then(|| s.to_owned())
 }
 
-/// A configured small-model emoji picker (see `Config::emoji_picker`).
-#[derive(Clone)]
-pub struct Picker<'a> {
-    pub endpoint: &'a str,
-    pub model: &'a str,
-    pub token: Option<std::sync::Arc<str>>,
-}
+pub use cctui_server_kernel::config::Picker;
 
 /// What we ask the model. Kept blunt on purpose: the reply is validated by
 /// [`single_emoji`], so an instruction-following slip costs a fallback, not a

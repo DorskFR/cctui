@@ -32,6 +32,15 @@ pub enum CachePurge {
     ToolPolicy { account_id: Uuid },
 }
 
+/// Drops this replica's tool-guard caches for a `ToolGuardSession` or
+/// `ToolPolicy` purge. Installed by the caches on first use, so a replica that
+/// never built them has nothing to drop.
+static TOOL_GUARD_PURGE: OnceLock<fn(&CachePurge)> = OnceLock::new();
+
+pub fn install_tool_guard_purge(purge: fn(&CachePurge)) {
+    let _ = TOOL_GUARD_PURGE.set(purge);
+}
+
 /// Carries a local purge to the other replicas.
 ///
 /// Best-effort: a peer that misses it serves its entry until the cache TTL.
@@ -444,12 +453,10 @@ impl AuthConfig {
     /// Apply a purge to this replica only; the receiving end of a peer relay.
     pub fn purge_local(&self, purge: &CachePurge) {
         match purge {
-            CachePurge::ToolGuardSession { session_id } => {
-                crate::gateway::toolguard::invalidate_session_guard(session_id);
-                return;
-            }
-            CachePurge::ToolPolicy { account_id } => {
-                crate::gateway::toolguard::invalidate_policy_cache(*account_id);
+            CachePurge::ToolGuardSession { .. } | CachePurge::ToolPolicy { .. } => {
+                if let Some(purge_tool_guard) = TOOL_GUARD_PURGE.get() {
+                    purge_tool_guard(purge);
+                }
                 return;
             }
             CachePurge::Key { .. } | CachePurge::All => {}

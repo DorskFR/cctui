@@ -77,13 +77,7 @@ pub async fn tui_ws(
     Ok(ws.on_upgrade(move |socket| handle_tui_ws(socket, state, auth_ctx)))
 }
 
-/// A present `Origin` must be in the allowlist; an absent one is a non-browser
-/// client (TUI/daemon) and is allowed. An unparseable `Origin` is rejected.
-pub fn origin_permitted(config: &crate::config::Config, headers: &axum::http::HeaderMap) -> bool {
-    headers
-        .get(axum::http::header::ORIGIN)
-        .is_none_or(|value| value.to_str().is_ok_and(|o| config.origin_allowed(o)))
-}
+pub use cctui_server_kernel::config::origin_permitted;
 
 /// Mirrors the daemon socket's cadence (`routes/daemon.rs`) and stays well
 /// under the gateway's idle timeout.

@@ -1303,6 +1303,7 @@ mod tests {
             assert!(
                 !tracing::enabled!(target: "cctui_server_workspace::routes", tracing::Level::TRACE)
             );
+            assert!(tracing::enabled!(target: "cctui_server_kernel::authz", tracing::Level::DEBUG));
         });
     }
 

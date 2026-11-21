@@ -214,6 +214,10 @@ jobs:
         if: env.WARM_ONLY != 'true' && contains(format(' {0} ', needs.changes.outputs.crates), ' cctui-server-core ')
         run: cargo check -p cctui-server-core --all-targets --locked
 
+      - name: Kernel builds independently of every other server crate
+        if: env.WARM_ONLY != 'true' && contains(format(' {0} ', needs.changes.outputs.crates), ' cctui-server-kernel ')
+        run: cargo check -p cctui-server-kernel --all-targets --locked
+
   test:
     name: cargo test
     needs: changes

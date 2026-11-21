@@ -20,6 +20,7 @@ members = [
     "crates/cctui-secrets",
     "crates/cctui-server",
     "crates/cctui-server-core",
+    "crates/cctui-server-kernel",
     "crates/cctui-server-workspace",
     "crates/cctui-supervisor",
     "crates/cctui-telemetry",
@@ -49,6 +50,7 @@ missing_panics_doc = "allow"
 [workspace.dependencies]
 cctui-aws = { path = "crates/cctui-aws" }
 cctui-server-core = { path = "crates/cctui-server-core" }
+cctui-server-kernel = { path = "crates/cctui-server-kernel" }
 cctui-server-workspace = { path = "crates/cctui-server-workspace" }
 cctui-client = { path = "crates/cctui-client" }
 cctui-clientcore = { path = "crates/cctui-clientcore" }

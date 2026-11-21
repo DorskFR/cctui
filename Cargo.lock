@@ -1087,6 +1087,7 @@ dependencies = [
  "base64 0.23.1",
  "cctui-crypto",
  "cctui-proto",
+ "cctui-server-kernel",
  "cctui-telemetry",
  "chrono",
  "dashmap",
@@ -1113,6 +1114,37 @@ dependencies = [
 ]
 
 [[package]]
+name = "cctui-server-kernel"
+version = "0.32.0-beta.20"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "axum",
+ "cctui-crypto",
+ "cctui-proto",
+ "cctui-secrets",
+ "cctui-telemetry",
+ "chrono",
+ "dashmap",
+ "futures-util",
+ "http",
+ "reqwest",
+ "ring",
+ "rustls",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "sqlx",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "toml",
+ "tower",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "cctui-server-workspace"
 version = "0.32.0-beta.20"
 dependencies = [
@@ -1128,6 +1160,7 @@ dependencies = [
  "cctui-query",
  "cctui-secrets",
  "cctui-server-core",
+ "cctui-server-kernel",
  "cctui-telemetry",
  "chrono",
  "dashmap",

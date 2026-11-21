@@ -10,9 +10,10 @@ doctest = false
 workspace = true
 
 [features]
-test-support = []
+test-support = ["cctui-server-kernel/test-support"]
 
 [dependencies]
+cctui-server-kernel.workspace = true
 regex.workspace = true
 base64.workspace = true
 toml.workspace = true
@@ -40,6 +41,7 @@ hmac.workspace = true
 sqlx = { version = "0.9", features = ["runtime-tokio", "tls-rustls", "postgres", "uuid", "chrono", "json"] }
 
 [dev-dependencies]
+cctui-server-kernel = { workspace = true, features = ["test-support"] }
 tokio = { workspace = true, features = ["test-util"] }
 tower.workspace = true
 tempfile.workspace = true

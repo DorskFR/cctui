@@ -14,15 +14,13 @@
 //! no path restriction beyond that, since machine owners can already spawn
 //! arbitrary commands.
 
-use std::fmt::Write as _;
-
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Redirect, Response};
 use axum::{Extension, Json};
 use base64::Engine;
 use cctui_proto::git::GitInfo;
-use cctui_proto::media::{is_inline_type, sniff_media_type};
+use cctui_proto::media::sniff_media_type;
 use cctui_proto::models::{Liveness, SessionStatus};
 use cctui_proto::ws::{READ_FILE_MAX_BYTES, ReadFileErrorKind, ReadFileOk, ReadFileRefusal};
 use chrono::{DateTime, Utc};
@@ -517,36 +515,8 @@ const fn read_error_status(kind: ReadFileErrorKind) -> StatusCode {
     }
 }
 
-/// `Content-Disposition` value: `inline` for viewable types, `attachment`
-/// otherwise; the filename is quoted with `"` / `\` escaped and non-ASCII
-/// carried in the RFC 5987 `filename*` form.
-pub fn content_disposition(media_type: &str, name: &str) -> String {
-    let kind = if is_inline_type(media_type) { "inline" } else { "attachment" };
-    let ascii: String =
-        name.chars()
-            .map(|c| {
-                if c.is_ascii() && !c.is_ascii_control() && c != '"' && c != '\\' { c } else { '_' }
-            })
-            .collect();
-    let mut value = format!("{kind}; filename=\"{ascii}\"");
-    if !name.is_ascii() {
-        let _ = write!(value, "; filename*=UTF-8''{}", percent_encode(name));
-    }
-    value
-}
-
-/// RFC 3986 unreserved characters pass, everything else is `%XX`.
-fn percent_encode(s: &str) -> String {
-    s.bytes()
-        .map(|b| {
-            if b.is_ascii_alphanumeric() || b"-._~".contains(&b) {
-                (b as char).to_string()
-            } else {
-                format!("%{b:02X}")
-            }
-        })
-        .collect()
-}
+pub use cctui_server_kernel::headers::content_disposition;
+use cctui_server_kernel::headers::percent_encode;
 
 fn file_response(
     file: &ReadFileOk,

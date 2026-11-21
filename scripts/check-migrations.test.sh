@@ -28,7 +28,9 @@ fresh() {
   dir="$tmp/$n"
   core="$dir/crates/cctui-server-core"
   local ws="$dir/crates/cctui-server-workspace"
-  mkdir -p "$dir/migrations" "$core/schema" "$core/src" "$ws/schema" "$ws/src" "$dir/crates/cctui-guard/schema"
+  mkdir -p "$dir/migrations" "$core/schema" "$core/src" "$ws/schema" "$ws/src" "$dir/crates/cctui-guard/schema" \
+    "$dir/crates/cctui-server-kernel/src"
+  echo 'pub const LEGACY_BASELINE: i64 = 191;' >"$dir/crates/cctui-server-kernel/src/schema.rs"
   touch "$dir/migrations/001_create_sessions.sql" \
     "$dir/migrations/191_file_blobs.up.sql" "$dir/migrations/191_file_blobs.down.sql" \
     "$core/schema/0001_execution.sql" "$core/schema/0002_machine_launches.sql" \
@@ -45,7 +47,6 @@ core_entries() {
   {
     cat <<'EOF'
 pub const BOOTSTRAP: &str = include_str!("../schema/0001_execution.sql");
-pub const LEGACY_BASELINE: i64 = 191;
 pub struct Migration {
     pub version: i64,
     pub sql: &'static str,

@@ -122,3 +122,21 @@ impl axum::extract::FromRef<AppState> for crate::skills::SkillState {
         Self { pool: state.pool.clone(), skills: state.skills.clone() }
     }
 }
+
+impl cctui_server_kernel::context::KernelContext for AppState {
+    fn pool(&self) -> &sqlx::PgPool {
+        &self.core.pool
+    }
+    fn bus(&self) -> &crate::bus::Bus {
+        &self.core.bus
+    }
+    fn auth_config(&self) -> &crate::auth::AuthConfig {
+        &self.core.auth_config
+    }
+    fn config(&self) -> &Config {
+        &self.config
+    }
+    fn http_client(&self) -> &reqwest::Client {
+        &self.core.http_client
+    }
+}
