@@ -124,20 +124,19 @@ gates nothing must be listed as announcement-only in the gate test in
 | `transcript_search` on (the default) | `pgcrypto`, `pg_trgm`, `btree_gin` |
 | `transcript_search` off | `pgcrypto` |
 
-The search objects (the two extensions and the trigram indexes on
-`search_chunks` and `stream_events`) live in their own schema stream,
+The search objects (the two extensions and the trigram index on
+`search_chunks`) live in their own schema stream,
 `workspace_search`, applied at boot only while `transcript_search` is on.
 
 - A fresh database with search off is created without them: the server
   provisions it through the package streams, never the legacy migrations.
 - Switching search on later applies the step at the next boot, and the
-  backfill chunks the history ingested while it was off. The step builds both
-  trigram indexes inside the boot transaction, holding a `SHARE` lock that
-  blocks writes to `stream_events` and `search_chunks` until they are built.
+  backfill chunks the history ingested while it was off. The step builds the
+  trigram index inside the boot transaction, holding a `SHARE` lock that
+  blocks writes to `search_chunks` until it is built.
 - A database that already has the search objects is left as it is: the step
   creates only what is missing, and switching search off drops nothing.
-- With search off, ingest writes no chunks, transcript rows and the
-  session-ended row store an empty `search_text`, the backfill does not run,
+- With search off, ingest writes no chunks, the backfill does not run,
   `/sessions/search/values` and find-in-conversation answer 404, and
   `GET /sessions/search` answers 400 to a non-empty `q`. With an empty `q` it
   still pages the archive, touching no search object.

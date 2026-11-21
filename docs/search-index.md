@@ -10,12 +10,11 @@ A quoted query is an exact phrase over that text; unquoted words must all
 appear. Queries are folded the same way, so a phrase copied from the rendered
 conversation matches.
 
-> **Upgrading from 0.32.0-beta.14 or older.** Search no longer falls back to the
-> `stream_events.search_text` column. Right after the upgrade, search finds only
-> events that already have chunks; older history becomes searchable as the
-> backfill below walks it (on by default). This is the trade for faster search
-> and smaller storage. A server older than this release refuses to start on a
-> database this release migrated.
+> **Upgrading from 0.32.0-beta.14 or older.** Right after the upgrade, search
+> finds only events that already have chunks; older history becomes searchable
+> as the backfill below walks it (on by default). This is the trade for faster
+> search and smaller storage. A server older than 0.32.0-beta.15 refuses to
+> start on a database this release migrated.
 
 ## Backfill
 

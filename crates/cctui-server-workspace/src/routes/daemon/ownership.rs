@@ -112,10 +112,10 @@ mod tests {
         }
 
         let payload = json!({ "type": "assistant", "text": "run this" });
-        let row = NewEvent::unchunked(&sid, "message", payload, None, true);
+        let row = NewEvent::unchunked(&sid, "message", payload, None);
         let inserted = insert_event(&pool, mb, ub, row).await.expect("insert");
         assert_eq!(inserted, None);
-        persist_session_end(&pool, true, mb, ub, &sid, &EndReason::Killed).await.expect("end");
+        persist_session_end(&pool, mb, ub, &sid, &EndReason::Killed).await.expect("end");
 
         let events: i64 =
             sqlx::query_scalar("SELECT COUNT(*) FROM stream_events WHERE session_id = $1")

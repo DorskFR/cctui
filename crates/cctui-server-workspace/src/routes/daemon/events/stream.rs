@@ -17,14 +17,13 @@ pub(super) async fn on_stream_event(
     event: AdapterEvent,
     stored: Stored,
 ) -> anyhow::Result<Inserted> {
-    let search = state.config.features.contains(cctui_proto::features::Feature::TranscriptSearch);
     let seq = match event {
         AdapterEvent::Message { local_id, mut payload, turn_id } => {
             if let Stored::Done(seq) = stored {
                 seq
             } else {
                 crate::keepalive::observe_message(state, &local_id, &mut payload).await;
-                let row = NewEvent::unchunked(&local_id, "message", payload, turn_id, search);
+                let row = NewEvent::unchunked(&local_id, "message", payload, turn_id);
                 insert_event(&state.pool, machine_id, user_id, row).await?
             }
         }
@@ -32,7 +31,7 @@ pub(super) async fn on_stream_event(
             if let Stored::Done(seq) = stored {
                 seq
             } else {
-                let row = NewEvent::unchunked(&local_id, "tool_use", payload, None, search);
+                let row = NewEvent::unchunked(&local_id, "tool_use", payload, None);
                 insert_event(&state.pool, machine_id, user_id, row).await?
             }
         }

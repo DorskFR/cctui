@@ -169,7 +169,6 @@ impl NewEvent {
         event_type: &'static str,
         payload: serde_json::Value,
         turn_id: Option<Uuid>,
-        _search: bool,
     ) -> Self {
         Self { local_id: local_id.to_owned(), event_type, payload, turn_id }
     }
@@ -430,7 +429,7 @@ mod tests {
             &pool,
             mid,
             uid,
-            NewEvent::unchunked(&sid, "message", payload.clone(), None, true),
+            NewEvent::unchunked(&sid, "message", payload.clone(), None),
         )
         .await
         .unwrap();
@@ -452,7 +451,7 @@ mod tests {
             "line_id": "0f2f3f4e-0000-4000-8000-000000000002",
         });
         let fresh =
-            insert_event(&pool, mid, uid, NewEvent::unchunked(&sid, "message", other, None, true))
+            insert_event(&pool, mid, uid, NewEvent::unchunked(&sid, "message", other, None))
                 .await
                 .unwrap();
         assert!(fresh.is_some(), "a distinct transcript line still persists");
@@ -656,7 +655,7 @@ mod tests {
         let (uid, mid) = seed_machine(&pool, "ingest_chunks_only").await;
         let sid = seed_owned_session(&pool, uid, mid).await;
         let payload = |text: &str| json!({ "role": "assistant", "text": text });
-        let row = |text: &str| NewEvent::unchunked(&sid, "message", payload(text), None, true);
+        let row = |text: &str| NewEvent::unchunked(&sid, "message", payload(text), None);
         let batched = insert_events(&pool, mid, uid, vec![row("a batched quokka line")])
             .await
             .expect("batched insert");
