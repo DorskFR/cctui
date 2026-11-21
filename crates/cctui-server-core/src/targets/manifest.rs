@@ -26,12 +26,7 @@ pub trait DistributionContext: Clone + Send + Sync + 'static {
 
 /// GitHub `owner/repo` to fetch daemon release assets from. Defaults to the
 /// upstream repo; set `CCTUI_REPO` to point at a fork's releases.
-const DEFAULT_REPO: &str = "DorskFR/cctui";
-
-#[must_use]
-pub fn repo() -> String {
-    std::env::var("CCTUI_REPO").unwrap_or_else(|_| DEFAULT_REPO.to_string())
-}
+pub use cctui_server_kernel::config::repo;
 
 /// Targets we publish daemon binaries for (see `.github/workflows/release.yml`).
 const TARGETS: [&str; 3] = ["linux-amd64", "linux-arm64", "darwin-arm64"];

@@ -16,6 +16,17 @@ that you are blocked.
 - `crates/cctui-server-workspace` — the interactive HTTP/WebSocket handlers,
   application state, workspace storage and full-host assembly.
 - `crates/cctui-server-core` — shared execution services and persistence.
+- `crates/cctui-server-kernel` — foundations every server crate shares (bus,
+  auth/authz, config, errors, schema runner); depends on no other server crate.
+- `crates/cctui-server-search` — transcript search index, backfill and its
+  `workspace_search` schema stream; depends only on the kernel.
+- `crates/cctui-server-blobs` — content-addressed blob store, its HTTP routes,
+  image externalization and the blob/image backfills; depends only on the kernel.
+- `crates/cctui-server-voice` — live voice socket, `/voice/*` routes and the
+  speech client; reaches sessions through `VoiceContext`, depends only on the kernel.
+- `crates/cctui-server-extras` — Langfuse tracing, storage stats and lifecycle,
+  the plugin registry, archives, catalog, settings and host tokens; reaches the
+  host through `ExtrasContext`, depends only on the kernel.
 - `crates/cctui-daemon` — long-lived per-machine daemon that spawns/observes sessions.
 - `crates/cctui-admin`, `crates/cctui-proto` — share the workspace version.
 - `crates/cctui-tui` — the terminal client (`cctui`). Maintained; see

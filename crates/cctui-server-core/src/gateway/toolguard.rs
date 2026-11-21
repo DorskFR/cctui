@@ -1045,7 +1045,10 @@ struct CachedPolicy {
     policy: Option<AccountPolicy>,
 }
 
-static POLICY_CACHE: LazyLock<DashMap<Uuid, CachedPolicy>> = LazyLock::new(DashMap::new);
+static POLICY_CACHE: LazyLock<DashMap<Uuid, CachedPolicy>> = LazyLock::new(|| {
+    crate::auth::install_tool_guard_purge(purge_local);
+    DashMap::new()
+});
 
 const SESSION_TTL: Duration = Duration::from_mins(5);
 const SESSION_CACHE_MAX: usize = 4096;
@@ -1071,7 +1074,20 @@ struct CachedSession {
     bypass: Option<Bypass>,
 }
 
-static SESSION_CACHE: LazyLock<DashMap<String, CachedSession>> = LazyLock::new(DashMap::new);
+static SESSION_CACHE: LazyLock<DashMap<String, CachedSession>> = LazyLock::new(|| {
+    crate::auth::install_tool_guard_purge(purge_local);
+    DashMap::new()
+});
+
+fn purge_local(purge: &crate::auth::CachePurge) {
+    match purge {
+        crate::auth::CachePurge::ToolGuardSession { session_id } => {
+            invalidate_session_guard(session_id);
+        }
+        crate::auth::CachePurge::ToolPolicy { account_id } => invalidate_policy_cache(*account_id),
+        crate::auth::CachePurge::Key { .. } | crate::auth::CachePurge::All => {}
+    }
+}
 
 /// Drop an account's cached policy on this replica only. Edits go through
 /// [`crate::auth::AuthConfig::purge_tool_policy`], which also reaches peers.

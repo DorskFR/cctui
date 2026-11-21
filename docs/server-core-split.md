@@ -7,6 +7,10 @@ its feature file, not by a separate binary.
 
 ## Crates
 
+- `cctui-server-kernel`: the delivery bus, auth and route authorization,
+  configuration, errors, the schema runner, adapter normalization and outbound
+  HTTP. It depends on no other server crate; domain crates reach the host
+  through `KernelContext` and their own context traits.
 - `cctui-server-core`: identity, provider accounts, gateway, targets, launch,
   policy, run lifecycle and their persistence. It does not depend on the
   workspace and compiles and tests on its own, without search, image codecs,
@@ -50,7 +54,9 @@ See [features](features.md) for the file format and what each feature carries.
 
 The schema is split into packages, each a forward-only stream of numbered SQL
 files under `crates/<package>/schema/`, registered in that crate's `schema.rs`:
-`core` in `cctui-server-core` and `workspace` in `cctui-server-workspace`. The
+`core` in `cctui-server-core`, `workspace` in `cctui-server-workspace` and
+`workspace_search` in `cctui-server-search`, run by
+the shared runner in `cctui-server-kernel`. The
 legacy `migrations/` stream is frozen at 191; `scripts/check-migrations.sh`
 rejects collisions.
 

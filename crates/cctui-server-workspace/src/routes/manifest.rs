@@ -3,7 +3,6 @@ use crate::state::AppState;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
-pub use cctui_server_core::targets::manifest::repo;
 use cctui_server_core::targets::manifest::{self, DistributionContext, ManifestQuery};
 impl DistributionContext for AppState {
     fn distribution_url(&self) -> &str {

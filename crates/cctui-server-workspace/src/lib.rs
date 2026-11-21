@@ -12,8 +12,6 @@ mod auto_followup;
 mod auto_redeem;
 mod auto_resume;
 mod bandwidth_watch;
-mod blob_move;
-mod blob_store;
 mod brief;
 mod bus;
 mod cache_bust;
@@ -28,15 +26,14 @@ mod dispatchers;
 mod envelope_guard;
 mod error;
 mod events;
+mod extras_context;
 mod followup;
 mod followup_op;
 mod guard_step;
 mod hooks;
 mod http_cache;
-mod image_blobs;
 mod inbox;
 mod keepalive;
-mod langfuse;
 mod live_sessions;
 mod machine_liveness;
 mod machine_resources;
@@ -49,13 +46,8 @@ mod outbox;
 mod outcome;
 mod pace;
 mod peer_policy;
-mod plugin_archive;
-mod plugin_catalog;
-mod plugin_host_token;
 mod plugin_proxy;
-mod plugin_settings;
 mod plugin_store;
-mod plugins;
 mod pool_usage;
 mod presence;
 mod presets;
@@ -68,7 +60,6 @@ mod routes;
 mod scheduled_messages;
 mod scheduled_spawns;
 mod sealed_env;
-mod search_index;
 mod session_emoji;
 mod session_plugins;
 mod session_viewers;
@@ -76,9 +67,7 @@ mod settings_catalog;
 mod skill_store;
 mod soft_limit;
 mod spawn_labels;
-mod speech;
 mod state;
-mod storage_stats;
 mod store;
 mod transcript_md;
 mod turn_dedupe;
@@ -86,11 +75,25 @@ mod update_check;
 mod uploads;
 mod usage_history;
 mod usage_probe;
-mod voice_live;
+mod voice_context;
 mod webauthn;
 mod webhook;
 mod ws;
 
+#[cfg(test)]
+mod storage_admin_tests;
+
+#[cfg(test)]
+mod image_blobs_search_tests;
+
+use cctui_server_blobs::{blob_move, blob_store, image_blobs};
+use cctui_server_extras::{
+    langfuse, plugin_archive, plugin_catalog, plugin_host_token, plugin_settings, plugins,
+    storage_stats,
+};
+use cctui_server_search as search_index;
+use cctui_server_voice as voice_live;
+use cctui_server_voice::speech;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -439,7 +442,7 @@ async fn start_background_tasks(state: &AppState) {
     if let Some(config) = blob_move::Config::from_env() {
         tokio::spawn(blob_move::task(state.pool.clone(), config));
     }
-    tokio::spawn(storage_stats::task(state.pool.clone()));
+    tokio::spawn(storage_stats::task(state.pool.clone(), state.clone()));
 
     // Off the startup path: every replica sweeps, and the scan is IO over a
     // shared volume.
@@ -585,7 +588,7 @@ fn outer_routes(features: FeatureSet) -> OuterRoutes {
         .route("/llms.txt", get(openapi::llms_txt))
         .route("/api/v1/openapi.json", get(openapi::openapi_json))
         .route("/api/v1/ws", get(ws::tui_ws))
-        .feature(Feature::Voice, "/api/v1/ws/voice", get(voice_live::voice_ws))
+        .feature(Feature::Voice, "/api/v1/ws/voice", get(voice_live::voice_ws::<AppState>))
         // Browser auth-cookie endpoints. Self-authenticating: `login`
         // validates the presented token and sets the `HttpOnly` cookie, `logout`
         // clears it — both live outside the `auth_middleware` group.
@@ -715,7 +718,7 @@ fn daemon_routes(r: OuterRoutes) -> OuterRoutes {
         // the per-blob cap so an over-cap upload 413s in-handler.
         .route(
             "/api/v1/daemon/blobs/{hash}",
-            put(routes::blobs::put_blob)
+            put(routes::blobs::put_blob::<AppState>)
                 .layer(DefaultBodyLimit::max(routes::blobs::MAX_BLOB_BYTES + 1024 * 1024)),
         )
         // Update-hook endpoints. Machine-key Bearer self-auth like the blob
@@ -1302,6 +1305,13 @@ mod tests {
             );
             assert!(
                 !tracing::enabled!(target: "cctui_server_workspace::routes", tracing::Level::TRACE)
+            );
+            assert!(tracing::enabled!(target: "cctui_server_kernel::authz", tracing::Level::DEBUG));
+            assert!(tracing::enabled!(target: "cctui_server_search", tracing::Level::DEBUG));
+            assert!(tracing::enabled!(target: "cctui_server_blobs::routes", tracing::Level::DEBUG));
+            assert!(tracing::enabled!(target: "cctui_server_voice::engine", tracing::Level::DEBUG));
+            assert!(
+                tracing::enabled!(target: "cctui_server_extras::storage_stats::job", tracing::Level::DEBUG)
             );
         });
     }

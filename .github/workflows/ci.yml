@@ -214,6 +214,26 @@ jobs:
         if: env.WARM_ONLY != 'true' && contains(format(' {0} ', needs.changes.outputs.crates), ' cctui-server-core ')
         run: cargo check -p cctui-server-core --all-targets --locked
 
+      - name: Kernel builds independently of every other server crate
+        if: env.WARM_ONLY != 'true' && contains(format(' {0} ', needs.changes.outputs.crates), ' cctui-server-kernel ')
+        run: cargo check -p cctui-server-kernel --all-targets --locked
+
+      - name: Search builds on the kernel alone
+        if: env.WARM_ONLY != 'true' && contains(format(' {0} ', needs.changes.outputs.crates), ' cctui-server-search ')
+        run: cargo check -p cctui-server-search --all-targets --locked
+
+      - name: Blobs builds on the kernel alone
+        if: env.WARM_ONLY != 'true' && contains(format(' {0} ', needs.changes.outputs.crates), ' cctui-server-blobs ')
+        run: cargo check -p cctui-server-blobs --all-targets --locked
+
+      - name: Voice builds on the kernel alone
+        if: env.WARM_ONLY != 'true' && contains(format(' {0} ', needs.changes.outputs.crates), ' cctui-server-voice ')
+        run: cargo check -p cctui-server-voice --all-targets --locked
+
+      - name: Extras builds on the kernel alone
+        if: env.WARM_ONLY != 'true' && contains(format(' {0} ', needs.changes.outputs.crates), ' cctui-server-extras ')
+        run: cargo check -p cctui-server-extras --all-targets --locked
+
   test:
     name: cargo test
     needs: changes
