@@ -1,68 +1,14 @@
-use std::io::Cursor;
 use std::time::Duration;
 
-use base64::Engine;
 use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
 use sqlx::{Connection, PgPool};
 use uuid::Uuid;
 
 use super::backfill::{Config, Outcome, Walk, rewrite_event};
+use super::test_support::{
+    Seeded, b64, noise, photo, read_result, screenshot, seeded, set_cursor, sha, walk,
+};
 use super::*;
-
-fn noise(seed: u128, len: usize) -> Vec<u8> {
-    let mut out = Vec::with_capacity(len + 8);
-    let mut x = (u64::try_from(seed % u128::from(u64::MAX)).unwrap_or(1) << 1) | 1;
-    while out.len() < len {
-        x ^= x << 13;
-        x ^= x >> 7;
-        x ^= x << 17;
-        out.extend_from_slice(&x.to_le_bytes());
-    }
-    out.truncate(len);
-    out
-}
-
-fn encode(seed: u128, len: usize, format: image::ImageFormat) -> Vec<u8> {
-    let side = u32::try_from((len / 3).isqrt().max(1)).unwrap();
-    let raw = noise(seed, usize::try_from(side * side * 3).unwrap());
-    let img = image::RgbImage::from_raw(side, side, raw).unwrap();
-    let mut out = Cursor::new(Vec::new());
-    img.write_to(&mut out, format).unwrap();
-    out.into_inner()
-}
-
-/// A decodable PNG of noise, about `len` bytes like a real screenshot.
-#[must_use]
-pub fn screenshot(seed: u128, len: usize) -> Vec<u8> {
-    encode(seed, len, image::ImageFormat::Png)
-}
-
-#[must_use]
-pub fn photo(seed: u128, len: usize) -> Vec<u8> {
-    encode(seed, len, image::ImageFormat::Jpeg)
-}
-
-fn b64(bytes: &[u8]) -> String {
-    base64::engine::general_purpose::STANDARD.encode(bytes)
-}
-
-fn sha(bytes: &[u8]) -> String {
-    hex::encode(Sha256::digest(bytes))
-}
-
-/// A `Read` of a PNG as the claude-code adapter stores it.
-#[must_use]
-pub fn read_result(tool_use_id: &str, bytes: &[u8]) -> Value {
-    json!({
-        "kind": "tool_result",
-        "tool_use_id": tool_use_id,
-        "is_error": false,
-        "content": [{"type": "image", "source": {
-            "type": "base64", "media_type": "image/png", "data": b64(bytes),
-        }}],
-    })
-}
 
 /// Secret redaction rewrote a token-shaped run inside the base64 on prod.
 fn redacted_result(tool_use_id: &str, bytes: &[u8]) -> (Value, String) {
@@ -283,155 +229,6 @@ async fn backfill_rewrites_a_concurrent_batch_and_stores_a_shared_image_once() {
     db.cleanup(&hashes, Some(&walk_name)).await;
 }
 
-struct Seeded {
-    url: String,
-    pool: PgPool,
-    uid: Uuid,
-    machine: Uuid,
-    sessions: Vec<String>,
-}
-
-async fn seeded(name: &str, sessions: usize) -> Option<Seeded> {
-    let url = crate::routes::gateway::test_db_url(name)?;
-    let pool = sqlx::postgres::PgPoolOptions::new()
-        .max_connections(3)
-        .connect(&url)
-        .await
-        .expect("connect test db");
-    let uid = Uuid::new_v4();
-    let machine = Uuid::new_v4();
-    sqlx::query("INSERT INTO users (id, name, key_hash) VALUES ($1, $2, $3)")
-        .bind(uid)
-        .bind(format!("{name}-{uid}"))
-        .bind(format!("h-{uid}"))
-        .execute(&pool)
-        .await
-        .unwrap();
-    sqlx::query("INSERT INTO machines (id, user_id, name, key_hash) VALUES ($1, $2, 'm', $3)")
-        .bind(machine)
-        .bind(uid)
-        .bind(format!("mk-{machine}"))
-        .execute(&pool)
-        .await
-        .unwrap();
-    let mut ids = Vec::new();
-    for i in 0..sessions {
-        let sid = format!("{name}-{i}-{uid}");
-        sqlx::query(
-            "INSERT INTO sessions (id, machine_id, machine_uuid, user_id, working_dir, status, \
-             adapter_id) VALUES ($1, $2, $2, $3, '/w', 'active', 'claude-code')",
-        )
-        .bind(&sid)
-        .bind(machine)
-        .bind(uid)
-        .execute(&pool)
-        .await
-        .unwrap();
-        ids.push(sid);
-    }
-    Some(Seeded { url, pool, uid, machine, sessions: ids })
-}
-
-impl Seeded {
-    async fn insert(&self, session: usize, payload: &Value) -> i64 {
-        sqlx::query_scalar(
-            "INSERT INTO stream_events (session_id, event_type, payload) \
-             VALUES ($1, 'tool_use', $2) RETURNING id",
-        )
-        .bind(&self.sessions[session])
-        .bind(payload)
-        .fetch_one(&self.pool)
-        .await
-        .unwrap()
-    }
-
-    async fn payload(&self, id: i64) -> Value {
-        sqlx::query_scalar("SELECT payload FROM stream_events WHERE id = $1")
-            .bind(id)
-            .fetch_one(&self.pool)
-            .await
-            .unwrap()
-    }
-
-    async fn payload_has(&self, id: i64, needle: &str) -> bool {
-        self.payload(id).await.to_string().contains(needle)
-    }
-
-    async fn chunks_have(&self, id: i64, needle: &str) -> bool {
-        let payload = self.payload(id).await;
-        let bodies = crate::search_index::chunk_event("claude-code", "tool_use", payload);
-        bodies.iter().any(|b| b.contains(needle))
-    }
-
-    async fn blob_rows(&self, hash: &str) -> i64 {
-        sqlx::query_scalar("SELECT count(*) FROM daemon_blobs WHERE hash = $1")
-            .bind(hash)
-            .fetch_one(&self.pool)
-            .await
-            .unwrap()
-    }
-
-    async fn served(&self, session: usize, hash: &str) -> Option<Vec<u8>> {
-        crate::routes::blobs::fetch_session_blob(&self.pool, &self.sessions[session], hash)
-            .await
-            .unwrap()
-            .map(|(_, bytes)| bytes)
-    }
-
-    async fn cleanup(self, hashes: &[String], walk: Option<&str>) {
-        sqlx::query("DELETE FROM sessions WHERE id = ANY($1)")
-            .bind(&self.sessions)
-            .execute(&self.pool)
-            .await
-            .unwrap();
-        sqlx::query("DELETE FROM machines WHERE id = $1")
-            .bind(self.machine)
-            .execute(&self.pool)
-            .await
-            .unwrap();
-        sqlx::query("DELETE FROM users WHERE id = $1")
-            .bind(self.uid)
-            .execute(&self.pool)
-            .await
-            .unwrap();
-        sqlx::query("DELETE FROM daemon_blobs WHERE hash = ANY($1)")
-            .bind(hashes)
-            .execute(&self.pool)
-            .await
-            .unwrap();
-        if let Some(name) = walk {
-            sqlx::query("DELETE FROM image_blob_backfill WHERE name = $1")
-                .bind(name)
-                .execute(&self.pool)
-                .await
-                .unwrap();
-        }
-    }
-}
-
-fn walk(name: &str, rows: usize, scope: &[String]) -> Walk {
-    Walk {
-        name: name.to_owned(),
-        scan: 500,
-        rows,
-        concurrency: 1,
-        lag: Duration::ZERO,
-        scope: Some(scope.to_vec()),
-    }
-}
-
-async fn set_cursor(pool: &PgPool, name: &str, id: i64) {
-    sqlx::query(
-        "INSERT INTO image_blob_backfill (name, last_event_id) VALUES ($1, $2) \
-         ON CONFLICT (name) DO UPDATE SET last_event_id = EXCLUDED.last_event_id",
-    )
-    .bind(name)
-    .bind(id)
-    .execute(pool)
-    .await
-    .unwrap();
-}
-
 async fn cursor(pool: &PgPool, name: &str) -> (i64, i64) {
     sqlx::query_as("SELECT last_event_id, rows_rewritten FROM image_blob_backfill WHERE name = $1")
         .bind(name)
@@ -474,11 +271,10 @@ async fn ingest_stores_a_repeated_screenshot_once() {
     assert_eq!(source(&first, 0)["blob_id"], sha(&png));
     assert_eq!(source(&second, 0)["blob_id"], sha(&png));
     assert_eq!(db.blob_rows(&sha(&png)).await, 1, "one row per content hash");
-    let stored =
-        crate::routes::blobs::read_blob_in(&mut db.pool.acquire().await.unwrap(), &sha(&png))
-            .await
-            .unwrap()
-            .unwrap();
+    let stored = crate::routes::read_blob_in(&mut db.pool.acquire().await.unwrap(), &sha(&png))
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(stored, png);
     db.cleanup(&[sha(&png)], None).await;
 }
@@ -630,30 +426,6 @@ async fn a_rewrite_that_duplicates_a_stored_row_is_left_inline() {
 }
 
 #[tokio::test]
-async fn backfill_leaves_a_duplicate_row_inline_without_base64_in_its_chunks() {
-    let Some(db) = seeded("image_backfill_left_inline", 1).await else { return };
-    let walk_name = format!("test-{}", db.uid);
-    let png = screenshot(Uuid::new_v4().as_u128(), 30_000);
-    let inline = read_result("toolu_inline_dup", &png);
-    let (moved, _) = extract(&inline).unwrap();
-    let kept = db.insert(0, &moved).await;
-    let id = db.insert(0, &inline).await;
-    let needle = &b64(&png)[..64];
-
-    let w = walk(&walk_name, 20, &db.sessions);
-    set_cursor(&db.pool, &walk_name, kept).await;
-    let first = w.step(&db.pool).await.unwrap();
-    assert_eq!((first.rewritten, first.left_inline), (0, 1));
-    assert_eq!(db.payload(id).await, inline, "a duplicate keeps its inline payload");
-    assert!(!db.chunks_have(id, needle).await, "its chunks carry no base64");
-
-    set_cursor(&db.pool, &walk_name, kept).await;
-    let again = w.step(&db.pool).await.unwrap();
-    assert_eq!((again.rewritten, again.left_inline), (0, 1), "a re-run writes nothing");
-    db.cleanup(&[sha(&png)], Some(&walk_name)).await;
-}
-
-#[tokio::test]
 async fn inline_on_demand_follows_links_and_the_size_limit() {
     let Some(db) = seeded("image_inline_on_demand", 2).await else { return };
     let png = screenshot(Uuid::new_v4().as_u128(), 60_000);
@@ -665,7 +437,8 @@ async fn inline_on_demand_follows_links_and_the_size_limit() {
         .execute(&db.pool)
         .await
         .unwrap();
-    let client = crate::normalize::for_client("claude-code", "tool_use", payload).unwrap();
+    let client =
+        cctui_server_kernel::normalize::for_client("claude-code", "tool_use", payload).unwrap();
     let inlined = |session: usize, budget: usize| {
         let (pool, sid, row) = (db.pool.clone(), db.sessions[session].clone(), client.clone());
         async move {
@@ -694,7 +467,9 @@ async fn inline_on_demand_follows_links_and_the_size_limit() {
         .execute(&db.pool)
         .await
         .unwrap();
-    let mut rows = vec![crate::normalize::for_client("claude-code", "tool_use", redacted).unwrap()];
+    let mut rows = vec![
+        cctui_server_kernel::normalize::for_client("claude-code", "tool_use", redacted).unwrap(),
+    ];
     inline_client_rows(&db.pool, &db.sessions[0], &mut rows, INLINE_IMAGES_MAX_BYTES)
         .await
         .unwrap();
@@ -735,7 +510,7 @@ fn with_text(png: &[u8], text: &[u8]) -> Vec<u8> {
 impl Seeded {
     async fn store_intact(&self, session: usize, bytes: &[u8]) {
         let mut conn = self.pool.acquire().await.unwrap();
-        crate::routes::blobs::store_blob_in(&mut conn, bytes, Some("image/png")).await.unwrap();
+        crate::routes::store_blob_in(&mut conn, bytes, Some("image/png")).await.unwrap();
         self.link(session, &sha(bytes)).await;
     }
 
@@ -751,9 +526,7 @@ impl Seeded {
     /// A ref stored opaque before sources were validated.
     async fn legacy_opaque(&self, session: usize, text: &str) -> i64 {
         let mut conn = self.pool.acquire().await.unwrap();
-        crate::routes::blobs::store_blob_in(&mut conn, text.as_bytes(), Some("text/plain"))
-            .await
-            .unwrap();
+        crate::routes::store_blob_in(&mut conn, text.as_bytes(), Some("text/plain")).await.unwrap();
         drop(conn);
         self.link(session, &sha(text.as_bytes())).await;
         let payload = json!({

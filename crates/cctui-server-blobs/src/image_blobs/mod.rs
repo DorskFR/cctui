@@ -15,7 +15,7 @@ use cctui_proto::media::sniff_media_type;
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 
-use crate::routes::blobs::MAX_BLOB_BYTES;
+use crate::routes::MAX_BLOB_BYTES;
 
 pub const MIN_BLOB_BYTES: usize = 1024;
 
@@ -220,8 +220,7 @@ pub async fn review_opaque(
     collect_refs(payload, &mut refs);
     let mut repair = Repair::default();
     for r in refs.into_iter().filter(|r| r.opaque && !r.flagged) {
-        let stored: Option<Vec<u8>> =
-            crate::routes::blobs::read_blob_in(&mut *conn, &r.hash).await?;
+        let stored: Option<Vec<u8>> = crate::routes::read_blob_in(&mut *conn, &r.hash).await?;
         let Some(text) = stored.and_then(|b| String::from_utf8(b).ok()) else { continue };
         let Err(reason) = validate::check(r.media_type.as_deref(), &text) else { continue };
         let found = if reason == validate::REDACTED {
@@ -252,7 +251,7 @@ pub async fn store_verified(
     let mut ordered: Vec<&Extracted> = blobs.iter().collect();
     ordered.sort_unstable_by(|a, b| a.hash.cmp(&b.hash));
     for b in ordered {
-        let stored = crate::routes::blobs::store_blob_in(
+        let stored = crate::routes::store_blob_in(
             &mut *conn,
             &b.bytes,
             Some(sniff_media_type("", &b.bytes)),
@@ -266,7 +265,7 @@ pub async fn store_verified(
                 .bind(&b.hash)
                 .fetch_optional(&mut *conn)
                 .await?;
-        let stored_bytes = crate::routes::blobs::read_blob_in(&mut *conn, &b.hash).await?;
+        let stored_bytes = crate::routes::read_blob_in(&mut *conn, &b.hash).await?;
         if stored_size != i64::try_from(b.bytes.len()).ok()
             || stored_bytes.as_deref() != Some(b.bytes.as_slice())
         {
@@ -496,7 +495,7 @@ pub async fn inline_client_rows(
                 continue;
             }
             let Some((media_type, bytes)) =
-                crate::routes::blobs::fetch_session_blob(pool, session_id, &r.hash).await?
+                crate::routes::fetch_session_blob(pool, session_id, &r.hash).await?
             else {
                 continue;
             };
@@ -515,5 +514,7 @@ pub async fn inline_client_rows(
     Ok(())
 }
 
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_support;
 #[cfg(test)]
-pub mod tests;
+mod tests;

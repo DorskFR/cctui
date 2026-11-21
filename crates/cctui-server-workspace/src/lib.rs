@@ -12,8 +12,6 @@ mod auto_followup;
 mod auto_redeem;
 mod auto_resume;
 mod bandwidth_watch;
-mod blob_move;
-mod blob_store;
 mod brief;
 mod bus;
 mod cache_bust;
@@ -33,7 +31,6 @@ mod followup_op;
 mod guard_step;
 mod hooks;
 mod http_cache;
-mod image_blobs;
 mod inbox;
 mod keepalive;
 mod langfuse;
@@ -90,6 +87,10 @@ mod webauthn;
 mod webhook;
 mod ws;
 
+#[cfg(test)]
+mod image_blobs_search_tests;
+
+use cctui_server_blobs::{blob_move, blob_store, image_blobs};
 use cctui_server_search as search_index;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -715,7 +716,7 @@ fn daemon_routes(r: OuterRoutes) -> OuterRoutes {
         // the per-blob cap so an over-cap upload 413s in-handler.
         .route(
             "/api/v1/daemon/blobs/{hash}",
-            put(routes::blobs::put_blob)
+            put(routes::blobs::put_blob::<AppState>)
                 .layer(DefaultBodyLimit::max(routes::blobs::MAX_BLOB_BYTES + 1024 * 1024)),
         )
         // Update-hook endpoints. Machine-key Bearer self-auth like the blob
@@ -1305,6 +1306,7 @@ mod tests {
             );
             assert!(tracing::enabled!(target: "cctui_server_kernel::authz", tracing::Level::DEBUG));
             assert!(tracing::enabled!(target: "cctui_server_search", tracing::Level::DEBUG));
+            assert!(tracing::enabled!(target: "cctui_server_blobs::routes", tracing::Level::DEBUG));
         });
     }
 

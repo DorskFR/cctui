@@ -55,7 +55,7 @@ mod tests {
     use std::io::Cursor;
 
     use super::*;
-    use crate::image_blobs::tests::{photo, screenshot};
+    use crate::image_blobs::test_support::{photo, screenshot};
 
     fn b64(bytes: &[u8]) -> String {
         base64::engine::general_purpose::STANDARD.encode(bytes)

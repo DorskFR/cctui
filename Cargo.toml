@@ -19,6 +19,7 @@ members = [
     "crates/cctui-redteam",
     "crates/cctui-secrets",
     "crates/cctui-server",
+    "crates/cctui-server-blobs",
     "crates/cctui-server-core",
     "crates/cctui-server-kernel",
     "crates/cctui-server-search",
@@ -50,6 +51,7 @@ missing_panics_doc = "allow"
 
 [workspace.dependencies]
 cctui-aws = { path = "crates/cctui-aws" }
+cctui-server-blobs = { path = "crates/cctui-server-blobs" }
 cctui-server-core = { path = "crates/cctui-server-core" }
 cctui-server-kernel = { path = "crates/cctui-server-kernel" }
 cctui-server-search = { path = "crates/cctui-server-search" }

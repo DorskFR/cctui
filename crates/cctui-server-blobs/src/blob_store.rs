@@ -9,7 +9,7 @@ use cctui_aws::AwsCredentials;
 use cctui_aws::s3::S3Client;
 use sha2::{Digest, Sha256};
 
-use crate::routes::blobs::is_sha256_hex;
+use crate::routes::is_sha256_hex;
 
 const DEFAULT_REGION: &str = "us-east-1";
 
@@ -390,7 +390,7 @@ mod tests {
 
     #[tokio::test]
     async fn an_external_blob_is_deleted_only_once_its_row_is_gone() {
-        let Some(url) = crate::routes::gateway::test_db_url("external_blob_delete") else {
+        let Some(url) = cctui_server_kernel::test_support::db_url("external_blob_delete") else {
             return;
         };
         let pool = sqlx::postgres::PgPoolOptions::new()
@@ -402,8 +402,7 @@ mod tests {
         let store = BlobStore::File(dir.path().to_owned());
         let bytes = format!("external delete {}", uuid::Uuid::new_v4()).into_bytes();
         let mut conn = pool.acquire().await.unwrap();
-        let stored =
-            crate::routes::blobs::store_blob_with(&mut conn, &store, &bytes, None).await.unwrap();
+        let stored = crate::routes::store_blob_with(&mut conn, &store, &bytes, None).await.unwrap();
         drop(conn);
         let file = dir.path().join(&stored.hash);
 

@@ -4,7 +4,7 @@ pub mod accounts;
 pub mod admin_auth;
 pub mod attachments;
 pub mod auth;
-pub mod blobs;
+pub use cctui_server_blobs::routes as blobs;
 pub mod bookmarks;
 pub mod cache_loss;
 pub mod capabilities;

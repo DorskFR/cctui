@@ -93,7 +93,7 @@ pub async fn find_intact(
         .await?;
     let mut found = None;
     for (hash,) in rows {
-        let Some(bytes) = crate::routes::blobs::read_blob_in(&mut *conn, &hash).await? else {
+        let Some(bytes) = crate::routes::read_blob_in(&mut *conn, &hash).await? else {
             continue;
         };
         if !fits(&base64::engine::general_purpose::STANDARD.encode(&bytes), &segs) {

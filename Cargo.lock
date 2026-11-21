@@ -1079,6 +1079,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "cctui-server-blobs"
+version = "0.32.0-beta.20"
+dependencies = [
+ "anyhow",
+ "axum",
+ "base64 0.23.1",
+ "bytes",
+ "cctui-aws",
+ "cctui-proto",
+ "cctui-server-kernel",
+ "futures-util",
+ "hex",
+ "image",
+ "serde_json",
+ "sha2 0.10.9",
+ "sqlx",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "cctui-server-core"
 version = "0.32.0-beta.20"
 dependencies = [
@@ -1168,11 +1191,11 @@ dependencies = [
  "axum",
  "base64 0.23.1",
  "bytes",
- "cctui-aws",
  "cctui-crypto",
  "cctui-proto",
  "cctui-query",
  "cctui-secrets",
+ "cctui-server-blobs",
  "cctui-server-core",
  "cctui-server-kernel",
  "cctui-server-search",
@@ -1185,7 +1208,6 @@ dependencies = [
  "hmac 0.12.1",
  "http",
  "http-body-util",
- "image",
  "lettre",
  "log",
  "opentelemetry",

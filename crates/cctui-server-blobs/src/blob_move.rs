@@ -256,7 +256,7 @@ mod tests {
     }
 
     async fn test_pool(name: &str) -> Option<PgPool> {
-        let url = crate::routes::gateway::test_db_url(name)?;
+        let url = cctui_server_kernel::test_support::db_url(name)?;
         Some(
             sqlx::postgres::PgPoolOptions::new()
                 .max_connections(3)
@@ -386,10 +386,9 @@ mod tests {
         for (hash, bytes) in hashes.iter().zip(&blobs) {
             assert_eq!(row(&pool, hash).await, (true, Vec::new()), "bytes cleared");
             assert_eq!(std::fs::read(dir.path().join(hash)).unwrap(), *bytes);
-            let read = crate::routes::blobs::read_blob_with(&mut conn, &store, hash).await;
+            let read = crate::routes::read_blob_with(&mut conn, &store, hash).await;
             assert_eq!(read.unwrap().as_deref(), Some(bytes.as_slice()));
-            let served =
-                crate::routes::blobs::fetch_session_blob_with(&pool, &store, &sid, hash).await;
+            let served = crate::routes::fetch_session_blob_with(&pool, &store, &sid, hash).await;
             assert_eq!(served.unwrap().map(|(_, b)| b).as_deref(), Some(bytes.as_slice()));
         }
         drop(conn);

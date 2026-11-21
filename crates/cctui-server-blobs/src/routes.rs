@@ -21,32 +21,36 @@ use cctui_proto::media::sniff_media_type;
 use sha2::{Digest, Sha256};
 
 use crate::blob_store::{self, BlobStore};
-use crate::routes::fs::content_disposition;
-use crate::state::AppState;
+use cctui_server_kernel::context::KernelContext;
+use cctui_server_kernel::headers::content_disposition;
 
 /// A single blob may be several MB (full-resolution screenshots); cap it well
 /// above the per-image limit.
 pub const MAX_BLOB_BYTES: usize = 32 * 1024 * 1024;
 
+#[must_use]
 pub fn is_sha256_hex(s: &str) -> bool {
     s.len() == 64 && s.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
 }
 
-async fn require_machine(state: &AppState, headers: &header::HeaderMap) -> Result<(), StatusCode> {
+async fn require_machine<S: KernelContext>(
+    state: &S,
+    headers: &header::HeaderMap,
+) -> Result<(), StatusCode> {
     let token = headers
         .get(header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.strip_prefix("Bearer "))
         .ok_or(StatusCode::UNAUTHORIZED)?;
-    let ctx = state.auth_config.validate(token).await.ok_or(StatusCode::UNAUTHORIZED)?;
+    let ctx = state.auth_config().validate(token).await.ok_or(StatusCode::UNAUTHORIZED)?;
     if ctx.machine_id.is_none() {
         return Err(StatusCode::FORBIDDEN);
     }
     Ok(())
 }
 
-pub async fn put_blob(
-    State(state): State<AppState>,
+pub async fn put_blob<S: KernelContext>(
+    State(state): State<S>,
     headers: header::HeaderMap,
     Path(hash): Path<String>,
     body: Bytes,
@@ -65,7 +69,7 @@ pub async fn put_blob(
 
     let media_type = sniff_media_type("", &body);
 
-    match store_blob(&state.pool, &body, Some(media_type)).await {
+    match store_blob(state.pool(), &body, Some(media_type)).await {
         Ok(StoredBlob { created: true, .. }) => Ok(StatusCode::CREATED),
         Ok(StoredBlob { created: false, .. }) => Ok(StatusCode::OK),
         Err(e) => {
@@ -192,14 +196,14 @@ pub async fn read_blob_with(
     Ok(Some(resolve(store, hash, bytes, external, size).await?))
 }
 
-pub async fn get_blob(
-    State(state): State<AppState>,
+pub async fn get_blob<S: KernelContext>(
+    State(state): State<S>,
     Path((session_id, hash)): Path<(String, String)>,
 ) -> Result<Response, StatusCode> {
     if !is_sha256_hex(&hash) {
         return Err(StatusCode::BAD_REQUEST);
     }
-    let row = fetch_session_blob(&state.pool, &session_id, &hash).await.map_err(|e| {
+    let row = fetch_session_blob(state.pool(), &session_id, &hash).await.map_err(|e| {
         tracing::error!("blob get: {e}");
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
@@ -207,9 +211,11 @@ pub async fn get_blob(
     Ok(blob_response(&hash, bytes))
 }
 
-/// The stored media type is never trusted: the type is re-sniffed from the
-/// bytes (never active), non-inline types download, and the sandbox CSP keeps
-/// anything that slips through from running on this origin.
+/// The stored media type is never trusted.
+///
+/// The type is re-sniffed from the bytes (never active), non-inline types
+/// download, and the sandbox CSP keeps anything that slips through from running
+/// on this origin.
 pub fn blob_response(hash: &str, bytes: Vec<u8>) -> Response {
     let media_type = sniff_media_type("", &bytes);
     let disposition = content_disposition(media_type, hash);
@@ -279,7 +285,7 @@ mod tests {
     }
 
     async fn test_pool(test_name: &str) -> Option<sqlx::PgPool> {
-        let url = crate::routes::gateway::test_db_url(test_name)?;
+        let url = cctui_server_kernel::test_support::db_url(test_name)?;
         Some(
             sqlx::postgres::PgPoolOptions::new()
                 .max_connections(2)

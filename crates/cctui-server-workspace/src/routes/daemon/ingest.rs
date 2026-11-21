@@ -705,13 +705,13 @@ mod tests {
         let (uid, mid) = seed_machine(&pool, "image_ingest").await;
         let a = seed_owned_session(&pool, uid, mid).await;
         let b = seed_owned_session(&pool, uid, mid).await;
-        let png = crate::image_blobs::tests::screenshot(Uuid::new_v4().as_u128(), 450_000);
+        let png = crate::image_blobs::test_support::screenshot(Uuid::new_v4().as_u128(), 450_000);
         let hash = hex::encode(sha2::Sha256::digest(&png));
         let data_head = base64::engine::general_purpose::STANDARD.encode(&png[..96]);
 
         let mut rows = Vec::new();
         for sid in [&a, &b] {
-            let mut payload = crate::image_blobs::tests::read_result("toolu_shot", &png);
+            let mut payload = crate::image_blobs::test_support::read_result("toolu_shot", &png);
             assert!(crate::image_blobs::externalize(&pool, sid, "tool_use", &mut payload).await);
             rows.push(NewEvent {
                 local_id: sid.clone(),
