@@ -10,7 +10,7 @@ pub(super) fn register(r: Routes) -> Routes {
         &[Method::GET],
         "/sessions/{id}/user-actions",
         "What the agent is waiting on from the user.",
-        get(routes::user_actions::get_list),
+        get(routes::user_actions::get_list::<crate::state::AppState>),
         Authn::Bearer,
         sess_read(),
     )
@@ -18,7 +18,7 @@ pub(super) fn register(r: Routes) -> Routes {
         &[Method::POST],
         "/sessions/{id}/user-actions/{aid}/tick",
         "Resolve one user action as the user (done or dropped).",
-        post(routes::user_actions::ui_tick),
+        post(routes::user_actions::ui_tick::<crate::state::AppState>),
         Authn::Bearer,
         sess_write(),
     )

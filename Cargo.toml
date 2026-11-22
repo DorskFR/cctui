@@ -25,6 +25,7 @@ members = [
     "crates/cctui-server-dispatch",
     "crates/cctui-server-extras",
     "crates/cctui-server-kernel",
+    "crates/cctui-server-notify",
     "crates/cctui-server-search",
     "crates/cctui-server-voice",
     "crates/cctui-server-workspace",
@@ -61,6 +62,7 @@ cctui-server-core = { path = "crates/cctui-server-core" }
 cctui-server-dispatch = { path = "crates/cctui-server-dispatch" }
 cctui-server-extras = { path = "crates/cctui-server-extras" }
 cctui-server-kernel = { path = "crates/cctui-server-kernel" }
+cctui-server-notify = { path = "crates/cctui-server-notify" }
 cctui-server-search = { path = "crates/cctui-server-search" }
 cctui-server-voice = { path = "crates/cctui-server-voice" }
 cctui-server-workspace = { path = "crates/cctui-server-workspace" }

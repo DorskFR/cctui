@@ -27,7 +27,7 @@ that you are blocked.
 - `crates/cctui-server-kernel` — foundations every server crate shares (bus,
   auth/authz, config, errors, schema runner, lifecycle events, session registry,
   pending commands, shared stores, peer delivery and rate limits, the `core`
-  schema stream and the shared account, session and presence types); depends on
+  schema stream and the shared account, session, presence and notification types); depends on
   no other server crate.
 - `crates/cctui-server-search` — transcript search index, backfill and its
   `workspace_search` schema stream; depends only on the kernel.
@@ -40,6 +40,10 @@ that you are blocked.
   routes), skills, previews, WS presence, rooms and the cctuiverse federation
   with peer messaging; reaches the host through `ExtrasContext` and its `hooks`
   traits (sessions, blobs), depends only on the kernel.
+- `crates/cctui-server-notify` — notifications (store, routing, channels: in-app,
+  ntfy, email, Web Push; producers, expiry, retention), their routes and the
+  session user-action list; reaches the host through `NotifyContext` and its
+  `hooks` traits (sessions, dispatch), depends only on the kernel.
 - `crates/cctui-daemon` — long-lived per-machine daemon that spawns/observes sessions.
 - `crates/cctui-admin`, `crates/cctui-proto` — share the workspace version.
 - `crates/cctui-tui` — the terminal client (`cctui`). Maintained; see

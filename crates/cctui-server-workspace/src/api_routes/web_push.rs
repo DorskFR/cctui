@@ -10,7 +10,7 @@ pub(super) fn register(r: Routes) -> Routes {
         &[Method::GET],
         "/notifications/vapid-key",
         "The public VAPID key a browser subscribes to Web Push with.",
-        get(routes::web_push::vapid_key),
+        get(routes::web_push::vapid_key::<crate::state::AppState>),
         Authn::Bearer,
         Human,
     )

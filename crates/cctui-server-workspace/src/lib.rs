@@ -41,7 +41,10 @@ mod live_sessions;
 use cctui_server_dispatch::{machine_liveness, machine_resources};
 mod metrics;
 mod normalize;
-mod notify;
+use cctui_server_notify::notify;
+mod notify_context;
+#[cfg(test)]
+mod notify_tests;
 mod openapi;
 mod outbound;
 mod outbox;
@@ -621,10 +624,10 @@ fn outer_routes(features: FeatureSet) -> OuterRoutes {
             post(routes::device_auth::poll::<crate::state::AppState>),
         )
         // The token in the path is the credential; `GET` only renders the confirm page.
-        .route("/n/{token}", get(routes::notifications::confirm_page))
+        .route("/n/{token}", get(routes::notifications::confirm_page::<crate::state::AppState>))
         .route(
             "/api/v1/notifications/actions/{token}",
-            post(routes::notifications::act_with_token),
+            post(routes::notifications::act_with_token::<crate::state::AppState>),
         );
     infra_routes(daemon_routes(r))
 }
@@ -647,7 +650,10 @@ fn daemon_routes(r: OuterRoutes) -> OuterRoutes {
         // machine-key self-auth as gateway-env.
         .route("/api/v1/daemon/sessions/{id}/token-valid", get(routes::daemon::session_token_valid))
         .route("/api/v1/daemon/sessions/{id}/limits", get(routes::session_limits::session_limits))
-        .route("/api/v1/daemon/sessions/{id}/user-actions", post(routes::user_actions::daemon_add))
+        .route(
+            "/api/v1/daemon/sessions/{id}/user-actions",
+            post(routes::user_actions::daemon_add::<crate::state::AppState>),
+        )
         .route("/api/v1/daemon/sessions/{id}/outcome", post(outcome::daemon_declare))
         .feature(
             Feature::Automation,
@@ -657,7 +663,7 @@ fn daemon_routes(r: OuterRoutes) -> OuterRoutes {
         .launch_context()
         .route(
             "/api/v1/daemon/sessions/{id}/user-actions/tick",
-            post(routes::user_actions::daemon_tick),
+            post(routes::user_actions::daemon_tick::<crate::state::AppState>),
         )
         .feature(
             Feature::ChildSessions,
@@ -1349,6 +1355,9 @@ mod tests {
             assert!(tracing::enabled!(target: "cctui_server_voice::engine", tracing::Level::DEBUG));
             assert!(
                 tracing::enabled!(target: "cctui_server_extras::storage_stats::job", tracing::Level::DEBUG)
+            );
+            assert!(
+                tracing::enabled!(target: "cctui_server_notify::notify::dispatcher", tracing::Level::DEBUG)
             );
         });
     }

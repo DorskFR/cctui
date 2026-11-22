@@ -19,6 +19,7 @@ cctui-server-core.workspace = true
 cctui-server-dispatch.workspace = true
 cctui-server-extras.workspace = true
 cctui-server-kernel.workspace = true
+cctui-server-notify.workspace = true
 cctui-server-search.workspace = true
 cctui-server-voice.workspace = true
 cctui-proto = { workspace = true, features = ["sqlx"] }

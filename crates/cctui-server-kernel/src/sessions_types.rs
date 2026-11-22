@@ -128,3 +128,56 @@ pub struct Followed {
     pub command_id: uuid::Uuid,
     pub to: Option<String>,
 }
+
+pub const LIVE_WITHIN_SECS: f64 = 45.0;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Source {
+    N8n,
+    Webhook,
+    Schedule,
+    Timer,
+    Outcome,
+    Approval,
+    Human,
+}
+
+impl Source {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::N8n => "n8n",
+            Self::Webhook => "webhook",
+            Self::Schedule => "schedule",
+            Self::Timer => "timer",
+            Self::Outcome => "outcome",
+            Self::Approval => "approval",
+            Self::Human => "human",
+        }
+    }
+
+    #[must_use]
+    pub fn parse(raw: &str) -> Option<Self> {
+        Some(match raw {
+            "n8n" => Self::N8n,
+            "webhook" => Self::Webhook,
+            "schedule" => Self::Schedule,
+            "timer" => Self::Timer,
+            "outcome" => Self::Outcome,
+            "approval" => Self::Approval,
+            "human" => Self::Human,
+            _ => return None,
+        })
+    }
+
+    #[must_use]
+    pub const fn requires_source_id(self) -> bool {
+        matches!(self, Self::N8n | Self::Webhook)
+    }
+}
+
+#[must_use]
+pub fn session_lane_key(session_id: &str) -> String {
+    format!("session:{session_id}")
+}

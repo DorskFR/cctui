@@ -1,6 +1,8 @@
 use sqlx::PgPool;
 use uuid::Uuid;
 
+pub use cctui_server_kernel::test_support::seed_session;
+
 use super::Source;
 use super::store::{
     Cancel, NewEvent, Retry, cancel, get, insert_event, list, prune_delivered, retry, session_lane,
@@ -15,37 +17,6 @@ async fn pool(name: &str) -> Option<PgPool> {
             .await
             .expect("connect test db"),
     )
-}
-
-pub async fn seed_session(pool: &PgPool, name: &str) -> (Uuid, String) {
-    let uid = Uuid::new_v4();
-    let machine = Uuid::new_v4();
-    sqlx::query("INSERT INTO users (id, name, key_hash) VALUES ($1, $2, $3)")
-        .bind(uid)
-        .bind(format!("{name}-{uid}"))
-        .bind(format!("h-{uid}"))
-        .execute(pool)
-        .await
-        .unwrap();
-    sqlx::query("INSERT INTO machines (id, user_id, name, key_hash) VALUES ($1, $2, 'm', $3)")
-        .bind(machine)
-        .bind(uid)
-        .bind(format!("mk-{machine}"))
-        .execute(pool)
-        .await
-        .unwrap();
-    let sid = format!("{name}-{uid}");
-    sqlx::query(
-        "INSERT INTO sessions (id, machine_id, machine_uuid, user_id, working_dir, status, \
-         adapter_id) VALUES ($1, $2, $2, $3, '/w', 'active', 'claude-code')",
-    )
-    .bind(&sid)
-    .bind(machine)
-    .bind(uid)
-    .execute(pool)
-    .await
-    .unwrap();
-    (uid, sid)
 }
 
 fn event(lane_id: Uuid, user_id: Uuid, source_id: Option<&str>) -> NewEvent<'_> {

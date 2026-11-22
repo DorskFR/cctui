@@ -5,7 +5,7 @@ use sqlx::PgPool;
 
 use crate::state::AppState;
 
-pub const LIVE_WITHIN_SECS: f64 = 45.0;
+pub use cctui_server_kernel::sessions_types::LIVE_WITHIN_SECS;
 pub const HEARTBEAT: std::time::Duration = std::time::Duration::from_secs(15);
 const REAP_AFTER_SECS: f64 = 600.0;
 

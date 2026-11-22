@@ -25,6 +25,7 @@ pub mod headers;
 pub mod http_cache;
 mod live_sessions;
 pub mod normalize;
+pub mod notify_types;
 pub mod outbound;
 pub mod peer_limits;
 pub mod peer_session;

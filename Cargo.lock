@@ -1267,6 +1267,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "cctui-server-notify"
+version = "0.32.0-beta.21"
+dependencies = [
+ "async-trait",
+ "aws-lc-rs",
+ "axum",
+ "base64 0.23.1",
+ "cctui-proto",
+ "cctui-secrets",
+ "cctui-server-kernel",
+ "chrono",
+ "futures-util",
+ "http",
+ "lettre",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "sqlx",
+ "thiserror 2.0.21",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "cctui-server-search"
 version = "0.32.0-beta.21"
 dependencies = [
@@ -1322,6 +1348,7 @@ dependencies = [
  "cctui-server-dispatch",
  "cctui-server-extras",
  "cctui-server-kernel",
+ "cctui-server-notify",
  "cctui-server-search",
  "cctui-server-voice",
  "cctui-telemetry",
