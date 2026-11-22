@@ -21,7 +21,6 @@ members = [
     "crates/cctui-server",
     "crates/cctui-server-accounts",
     "crates/cctui-server-blobs",
-    "crates/cctui-server-core",
     "crates/cctui-server-dispatch",
     "crates/cctui-server-extras",
     "crates/cctui-server-kernel",
@@ -29,7 +28,6 @@ members = [
     "crates/cctui-server-search",
     "crates/cctui-server-sessions",
     "crates/cctui-server-voice",
-    "crates/cctui-server-workspace",
     "crates/cctui-supervisor",
     "crates/cctui-telemetry",
     "crates/cctui-tui",
@@ -59,7 +57,6 @@ missing_panics_doc = "allow"
 cctui-aws = { path = "crates/cctui-aws" }
 cctui-server-accounts = { path = "crates/cctui-server-accounts" }
 cctui-server-blobs = { path = "crates/cctui-server-blobs" }
-cctui-server-core = { path = "crates/cctui-server-core" }
 cctui-server-dispatch = { path = "crates/cctui-server-dispatch" }
 cctui-server-extras = { path = "crates/cctui-server-extras" }
 cctui-server-kernel = { path = "crates/cctui-server-kernel" }
@@ -67,7 +64,6 @@ cctui-server-notify = { path = "crates/cctui-server-notify" }
 cctui-server-search = { path = "crates/cctui-server-search" }
 cctui-server-sessions = { path = "crates/cctui-server-sessions" }
 cctui-server-voice = { path = "crates/cctui-server-voice" }
-cctui-server-workspace = { path = "crates/cctui-server-workspace" }
 cctui-client = { path = "crates/cctui-client" }
 cctui-clientcore = { path = "crates/cctui-clientcore" }
 cctui-proto = { path = "crates/cctui-proto" }

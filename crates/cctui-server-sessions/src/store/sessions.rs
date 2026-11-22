@@ -36,8 +36,7 @@ mod tests {
     #[test]
     fn check_constraint_lists_exactly_the_enum() {
         let migration = include_str!("../../../../migrations/139_sessions_status_check.up.sql");
-        let latest =
-            include_str!("../../../cctui-server-workspace/schema/0010_queued_sessions.sql");
+        let latest = include_str!("../../../cctui-server/schema/0010_queued_sessions.sql");
         let quoted: Vec<String> =
             SessionRowStatus::ALL.iter().map(|s| format!("'{}'", s.as_str())).collect();
         assert!(

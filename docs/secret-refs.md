@@ -101,9 +101,8 @@ To use a literal that starts with one of those prefixes, prefix it with
 ## Engines per build
 
 `cctui-secrets` compiles `env:` and `file:` always; `k8s`, `bao` and `aws-sm`
-are cargo features. The guard proxy enables all three. The full server
-(`cctui-server-workspace`), the core server and the dispatchers
-(`cctui-dispatcher-core`) enable `k8s` and `bao`; each exposes an `aws-sm`
-feature for builds that need it (for example
-`cargo build -p cctui-server --features cctui-server-workspace/aws-sm`). A ref
+are cargo features. The guard proxy enables all three. The server
+(`cctui-server`) and the dispatchers (`cctui-dispatcher-core`) enable `k8s`
+and `bao`; each exposes an `aws-sm` feature for builds that need it (for
+example `cargo build -p cctui-server --features aws-sm`). A ref
 to an engine that is not compiled in fails at startup.

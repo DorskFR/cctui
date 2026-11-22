@@ -162,7 +162,6 @@ fn env_filter(default_filter: &str) -> EnvFilter {
 
 const EXPORTED_TARGETS: &[&str] = &[
     "cctui_telemetry=info",
-    "cctui_server_core=info",
     "cctui_server_kernel=info",
     "cctui_server_accounts=info",
     "cctui_server_dispatch=info",

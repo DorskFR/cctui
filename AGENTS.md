@@ -12,11 +12,10 @@ that you are blocked.
 
 ## Repo layout
 
-- `crates/cctui-server` — the full distribution's binary entry point.
-- `crates/cctui-server-workspace` — the interactive HTTP/WebSocket handlers,
-  application state, workspace storage and full-host assembly.
-- `crates/cctui-server-core` — the shared host state (`CoreState`), the daemon
-  transport, session lifecycle and the cross-domain contract tests.
+- `crates/cctui-server` — the server host and binary: application state
+  (`AppState`, `CoreState`), every domain context implementation, route tables,
+  the daemon peer transport, the `workspace` schema stream, full-host assembly
+  and the cross-domain contract tests.
 - `crates/cctui-server-dispatch` — dispatchers, dispatch records and policy,
   worker identity, machine launches, child sessions and their limits, execution
   targets and their routes; reaches the host through `DispatchCore` and the
@@ -210,7 +209,7 @@ it runs the operator's own command, verifies the served version, and rolls back
 on failure. No model, no account, the same bytes every release. The contract and
 per-platform recipes live in [docs/update-hook.md](./docs/update-hook.md); the
 code is `crates/cctui-daemon/src/updatehook.rs` and
-`crates/cctui-server-workspace/src/routes/update_hook.rs`.
+`crates/cctui-server/src/routes/update_hook.rs`.
 
 Don't teach the server how any deployment updates. There are as many answers as
 there are installations, and the operator already knows theirs.
@@ -226,7 +225,7 @@ it must **never run on a small model**:
   variant.
 
 The floor lives in `launch_profile()` in
-`crates/cctui-server-workspace/src/routes/self_update.rs`. **Raise it whenever a newer
+`crates/cctui-server/src/routes/self_update.rs`. **Raise it whenever a newer
 generation replaces those names** — treat it as part of any model-catalog bump,
 and never lower it to save cost.
 

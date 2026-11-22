@@ -115,7 +115,7 @@ feature).
 
 Every feature gates at least one route, task or message. A new feature that
 gates nothing must be listed as announcement-only in the gate test in
-`crates/cctui-server-workspace/src/lib.rs`, with the reason here.
+`crates/cctui-server/src/lib.rs`, with the reason here.
 
 ## Postgres requirements
 
@@ -146,6 +146,6 @@ The search objects (the two extensions and the trigram index on
 Every entry of `cctui_proto::api::routes::ROUTES` carries `feature`: `None`
 for core, `Some(Feature::..)` for a switchable one. All methods of one path
 share a feature. A core route must also be listed in
-`crates/cctui-server-workspace/src/api_routes/core_routes.txt`; the route
+`crates/cctui-server/src/api_routes/core_routes.txt`; the route
 tests fail until it is. Routes outside the table are classified where they are
-mounted, in `outer_routes` in `crates/cctui-server-workspace/src/lib.rs`.
+mounted, in `outer_routes` in `crates/cctui-server/src/lib.rs`.

@@ -210,10 +210,6 @@ jobs:
         if: steps.cached.outputs.cache-hit != 'true'
         run: cargo clippy --workspace --all-targets --locked --keep-going -- -D warnings
 
-      - name: Core library builds independently of workspace services
-        if: env.WARM_ONLY != 'true' && contains(format(' {0} ', needs.changes.outputs.crates), ' cctui-server-core ')
-        run: cargo check -p cctui-server-core --all-targets --locked
-
       - name: Kernel builds independently of every other server crate
         if: env.WARM_ONLY != 'true' && contains(format(' {0} ', needs.changes.outputs.crates), ' cctui-server-kernel ')
         run: cargo check -p cctui-server-kernel --all-targets --locked

@@ -38,13 +38,10 @@ its feature file, not by a separate binary.
   session HTTP/WebSocket handlers. It depends only on the kernel and reaches
   the host through `SessionsContext` and the `ports` traits (accounts, blobs,
   dispatch, extras, notify, search, host).
-- `cctui-server-core`: the shared host state (`CoreState`) and the
-  cross-domain contract tests. It does not
-  depend on the workspace and compiles and tests on its own, without search,
-  image codecs, WebAuthn or plugin startup.
-- `cctui-server-workspace`: application state, every domain context
-  implementation, the route tables and the full-host assembly.
-- `cctui-server`: the executable; it starts the workspace host.
+- `cctui-server`: the host and the executable. It owns application state
+  (`AppState`, with the execution caches in `CoreState`), implements every
+  domain context, mounts the route tables, runs the `workspace` schema stream
+  and holds the cross-domain contract tests.
 
 Workers, dispatchers, the daemon and the TUI are the same for every
 installation.
@@ -82,7 +79,7 @@ See [features](features.md) for the file format and what each feature carries.
 The schema is split into packages, each a forward-only stream of numbered SQL
 files under `crates/<package>/schema/`, registered in that crate's `schema.rs`
 (or `schema/<stream>/`, registered in `src/schema/<stream>.rs`): `core` in
-`cctui-server-kernel` (`schema/core/`), `workspace` in `cctui-server-workspace`
+`cctui-server-kernel` (`schema/core/`), `workspace` in `cctui-server`
 and `workspace_search` in `cctui-server-search`, run by
 the shared runner in `cctui-server-kernel`. The
 legacy `migrations/` stream is frozen at 191; `scripts/check-migrations.sh`

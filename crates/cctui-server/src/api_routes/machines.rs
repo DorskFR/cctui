@@ -1,0 +1,112 @@
+//! Per-machine command, filesystem and model routes.
+
+use super::GET;
+use crate::authz::Routes;
+use axum::http::Method;
+use axum::routing::{delete, get, post, put};
+use cctui_server_kernel::auth;
+use cctui_server_kernel::authz::Authz::{self, Authenticated, Scope as ScopeAz};
+use cctui_server_kernel::authz::{Action, Authn, IdFrom, ResourceKind};
+
+pub(super) fn register(r: Routes) -> Routes {
+    r.add(
+        &[GET],
+        "/machines/{machine_id}/commands/pending",
+        "Poll a machine's pending spawn/control commands.",
+        get(cctui_server_sessions::routes::spawn::get_machine_commands::<crate::state::AppState>),
+        Authn::Bearer,
+        Authenticated,
+    )
+    .add(
+        &[GET],
+        "/machines/{machine_id}/events",
+        "One machine's lifecycle events, newest first.",
+        get(cctui_server_sessions::routes::events::machine_events::<crate::state::AppState>),
+        Authn::Bearer,
+        Authz::Resource(ResourceKind::Machine, Action::Read, IdFrom::Path("machine_id")),
+    )
+    .add(
+        &[GET],
+        "/machines/{machine_id}/fs/dirs",
+        "List directories on a machine (spawn dir picker).",
+        get(cctui_server_sessions::routes::fs::list_dirs::<crate::state::AppState>),
+        Authn::Bearer,
+        // Machine-owner guard: `machines.user_id`, id from the
+        // `{machine_id}` path param.
+        Authz::Resource(ResourceKind::Machine, Action::Read, IdFrom::Path("machine_id")),
+    )
+    .add(
+        &[GET],
+        "/machines/{machine_id}/fs/gitinfo",
+        "Git branch / detached HEAD of a directory on a machine (spawn dir badge).",
+        get(cctui_server_sessions::routes::fs::git_info::<crate::state::AppState>),
+        Authn::Bearer,
+        Authz::Resource(ResourceKind::Machine, Action::Read, IdFrom::Path("machine_id")),
+    )
+    .add(
+        &[GET],
+        "/machines/{machine_id}/fs/file",
+        "Read one file on a machine (agent-linked path): inline or blob redirect.",
+        get(cctui_server_sessions::routes::fs::read_file::<crate::state::AppState>),
+        Authn::Bearer,
+        Authz::Resource(ResourceKind::Machine, Action::Read, IdFrom::Path("machine_id")),
+    )
+    .add(
+        &[GET],
+        "/machines/{machine_id}/codex-models",
+        "Machine/account-scoped codex model catalog.",
+        get(
+            cctui_server_sessions::routes::codex_models::get_codex_models::<crate::state::AppState>,
+        ),
+        Authn::Bearer,
+        Authz::Resource(ResourceKind::Machine, Action::Read, IdFrom::Path("machine_id")),
+    )
+    .add(
+        &[Method::POST],
+        "/machines/{machine_id}/codex-models/refresh",
+        "Re-read every OpenAI account's codex model catalog from upstream.",
+        post(
+            cctui_server_sessions::routes::codex_models::refresh_codex_models::<
+                crate::state::AppState,
+            >,
+        ),
+        Authn::Bearer,
+        Authz::Resource(ResourceKind::Machine, Action::Read, IdFrom::Path("machine_id")),
+    )
+    .add(
+        &[GET],
+        "/machines/{machine_id}/adapters",
+        "Which harnesses a machine runs: table rows with the machine's enable/config pins.",
+        get(cctui_server_dispatch::machine_adapters::configuration::list::<crate::state::AppState>),
+        Authn::Bearer,
+        Authz::Resource(ResourceKind::Machine, Action::Read, IdFrom::Path("machine_id")),
+    )
+    .add(
+        &[Method::PUT],
+        "/machines/{machine_id}/adapters/{adapter}",
+        "Enable, disable or configure one harness on a machine (admin).",
+        put(cctui_server_dispatch::machine_adapters::configuration::set::<crate::state::AppState>),
+        Authn::Bearer,
+        ScopeAz(auth::Scope::Admin),
+    )
+    .add(
+        &[Method::DELETE],
+        "/machines/{machine_id}/adapters/{adapter}",
+        "Drop a machine's pin for one harness, back to the table default (admin).",
+        delete(
+            cctui_server_dispatch::machine_adapters::configuration::reset::<crate::state::AppState>,
+        ),
+        Authn::Bearer,
+        ScopeAz(auth::Scope::Admin),
+    )
+    .add(
+        &[GET],
+        "/models/codex/catalog",
+        "Codex model catalog merged across every machine (newest report wins).",
+        get(cctui_server_sessions::routes::codex_models::get_merged_codex_models::<
+            crate::state::AppState,
+        >),
+        Authn::Bearer,
+        Authenticated,
+    )
+}
