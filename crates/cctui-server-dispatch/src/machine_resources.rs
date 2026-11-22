@@ -1,0 +1,228 @@
+//! Per-machine host resource snapshot: persisted from the daemon heartbeat
+//! (`machine_resources`, one row per machine) and served to the webui's
+//! header gauge via `GET /api/v1/machines/resources`.
+
+use axum::extract::State;
+use axum::{Extension, Json};
+use cctui_proto::resources::MachineResources;
+use chrono::{DateTime, Utc};
+use uuid::Uuid;
+
+use crate::context::DispatchCore;
+use cctui_server_kernel::auth::AuthContext;
+use cctui_server_kernel::error::AppError;
+
+pub use cctui_proto::api::machine_resources::MachineResourcesRow;
+
+/// Upsert the daemon's latest snapshot. Fire-and-forget: a failed write only
+/// loses one heartbeat's figures, the next one overwrites anyway.
+pub async fn persist(state: &impl DispatchCore, machine_id: Uuid, r: &MachineResources) {
+    let res = sqlx::query(
+        "INSERT INTO machine_resources \
+           (machine_id, cpu_pct, mem_pct, mem_used_bytes, mem_total_bytes, \
+            disk_pct, disk_used_bytes, disk_total_bytes, disk_path, load1, updated_at) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, now()) \
+         ON CONFLICT (machine_id) DO UPDATE SET \
+           cpu_pct = EXCLUDED.cpu_pct, mem_pct = EXCLUDED.mem_pct, \
+           mem_used_bytes = EXCLUDED.mem_used_bytes, mem_total_bytes = EXCLUDED.mem_total_bytes, \
+           disk_pct = EXCLUDED.disk_pct, disk_used_bytes = EXCLUDED.disk_used_bytes, \
+           disk_total_bytes = EXCLUDED.disk_total_bytes, disk_path = EXCLUDED.disk_path, \
+           load1 = EXCLUDED.load1, updated_at = now()",
+    )
+    .bind(machine_id)
+    .bind(r.cpu_pct)
+    .bind(r.mem_pct)
+    .bind(i64::try_from(r.mem_used_bytes).unwrap_or(i64::MAX))
+    .bind(i64::try_from(r.mem_total_bytes).unwrap_or(i64::MAX))
+    .bind(r.disk_pct)
+    .bind(i64::try_from(r.disk_used_bytes).unwrap_or(i64::MAX))
+    .bind(i64::try_from(r.disk_total_bytes).unwrap_or(i64::MAX))
+    .bind(&r.disk_path)
+    .bind(r.load1)
+    .execute(state.pool())
+    .await;
+    if let Err(err) = res {
+        tracing::warn!(%err, %machine_id, "machine_resources upsert failed");
+    }
+}
+
+/// Persist a heartbeat snapshot, then push it to webui/TUI when it moved
+/// enough for a gauge to show the difference.
+pub async fn record_and_broadcast(
+    state: &impl DispatchCore,
+    machine_id: Uuid,
+    resources: MachineResources,
+) {
+    persist(state, machine_id, &resources).await;
+    if !changed_since_last_broadcast(machine_id, &resources) {
+        return;
+    }
+    state
+        .bus()
+        .publish_server(cctui_proto::ws::ServerEvent::MachineResources { machine_id, resources });
+}
+
+fn changed_since_last_broadcast(machine_id: Uuid, next: &MachineResources) -> bool {
+    static LAST: std::sync::OnceLock<dashmap::DashMap<Uuid, MachineResources>> =
+        std::sync::OnceLock::new();
+    let last = LAST.get_or_init(dashmap::DashMap::new);
+    if last.get(&machine_id).is_some_and(|prev| !materially_changed(&prev, next)) {
+        return false;
+    }
+    last.insert(machine_id, next.clone());
+    true
+}
+
+const PCT_THRESHOLD: f32 = 1.0;
+const LOAD_THRESHOLD: f32 = 0.1;
+
+fn materially_changed(prev: &MachineResources, next: &MachineResources) -> bool {
+    let moved = |a: f32, b: f32, by: f32| (a - b).abs() >= by;
+    moved(prev.cpu_pct, next.cpu_pct, PCT_THRESHOLD)
+        || moved(prev.mem_pct, next.mem_pct, PCT_THRESHOLD)
+        || moved(prev.disk_pct, next.disk_pct, PCT_THRESHOLD)
+        || prev.mem_total_bytes != next.mem_total_bytes
+        || prev.disk_total_bytes != next.disk_total_bytes
+        || prev.disk_path != next.disk_path
+        || match (prev.load1, next.load1) {
+            (Some(a), Some(b)) => moved(a, b, LOAD_THRESHOLD),
+            (a, b) => a.is_some() != b.is_some(),
+        }
+}
+
+#[derive(sqlx::FromRow)]
+struct Row {
+    id: Uuid,
+    name: String,
+    display_name: Option<String>,
+    hue: Option<i16>,
+    last_seen_at: DateTime<Utc>,
+    cpu_pct: Option<f32>,
+    mem_pct: Option<f32>,
+    mem_used_bytes: Option<i64>,
+    mem_total_bytes: Option<i64>,
+    disk_pct: Option<f32>,
+    disk_used_bytes: Option<i64>,
+    disk_total_bytes: Option<i64>,
+    disk_path: Option<String>,
+    load1: Option<f32>,
+    updated_at: Option<DateTime<Utc>>,
+    peer_connected: bool,
+}
+
+/// `GET /api/v1/machines/resources`: the caller's persistent, non-revoked
+/// machines (every user's for an admin) with their latest snapshot.
+///
+/// `connected` is the live daemon WS: held by this pod, or by a live peer.
+pub async fn list<S: DispatchCore + crate::hooks::DispatchPresence>(
+    State(state): State<S>,
+    Extension(ctx): Extension<AuthContext>,
+) -> Result<Json<Vec<MachineResourcesRow>>, AppError> {
+    let rows: Vec<Row> = sqlx::query_as(
+        "SELECT m.id, m.name, m.display_name, m.hue, m.last_seen_at, \
+                r.cpu_pct, r.mem_pct, r.mem_used_bytes, r.mem_total_bytes, \
+                r.disk_pct, r.disk_used_bytes, r.disk_total_bytes, r.disk_path, r.load1, \
+                r.updated_at, \
+                EXISTS (SELECT 1 FROM ws_presence p \
+                        WHERE p.kind = $3 AND p.entity_id = m.id AND p.pod <> $4 \
+                          AND p.heartbeat_at > now() - make_interval(secs => $5)) \
+                  AS peer_connected \
+         FROM machines m JOIN users u ON u.id = m.user_id \
+         LEFT JOIN machine_resources r ON r.machine_id = m.id \
+         WHERE (m.user_id = $1 OR $2) AND m.kind = 'persistent' \
+           AND u.revoked_at IS NULL AND m.revoked_at IS NULL AND m.deleted_at IS NULL \
+         ORDER BY m.first_seen_at",
+    )
+    .bind(ctx.user_id)
+    .bind(ctx.is_admin())
+    .bind(cctui_server_kernel::extras_types::Kind::Daemon.as_str())
+    .bind(state.presence_pod())
+    .bind(f64::from(cctui_server_kernel::extras_types::LIVE_WITHIN_SECS))
+    .fetch_all(state.pool())
+    .await?;
+    let out = rows
+        .into_iter()
+        .map(|r| {
+            let resources = r.cpu_pct.map(|cpu_pct| MachineResources {
+                cpu_pct,
+                mem_pct: r.mem_pct.unwrap_or(0.0),
+                mem_used_bytes: r.mem_used_bytes.unwrap_or(0).max(0).unsigned_abs(),
+                mem_total_bytes: r.mem_total_bytes.unwrap_or(0).max(0).unsigned_abs(),
+                disk_pct: r.disk_pct.unwrap_or(0.0),
+                disk_used_bytes: r.disk_used_bytes.unwrap_or(0).max(0).unsigned_abs(),
+                disk_total_bytes: r.disk_total_bytes.unwrap_or(0).max(0).unsigned_abs(),
+                disk_path: r.disk_path.unwrap_or_default(),
+                load1: r.load1,
+            });
+            MachineResourcesRow {
+                machine_id: r.id,
+                name: r.name,
+                display_name: r.display_name,
+                hue: r.hue,
+                liveness: crate::machine_liveness::derive(r.last_seen_at),
+                connected: r.peer_connected || state.bus().daemon_connected(r.id),
+                last_seen_at: r.last_seen_at,
+                resources,
+                updated_at: r.updated_at,
+            }
+        })
+        .collect();
+    Ok(Json(out))
+}
+
+#[cfg(test)]
+mod tests {
+    use cctui_proto::resources::MachineResources;
+    use uuid::Uuid;
+
+    use super::{changed_since_last_broadcast, materially_changed};
+
+    fn snapshot() -> MachineResources {
+        MachineResources {
+            cpu_pct: 12.0,
+            mem_pct: 40.0,
+            mem_used_bytes: 4 << 30,
+            mem_total_bytes: 16 << 30,
+            disk_pct: 55.0,
+            disk_used_bytes: 100 << 30,
+            disk_total_bytes: 500 << 30,
+            disk_path: "/".into(),
+            load1: Some(0.5),
+        }
+    }
+
+    #[test]
+    fn an_unchanged_snapshot_is_not_rebroadcast() {
+        let id = Uuid::new_v4();
+        assert!(changed_since_last_broadcast(id, &snapshot()));
+        assert!(!changed_since_last_broadcast(id, &snapshot()));
+        let jitter = MachineResources { cpu_pct: 12.4, mem_used_bytes: 5 << 30, ..snapshot() };
+        assert!(!changed_since_last_broadcast(id, &jitter));
+        let busy = MachineResources { cpu_pct: 80.0, ..snapshot() };
+        assert!(changed_since_last_broadcast(id, &busy));
+        assert!(!changed_since_last_broadcast(id, &busy));
+    }
+
+    #[test]
+    fn small_drift_is_ignored_and_real_moves_are_not() {
+        let base = snapshot();
+        assert!(!materially_changed(&base, &MachineResources { disk_pct: 55.5, ..snapshot() }));
+        assert!(materially_changed(&base, &MachineResources { mem_pct: 41.0, ..snapshot() }));
+        assert!(materially_changed(&base, &MachineResources { load1: Some(0.7), ..snapshot() }));
+        assert!(materially_changed(&base, &MachineResources { load1: None, ..snapshot() }));
+        assert!(materially_changed(
+            &base,
+            &MachineResources { disk_path: "/data".into(), ..snapshot() }
+        ));
+    }
+
+    #[test]
+    fn migration_pair_exists() {
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../migrations");
+        let up = std::fs::read_to_string(format!("{dir}/097_machine_resources.up.sql")).unwrap();
+        let down =
+            std::fs::read_to_string(format!("{dir}/097_machine_resources.down.sql")).unwrap();
+        assert!(up.contains("CREATE TABLE machine_resources"));
+        assert!(down.contains("DROP TABLE IF EXISTS machine_resources"));
+    }
+}

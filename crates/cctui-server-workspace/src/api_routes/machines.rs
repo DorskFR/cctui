@@ -70,7 +70,7 @@ pub(super) fn register(r: Routes) -> Routes {
         &[GET],
         "/machines/{machine_id}/adapters",
         "Which harnesses a machine runs: table rows with the machine's enable/config pins.",
-        get(routes::machine_adapters::list),
+        get(cctui_server_dispatch::machine_adapters::configuration::list::<crate::state::AppState>),
         Authn::Bearer,
         Authz::Resource(ResourceKind::Machine, Action::Read, IdFrom::Path("machine_id")),
     )
@@ -78,7 +78,7 @@ pub(super) fn register(r: Routes) -> Routes {
         &[Method::PUT],
         "/machines/{machine_id}/adapters/{adapter}",
         "Enable, disable or configure one harness on a machine (admin).",
-        put(routes::machine_adapters::set),
+        put(cctui_server_dispatch::machine_adapters::configuration::set::<crate::state::AppState>),
         Authn::Bearer,
         ScopeAz(auth::Scope::Admin),
     )
@@ -86,7 +86,9 @@ pub(super) fn register(r: Routes) -> Routes {
         &[Method::DELETE],
         "/machines/{machine_id}/adapters/{adapter}",
         "Drop a machine's pin for one harness, back to the table default (admin).",
-        delete(routes::machine_adapters::reset),
+        delete(
+            cctui_server_dispatch::machine_adapters::configuration::reset::<crate::state::AppState>,
+        ),
         Authn::Bearer,
         ScopeAz(auth::Scope::Admin),
     )

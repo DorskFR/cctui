@@ -1,5 +1,5 @@
 //! Full interactive workspace host, assembled above the shared execution core.
-pub mod execution_failures;
+pub use cctui_server_dispatch::execution_failures;
 pub mod schema;
 pub mod skills;
 
@@ -20,9 +20,12 @@ mod config;
 mod cost;
 mod crypto;
 mod db;
-mod dispatch_archive;
+use cctui_server_dispatch::dispatch_archive;
+mod dispatch_context;
 mod dispatch_liveness;
-mod dispatchers;
+#[cfg(test)]
+mod dispatch_tests;
+use cctui_server_dispatch::dispatchers;
 mod envelope_guard;
 mod error;
 mod events;
@@ -35,8 +38,7 @@ use cctui_server_kernel::http_cache;
 mod inbox;
 mod keepalive;
 mod live_sessions;
-mod machine_liveness;
-mod machine_resources;
+use cctui_server_dispatch::{machine_liveness, machine_resources};
 mod metrics;
 mod normalize;
 mod notify;
@@ -73,7 +75,7 @@ mod uploads;
 use cctui_server_accounts::usage_history;
 mod voice_context;
 use cctui_server_accounts::webauthn;
-mod webhook;
+use cctui_server_dispatch::webhook;
 mod ws;
 
 #[cfg(test)]
@@ -747,8 +749,14 @@ fn infra_routes(r: OuterRoutes) -> OuterRoutes {
         // Enrolled-dispatcher endpoints. Carry their own key auth
         // (dispatcher-key Bearer), so they live outside the user-token
         // `api_router` group, like the daemon endpoints.
-        .route("/api/v1/dispatcher/auth", post(routes::dispatcher::auth))
-        .route("/api/v1/dispatcher/ws", get(routes::dispatcher::ws))
+        .route(
+            "/api/v1/dispatcher/auth",
+            post(cctui_server_dispatch::targets::dispatcher::auth::<crate::state::AppState>),
+        )
+        .route(
+            "/api/v1/dispatcher/ws",
+            get(cctui_server_dispatch::targets::dispatcher::ws::<crate::state::AppState>),
+        )
         // Kube dispatch identity. Register carries the dispatcher key, redeem a
         // pod's service-account token, env the redeemed machine key.
         .route("/api/v1/dispatch/register", post(dispatch_identity::register::<AppState>))
@@ -1320,6 +1328,9 @@ mod tests {
             assert!(tracing::enabled!(target: "cctui_server_search", tracing::Level::DEBUG));
             assert!(
                 tracing::enabled!(target: "cctui_server_accounts::routes::gateway", tracing::Level::DEBUG)
+            );
+            assert!(
+                tracing::enabled!(target: "cctui_server_dispatch::routes::dispatch", tracing::Level::DEBUG)
             );
             assert!(tracing::enabled!(target: "cctui_server_blobs::routes", tracing::Level::DEBUG));
             assert!(tracing::enabled!(target: "cctui_server_voice::engine", tracing::Level::DEBUG));

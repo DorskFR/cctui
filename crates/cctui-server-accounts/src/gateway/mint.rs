@@ -1,5 +1,8 @@
 use super::{Family, session_token_ttl};
-pub use cctui_server_kernel::accounts_types::{MintContext, MintSessionEnvError, ProviderRow};
+pub use cctui_server_kernel::accounts_types::{
+    MintContext, MintSessionEnvError, ProviderRow, resolve_catalog_model,
+    resolve_exact_catalog_model, resolve_row_model,
+};
 
 use cctui_telemetry::db::traced;
 use chrono::Utc;
@@ -757,30 +760,6 @@ pub async fn resolve_account_model(
     resolve_row_model(row, &model, true)
 }
 
-/// Map `model` through one provider row's aliases, then its catalog.
-///
-/// `catalog_fallback` lets a `fireworks` catalog miss resolve to the first
-/// entry, as a spawn needs; without it only an exact id or label match counts.
-#[must_use]
-pub fn resolve_row_model(row: &ProviderRow, model: &str, catalog_fallback: bool) -> String {
-    let aliased = row
-        .model_aliases
-        .as_ref()
-        .and_then(|v| v.get(model))
-        .and_then(serde_json::Value::as_str)
-        .filter(|s| !s.trim().is_empty())
-        .map_or_else(|| model.to_owned(), str::to_owned);
-    if row.family() != Family::Fireworks {
-        return aliased;
-    }
-    let resolved = if catalog_fallback {
-        resolve_catalog_model(row.models.as_ref(), &aliased)
-    } else {
-        resolve_exact_catalog_model(row.models.as_ref(), &aliased)
-    };
-    resolved.unwrap_or(aliased)
-}
-
 /// The model to actually spawn with, after any live model-redirect rule on the
 /// provider row's owning account. Fail-soft on every path: no rule, no flip.
 pub async fn flip_model_redirect(
@@ -817,43 +796,6 @@ pub async fn flip_model_redirect(
                 flipped.to_owned()
             },
         )
-}
-
-/// Resolve a model ID or label against an account catalog.
-///
-/// Resolve a model against an account's catalog: an exact `model` id passes
-/// through, a catalog `label` maps to its id, and anything else (including an
-/// empty request) falls back to the first catalog entry. `None` when the catalog
-/// is empty — the caller then keeps the requested model verbatim.
-#[must_use]
-pub fn resolve_catalog_model(models: Option<&serde_json::Value>, model: &str) -> Option<String> {
-    resolve_exact_catalog_model(models, model)
-        .or_else(|| models?.as_array()?.iter().find_map(catalog_entry_id))
-}
-
-/// [`resolve_catalog_model`] without the first-entry fallback: only an exact
-/// catalog id or label resolves.
-#[must_use]
-pub fn resolve_exact_catalog_model(
-    models: Option<&serde_json::Value>,
-    model: &str,
-) -> Option<String> {
-    let wanted = model.trim();
-    if wanted.is_empty() {
-        return None;
-    }
-    models?
-        .as_array()?
-        .iter()
-        .find(|e| {
-            catalog_entry_id(e).as_deref() == Some(wanted)
-                || e.get("label").and_then(serde_json::Value::as_str) == Some(wanted)
-        })
-        .and_then(catalog_entry_id)
-}
-
-fn catalog_entry_id(entry: &serde_json::Value) -> Option<String> {
-    entry.get("model").and_then(serde_json::Value::as_str).map(str::to_owned)
 }
 
 /// Decrypt a named account's per-account custom env (`env_json`).

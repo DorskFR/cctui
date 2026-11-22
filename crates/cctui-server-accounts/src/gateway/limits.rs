@@ -4,6 +4,7 @@ use super::mint::session_id_for_token;
 use uuid::Uuid;
 
 use super::credentials::CredentialContext;
+pub use cctui_server_kernel::accounts_types::merge_session_budget;
 use cctui_server_kernel::live_sessions_predicate;
 
 /// Host resources for durable gateway limits and transient orphan protection.
@@ -19,26 +20,6 @@ pub struct OrphanSpam {
     pub count: u32,
     pub window_start: std::time::Instant,
     pub blocked_until: Option<std::time::Instant>,
-}
-
-/// Merge a `CctuiAgent` child's per-session dollar budget into `cap` as a
-/// `session_usd` limit.
-///
-/// A budget on the child always wins over an account-level
-/// `session_usd`: it is the tighter, purpose-set ceiling.
-#[must_use]
-pub fn merge_session_budget(
-    cap: &cctui_proto::api::soft_limit::SoftLimits,
-    budget_usd: Option<f64>,
-) -> cctui_proto::api::soft_limit::SoftLimits {
-    let Some(budget) = budget_usd.filter(|b| b.is_finite() && *b > 0.0) else {
-        return cap.clone();
-    };
-    let mut merged = cap.clone();
-    let entry =
-        merged.limits.entry(cctui_proto::api::soft_limit::KEY_SESSION_USD.to_owned()).or_default();
-    entry.cap_usd = Some(budget);
-    merged
 }
 
 /// Durable key for a soft-limit block.

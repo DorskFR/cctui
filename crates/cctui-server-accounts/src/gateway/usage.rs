@@ -2,7 +2,7 @@ use super::credentials::{Account, current_access_token, reload_account};
 use super::{Family, FireworksSettings};
 pub use cctui_server_kernel::accounts_types::{
     AccountUsageCache, CachedUsage, USAGE_CACHE_TTL, UsageContext, anthropic_reset_status_url,
-    anthropic_usage_url, openai_reset_credits_url, openai_usage_url,
+    anthropic_usage_url, openai_reset_credits_url, openai_usage_url, usage_cache_stale,
 };
 
 use axum::http::StatusCode;
@@ -268,16 +268,6 @@ pub async fn fetch_openai_usage(
         usage["reset_credits"] = credits;
     }
     Ok(usage)
-}
-
-/// Whether the soft-limit check must refresh usage from upstream before deciding.
-///
-/// A cold (`None`) or stale cache must trigger a refresh — treating a cold
-/// cache as "no data → allow" would let a capped account run to 100% whenever
-/// no human was viewing it.
-#[must_use]
-pub fn usage_cache_stale(entry_age: Option<std::time::Duration>, ttl: std::time::Duration) -> bool {
-    entry_age.is_none_or(|age| age >= ttl)
 }
 
 #[derive(Debug, PartialEq, Eq)]

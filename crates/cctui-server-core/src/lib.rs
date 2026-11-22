@@ -12,14 +12,11 @@ pub use cctui_server_accounts::usage_probe;
 #[cfg(any(test, feature = "test-support"))]
 pub use cctui_server_kernel::test_support;
 
-pub use cctui_server_kernel::bus;
-pub mod dispatchers;
-pub use cctui_server_kernel::registry;
+pub use cctui_server_kernel::{bus, registry};
 
 pub use cctui_server_kernel::{client, outbound};
 
 pub use cctui_server_accounts::hook_policy;
-pub mod launch;
 
 pub use cctui_server_accounts::launch_settings;
 
@@ -27,14 +24,9 @@ pub use cctui_server_kernel::events;
 pub mod lifecycle;
 pub use cctui_server_kernel::{ended_signals, live_sessions_predicate};
 
-pub mod dispatch;
-pub mod dispatch_identity;
-pub mod dispatch_policy;
-
 pub use cctui_server_accounts::provider_status;
 
 pub use cctui_server_kernel::error;
-pub mod machine_spawn;
 
 pub use cctui_server_kernel::execution_settings;
 
@@ -49,31 +41,20 @@ pub use cctui_server_kernel::normalize;
 
 pub mod results;
 
-pub mod launch_credentials;
-
-pub mod spawn_defaults;
-
 pub use cctui_server_accounts::{accounts, settings_catalog};
 pub use cctui_server_kernel::resource_owners;
-
-pub mod machine_adapters;
-pub mod machine_policy;
 
 pub mod daemon_checkpoints;
 pub use cctui_server_accounts::daemon_usage;
 
-pub mod webhook;
-
-pub mod dispatch_liveness;
 pub mod schema;
-pub mod worker_retirement;
-
-pub mod machine_launches;
-
-pub mod child_policy;
-
-pub mod child_exec;
-
-pub mod session_limits;
 
 pub use cctui_server_kernel::{envelope_guard, peer_session};
+
+pub mod dispatch_hooks;
+pub use cctui_server_dispatch::{
+    child_exec, child_policy, context as dispatch_context, dispatch, dispatch_identity,
+    dispatch_liveness, dispatch_policy, dispatchers, hooks, launch, launch_credentials,
+    machine_adapters, machine_launches, machine_policy, machine_spawn, session_limits,
+    spawn_defaults, webhook, worker_retirement,
+};

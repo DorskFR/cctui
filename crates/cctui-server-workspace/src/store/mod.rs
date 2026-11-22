@@ -4,8 +4,6 @@
 //! predicate — live in exactly one place.
 
 pub mod acls;
-pub mod dispatch_policies;
-pub mod dispatch_records;
 pub mod sessions;
 pub mod spawn_capabilities;
 pub mod tokens;

@@ -1,5 +1,5 @@
 use super::{REFRESH_SKEW_SECS, anthropic_client_id, openai_client_id};
-pub use cctui_server_kernel::accounts_types::CredentialContext;
+pub use cctui_server_kernel::accounts_types::{Account, CredentialContext};
 use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
 
@@ -33,43 +33,6 @@ pub type ReloadRow = (
     Option<String>,
     String,
 );
-
-/// Loaded account row (decrypted in-process; never serialized out).
-pub struct Account {
-    pub id: Uuid,
-    pub provider: String,
-    pub access_token: Option<String>,
-    /// `None` for compatible endpoints (static credential, no refresh).
-    pub refresh_token: Option<String>,
-    pub expires_at: Option<chrono::DateTime<Utc>>,
-    /// For Codex/OpenAI accounts: the `chatgpt_account_id` claim, sent upstream
-    /// as the `Chatgpt-Account-Id` header. NULL for anthropic / manual
-    /// refresh-token accounts.
-    pub provider_account_id: Option<String>,
-    /// Compatible-endpoint upstream base URL. NULL → built-in upstream.
-    pub base_url: Option<String>,
-    /// `oauth` (refreshing subscription) | `bearer` | `api_key` (static).
-    pub auth_scheme: String,
-    /// Per-account soft limits on cctui's own share of the usage windows.
-    /// Enforced in `passthrough` against the cached usage. All NULL ⇒
-    /// no soft limit (prior behaviour).
-    pub soft_limits: cctui_proto::api::soft_limit::SoftLimits,
-    /// Per-provider usage ticker setting; off ⇒ the proxy skips it.
-    pub usage_notices: cctui_proto::api::gateway::UsageNotices,
-    /// Per-provider gateway request-shaping settings; see [`super::FireworksSettings`].
-    pub provider_settings: Option<serde_json::Value>,
-    /// Per-(account, provider) RPM/TPM ceilings enforced in the proxy path.
-    /// Unset ⇒ no throttling.
-    pub rate_limits: cctui_proto::api::gateway::RateLimits,
-}
-
-impl Account {
-    /// A static-credential compatible account forwards its stored credential
-    /// verbatim and skips the OAuth refresh round-trip.
-    fn is_static(&self) -> bool {
-        self.auth_scheme != "oauth"
-    }
-}
 
 /// Resolve a session token to its bound account.
 ///

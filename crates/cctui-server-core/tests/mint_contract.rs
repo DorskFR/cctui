@@ -250,6 +250,10 @@ impl cctui_server_core::account_resolve::AccountResolutionContext for Host {
         cctui_server_core::gateway::usage::usage_for_soft_limit(self, id).await
     }
 }
+cctui_server_core::impl_dispatch_account_resolution!(Host);
+cctui_server_core::impl_dispatch_mint!(Host);
+cctui_server_core::impl_dispatch_usage!(Host);
+cctui_server_core::impl_dispatch_account_store!(Host, pool);
 impl cctui_server_core::session_credentials::SessionCredentialContext for Host {
     fn token_pool(&self) -> &PgPool {
         &self.pool

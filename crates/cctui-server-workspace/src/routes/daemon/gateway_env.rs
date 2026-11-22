@@ -11,7 +11,12 @@ use cctui_telemetry::db::traced;
 use tracing::Instrument;
 
 impl cctui_server_core::launch_credentials::LaunchCredentialsContext for AppState {
-    fn launch_state(&self) -> &cctui_server_core::state::CoreState {
+    fn launch_state(
+        &self,
+    ) -> &(
+         impl cctui_server_dispatch::context::DispatchCore
+         + cctui_server_dispatch::hooks::DispatchSessions
+     ) {
         &self.core
     }
     async fn default_spawn_capability(&self) -> cctui_proto::api::SpawnCapability {
@@ -490,7 +495,9 @@ mod tests {
                 .unwrap();
             if bound {
                 let rules = cctui_proto::api::admin::DispatchPolicyRules::default();
-                crate::store::dispatch_policies::upsert(&pool, uid, &rules).await.unwrap();
+                cctui_server_dispatch::store::dispatch_policies::upsert(&pool, uid, &rules)
+                    .await
+                    .unwrap();
             }
             let sid = format!("policy-default-{}", Uuid::new_v4());
             sqlx::query(

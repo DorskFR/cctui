@@ -11,16 +11,22 @@ its feature file, not by a separate binary.
   configuration, errors, the schema runner, adapter normalization, outbound
   HTTP, lifecycle events, the session registry and pending commands, the
   token/session/spawn-capability stores, peer delivery and rate limits, the
-  `core` schema stream, and the account types and contexts other domains bind
-  against (`accounts_types`). It depends on no other server crate; domain
+  `core` schema stream, and the types other domains bind against
+  (`accounts_types`, `sessions_types`, `extras_types`, `dispatch_types`). It depends on no other server crate; domain
   crates reach the host through `KernelContext` and their own context traits.
 - `cctui-server-accounts`: identity, provider accounts and credentials, pools,
   usage, limit resets, passkeys and the provider gateway, with their HTTP
   handlers. It depends only on the kernel and reaches the host through
   `AccountsHost` and the account context traits.
-- `cctui-server-core`: targets, launch, policy, run lifecycle and their
-  persistence. It does not depend on the workspace and compiles and tests on its
-  own, without search, image codecs, WebAuthn or plugin startup.
+- `cctui-server-dispatch`: dispatchers and dispatch records, dispatch policy,
+  worker identity, machine launches and enrollment, child sessions and their
+  limits, and the dispatcher/manifest targets, with their HTTP handlers. It
+  depends only on the kernel and reaches the host through `DispatchCore` and
+  the `hooks` traits (accounts, sessions, notify, presence).
+- `cctui-server-core`: the shared host state (`CoreState`), the daemon
+  transport, run lifecycle and the cross-domain contract tests. It does not
+  depend on the workspace and compiles and tests on its own, without search,
+  image codecs, WebAuthn or plugin startup.
 - `cctui-server-workspace`: interactive HTTP/WebSocket handlers, application
   state, workspace storage and the full-host assembly, built on core.
 - `cctui-server`: the executable; it starts the workspace host.

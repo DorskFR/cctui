@@ -1,9 +1,9 @@
 //! Admin user and machine management routes.
 
 use super::GET;
+use crate::auth;
 use crate::authz::Authz::Scope as ScopeAz;
 use crate::authz::{Authn, Routes};
-use crate::{auth, routes};
 use axum::http::Method;
 use axum::routing::{delete, get, patch, post};
 
@@ -72,9 +72,9 @@ pub(super) fn register(r: Routes) -> Routes {
         &[GET, Method::PUT, Method::DELETE],
         "/admin/users/{id}/dispatch-policy",
         "Get, replace or remove a user's dispatch policy (admin).",
-        get(routes::dispatch_policy::get_policy)
-            .put(routes::dispatch_policy::set_policy)
-            .delete(routes::dispatch_policy::delete_policy),
+        get(cctui_server_dispatch::routes::dispatch_policy::get_policy::<crate::state::AppState>)
+            .put(cctui_server_dispatch::routes::dispatch_policy::set_policy::<crate::state::AppState>)
+            .delete(cctui_server_dispatch::routes::dispatch_policy::delete_policy::<crate::state::AppState>),
         Authn::Bearer,
         ScopeAz(auth::Scope::Admin),
     )

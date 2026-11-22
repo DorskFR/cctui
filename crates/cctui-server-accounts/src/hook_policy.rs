@@ -1,12 +1,11 @@
 //! The hook policy a launch carries (side-door rule, inherited and account
 //! rules), and the record of it.
-pub use cctui_server_kernel::accounts_types::PolicyError;
+pub use cctui_server_kernel::accounts_types::{PolicyError, attach, carry, dispatch_additions};
 
 use cctui_proto::adapter::SessionSpec;
 use cctui_proto::hook_policy::{
-    DISPATCH_ADDITIONS_FIELD, DISPATCH_POLICY_FIELD, HookPolicy, HookPolicyStatus, HookRule,
-    SessionHookPolicy, effective_rules, no_direct_harness_rule, normalize_rules,
-    supports_hook_policy,
+    DISPATCH_ADDITIONS_FIELD, DISPATCH_POLICY_FIELD, HookPolicy, HookRule, SessionHookPolicy,
+    effective_rules, no_direct_harness_rule, normalize_rules,
 };
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -64,34 +63,6 @@ fn merge_rules(stored: Vec<serde_json::Value>) -> Vec<HookRule> {
         tracing::warn!(%error, "account hook rules over the limits; launching without them");
         Vec::new()
     })
-}
-
-/// The side-door rule, then `rules`, as the launch of `adapter` carries them.
-///
-/// # Errors
-/// The union is over the limits: the launch must not go out without it.
-pub fn carry(adapter: &str, rules: Vec<HookRule>) -> Result<SessionHookPolicy, String> {
-    let mut all = vec![no_direct_harness_rule()];
-    all.extend(rules);
-    let rules = normalize_rules(all)?;
-    let status = if supports_hook_policy(adapter) {
-        HookPolicyStatus::Applied
-    } else {
-        HookPolicyStatus::Unsupported
-    };
-    Ok(SessionHookPolicy { rules, status: Some(status) })
-}
-
-/// Add the account rules to what the spec already carries.
-///
-/// # Errors
-/// See [`carry`].
-pub fn attach(spec: &mut SessionSpec, rules: Vec<HookRule>) -> Result<SessionHookPolicy, String> {
-    let mut all = spec.hook_policy.take().map(|p| p.rules).unwrap_or_default();
-    all.extend(rules);
-    let carried = carry(spec.adapter_id.as_str(), all)?;
-    spec.hook_policy = Some(HookPolicy { rules: carried.rules.clone() });
-    Ok(carried)
 }
 
 /// # Errors
@@ -196,23 +167,6 @@ pub async fn inherit_for_launch(
     Ok(carried)
 }
 
-/// Parse and check a dispatch payload's `hook_rules` additions.
-///
-/// They are checked against the side-door rule every worker inherits, so a
-/// dispatch weakening it is refused before anything is minted for the worker.
-///
-/// # Errors
-/// [`PolicyError::Rejected`] for unreadable or weakening additions.
-pub fn dispatch_additions(payload: &serde_json::Value) -> Result<Vec<HookRule>, PolicyError> {
-    let additions = match payload.get(DISPATCH_ADDITIONS_FIELD) {
-        None | Some(serde_json::Value::Null) => Vec::new(),
-        Some(raw) => serde_json::from_value::<Vec<HookRule>>(raw.clone())
-            .map_err(|e| PolicyError::Rejected(format!("invalid payload.hook_rules: {e}")))?,
-    };
-    effective_rules(&[no_direct_harness_rule()], additions.clone())?;
-    Ok(additions)
-}
-
 /// Write the worker's effective hook policy into its dispatch payload.
 ///
 /// It replaces whatever policy the caller put there: the worker's account rules
@@ -251,7 +205,7 @@ mod tests {
     use super::*;
     use axum::http::StatusCode;
     use cctui_proto::adapter::AdapterId;
-    use cctui_proto::hook_policy::{HookEvent, ToolClass};
+    use cctui_proto::hook_policy::{HookEvent, HookPolicyStatus, ToolClass};
     use cctui_server_kernel::error::AppError;
 
     fn spec(adapter: &str) -> SessionSpec {

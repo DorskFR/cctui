@@ -18,6 +18,7 @@ pub mod envelope_guard;
 pub mod error;
 pub mod events;
 pub mod execution_settings;
+pub mod extras_types;
 pub mod gateway_trace;
 pub mod headers;
 pub mod http_cache;
@@ -30,6 +31,7 @@ pub mod preview_host;
 pub mod registry;
 pub mod resource_owners;
 pub mod schema;
+pub mod sessions_types;
 pub mod state_events;
 pub mod store;
 

@@ -3,7 +3,6 @@
 use super::GET;
 use crate::authz::Authz::Authenticated;
 use crate::authz::{Authn, Routes};
-use crate::routes;
 use axum::routing::get;
 
 pub(super) fn register(r: Routes) -> Routes {
@@ -11,7 +10,7 @@ pub(super) fn register(r: Routes) -> Routes {
         &[GET],
         "/manifest/daemon",
         "Daemon update manifest (latest version + download URLs).",
-        get(routes::manifest::daemon_manifest),
+        get(cctui_server_dispatch::targets::manifest::daemon_manifest::<crate::state::AppState>),
         Authn::Bearer,
         Authenticated,
     )
@@ -19,7 +18,9 @@ pub(super) fn register(r: Routes) -> Routes {
         &[GET],
         "/daemon/binary/{target}",
         "Download a daemon binary for a target (self-update proxy).",
-        get(routes::manifest::download_daemon_binary),
+        get(cctui_server_dispatch::targets::manifest::download_daemon_binary::<
+            crate::state::AppState,
+        >),
         Authn::Bearer,
         Authenticated,
     )

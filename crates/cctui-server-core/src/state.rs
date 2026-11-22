@@ -105,3 +105,55 @@ impl crate::identity::IdentityContext for CoreState {
         &self.auth_config
     }
 }
+
+impl cctui_server_dispatch::context::DispatchCore for CoreState {
+    fn pool(&self) -> &PgPool {
+        &self.pool
+    }
+    fn bus(&self) -> &Bus {
+        &self.bus
+    }
+    fn auth_config(&self) -> &AuthConfig {
+        &self.auth_config
+    }
+    fn http_client(&self) -> &reqwest::Client {
+        &self.http_client
+    }
+    fn pending_commands(&self) -> &DashMap<Uuid, PendingCommand> {
+        &self.pending_commands
+    }
+    fn command_waiters(&self) -> &CommandWaiters {
+        &self.command_waiters
+    }
+    fn spawn_capabilities(&self) -> &DashMap<String, cctui_proto::api::SpawnCapability> {
+        &self.spawn_capabilities
+    }
+    fn session_usd_budgets(&self) -> &DashMap<String, f64> {
+        &self.session_usd_budgets
+    }
+    fn dispatcher_registry(&self) -> &Arc<DispatcherRegistry> {
+        &self.dispatchers
+    }
+    fn dispatcher_liveness(&self) -> &DashMap<Uuid, MachineLiveness> {
+        &self.dispatcher_liveness
+    }
+    fn machine_liveness(&self) -> &DashMap<Uuid, MachineLiveness> {
+        &self.machine_liveness
+    }
+}
+
+impl cctui_server_dispatch::targets::dispatcher::DispatcherContext for CoreState {
+    async fn register_dispatcher_presence(&self, _: Uuid) {}
+    async fn unregister_dispatcher_presence(&self, _: Uuid) {}
+}
+
+crate::impl_dispatch_account_store!(CoreState, pool);
+
+impl cctui_server_dispatch::hooks::DispatchSessions for CoreState {
+    async fn push_reconcile(&self, machine_id: Uuid) -> Result<(), crate::bus::BusError> {
+        crate::targets::daemon::reconcile::push_reconcile(self, machine_id).await
+    }
+    async fn enabled_adapter_ids(&self, machine_id: Uuid) -> sqlx::Result<Vec<String>> {
+        crate::targets::daemon::reconcile::enabled_adapter_ids(self, machine_id).await
+    }
+}

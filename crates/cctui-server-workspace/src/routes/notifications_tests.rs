@@ -476,7 +476,8 @@ async fn failed_dispatch(state: &AppState, owner: Uuid) -> (String, Uuid) {
 }
 
 async fn shown_failures(state: &AppState, who: Uuid) -> Vec<String> {
-    use crate::store::dispatch_records::{Listing, list};
+    use cctui_server_dispatch::execution_failures::list;
+    use cctui_server_dispatch::store::dispatch_records::Listing;
     let listing = Listing { owner: Some(who), viewer: Some(who), include_dismissed: false };
     list(&state.pool, listing).await.unwrap().into_iter().map(|f| f.session_id).collect()
 }
@@ -496,7 +497,9 @@ async fn dismissing_a_dispatch_notice_dismisses_its_failure_record() {
 
 #[tokio::test]
 async fn dismissing_failure_records_resolves_their_notices() {
-    use crate::routes::dispatch::{dismiss_all_failed_dispatches, dismiss_failed_dispatch};
+    use cctui_server_dispatch::routes::dispatch::{
+        dismiss_all_failed_dispatches, dismiss_failed_dispatch,
+    };
     let Some(state) = state("notif_routes_dispatch_record_dismiss").await else { return };
     let alice = user(&state).await;
     let (one, one_notice) = failed_dispatch(&state, alice).await;

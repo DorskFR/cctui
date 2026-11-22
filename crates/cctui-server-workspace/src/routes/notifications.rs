@@ -182,7 +182,7 @@ pub async fn dismiss(
 /// A dismissed dispatch notice dismisses its failure record too.
 async fn dismiss_failed_dispatch(state: &AppState, ctx: &AuthContext, n: &NotificationRecord) {
     let Some(session_id) = crate::notify::producers::failed_dispatch(n) else { return };
-    let dismissed = crate::store::dispatch_records::dismiss(
+    let dismissed = cctui_server_dispatch::store::dispatch_records::dismiss(
         &state.pool,
         ctx.user_id,
         ctx.owner_filter(),

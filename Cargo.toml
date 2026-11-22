@@ -22,6 +22,7 @@ members = [
     "crates/cctui-server-accounts",
     "crates/cctui-server-blobs",
     "crates/cctui-server-core",
+    "crates/cctui-server-dispatch",
     "crates/cctui-server-extras",
     "crates/cctui-server-kernel",
     "crates/cctui-server-search",
@@ -57,6 +58,7 @@ cctui-aws = { path = "crates/cctui-aws" }
 cctui-server-accounts = { path = "crates/cctui-server-accounts" }
 cctui-server-blobs = { path = "crates/cctui-server-blobs" }
 cctui-server-core = { path = "crates/cctui-server-core" }
+cctui-server-dispatch = { path = "crates/cctui-server-dispatch" }
 cctui-server-extras = { path = "crates/cctui-server-extras" }
 cctui-server-kernel = { path = "crates/cctui-server-kernel" }
 cctui-server-search = { path = "crates/cctui-server-search" }

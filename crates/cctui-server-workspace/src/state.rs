@@ -10,10 +10,10 @@ use crate::auth::AuthConfig;
 #[cfg(test)]
 use crate::bus::Bus;
 use crate::config::Config;
-#[cfg(test)]
-use crate::dispatchers::Registry as DispatcherRegistry;
 use crate::routes::permissions::SharedPermissionStore;
 use crate::skill_store::SkillStore;
+#[cfg(test)]
+use cctui_server_dispatch::dispatchers::Registry as DispatcherRegistry;
 
 #[derive(Clone)]
 pub struct AppState {

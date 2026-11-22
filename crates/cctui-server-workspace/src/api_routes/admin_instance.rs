@@ -131,7 +131,7 @@ fn storage_and_harness(r: Routes) -> Routes {
         &[GET, Method::PUT],
         "/admin/harness-autoupdate",
         "Read the harness auto-update settings of every machine, or set the instance default (admin).",
-        get(routes::harness_update::read).put(routes::harness_update::set_instance),
+        get(cctui_server_dispatch::routes::harness_update::read::<crate::state::AppState>).put(cctui_server_dispatch::routes::harness_update::set_instance::<crate::state::AppState>),
         Authn::Bearer,
         ScopeAz(auth::Scope::Admin),
     )
@@ -139,7 +139,7 @@ fn storage_and_harness(r: Routes) -> Routes {
         &[Method::PUT],
         "/admin/harness-autoupdate/{machine_id}",
         "Set or clear one machine's harness auto-update override (admin).",
-        put(routes::harness_update::set_machine),
+        put(cctui_server_dispatch::routes::harness_update::set_machine::<crate::state::AppState>),
         Authn::Bearer,
         ScopeAz(auth::Scope::Admin),
     )
@@ -147,7 +147,7 @@ fn storage_and_harness(r: Routes) -> Routes {
         &[Method::POST],
         "/admin/harness-autoupdate/{machine_id}/restart",
         "Restart one harness's long-lived process on a machine once it is idle (admin).",
-        post(routes::harness_update::restart_harness),
+        post(cctui_server_dispatch::routes::harness_update::restart_harness::<crate::state::AppState>),
         Authn::Bearer,
         ScopeAz(auth::Scope::Admin),
     )

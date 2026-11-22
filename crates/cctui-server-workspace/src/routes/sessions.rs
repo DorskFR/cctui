@@ -15,6 +15,7 @@ use cctui_proto::classifier::{Bucket, ClassifyInput, PrStatus, PrStatusCache, cl
 use cctui_proto::features::Feature;
 use cctui_proto::models::{Attention, Liveness, Session, SessionEndReason, SessionStatus};
 use cctui_server_core::hook_policy;
+pub use cctui_server_kernel::sessions_types::{ArchiveOutcome, bucket_from_signals};
 
 use crate::auth::AuthContext;
 use crate::error::AppError;
@@ -208,30 +209,6 @@ pub fn resolve_status_liveness(
             (s.to_wire(), liveness)
         },
     )
-}
-
-/// Classify a live session into its bucket from the persisted signals.
-/// `children` are the session's linked-PR references (`sessions.children`): an
-/// idle session is blocked while one of them is an OPEN PR awaiting attention
-/// per the `pr_cache` the GitHub connector maintains.
-pub fn bucket_from_signals(
-    tempo: Option<&str>,
-    agent_state: Option<&str>,
-    activity: Option<&str>,
-    soft_limit_blocked: Option<&str>,
-    children: &[SessionChild],
-    pr_cache: &std::collections::HashMap<String, PrStatus<'_>>,
-) -> Bucket {
-    let input = ClassifyInput {
-        tempo,
-        state: agent_state,
-        activity,
-        children,
-        q: None,
-        soft_limit_blocked,
-        ended: false,
-    };
-    classify(&input, pr_cache)
 }
 
 /// The bucket a listed row shows under: an ended row is Completed.
@@ -3479,7 +3456,11 @@ pub async fn kill_session(
     )
     .await;
     if delivered.is_err() {
-        let _ = crate::routes::dispatch::cancel_dispatched_workload(&state, &session_id).await;
+        let _ = cctui_server_dispatch::routes::dispatch::cancel_dispatched_workload(
+            &state,
+            &session_id,
+        )
+        .await;
     }
     // Kill drops the in-memory handle and marks the DB row inactive. The
     // session isn't archived — later activity can revive it.
@@ -4206,14 +4187,6 @@ pub struct ArchiveQuery {
     /// gesture on that one session; never set by automations.
     #[serde(default)]
     pub force: bool,
-}
-
-/// What [`archive_one`] did with a session.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ArchiveOutcome {
-    Archived,
-    /// The session is pinned and `force` was not set: nothing was touched.
-    SkippedPinned,
 }
 
 /// Ask the owning daemon to remove `session_id`'s underlying job. Tracked so a

@@ -165,6 +165,7 @@ const EXPORTED_TARGETS: &[&str] = &[
     "cctui_server_core=info",
     "cctui_server_kernel=info",
     "cctui_server_accounts=info",
+    "cctui_server_dispatch=info",
     "otel=info",
 ];
 

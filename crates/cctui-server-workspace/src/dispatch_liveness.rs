@@ -51,13 +51,13 @@ async fn finished(pool: &sqlx::PgPool, session_id: &str) -> bool {
 }
 
 #[cfg(test)]
-use crate::store::dispatch_records;
-#[cfg(test)]
 use cctui_proto::api::WorkerExit;
 #[cfg(test)]
 use cctui_server_core::dispatch_liveness::{
     EXITED_CLEANLY, SWEEP_LOCK_KEY, WORKLOAD_GONE, sweep_unlocked,
 };
+#[cfg(test)]
+use cctui_server_dispatch::store::dispatch_records;
 #[cfg(test)]
 use uuid::Uuid;
 

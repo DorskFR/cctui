@@ -1,6 +1,6 @@
 //! Accounts, provider credentials and the OAuth passthrough gateway.
 
-pub mod account_pick;
+pub use cctui_server_kernel::accounts_types::pick as account_pick;
 pub mod account_resolve;
 pub mod accounts;
 pub mod auto_redeem;

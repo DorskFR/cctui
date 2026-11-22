@@ -77,7 +77,7 @@ pub(super) fn register(r: Routes) -> Routes {
         &[Method::POST],
         "/enroll",
         "Enroll this machine and mint its machine key.",
-        post(routes::enroll::enroll),
+        post(cctui_server_dispatch::targets::enrollment::enroll::<crate::state::AppState>),
         Authn::Bearer,
         ScopeAz(auth::Scope::Enroll),
     )
@@ -85,7 +85,7 @@ pub(super) fn register(r: Routes) -> Routes {
         &[GET],
         "/machines/resources",
         "The caller's daemon machines with their last host CPU/memory/disk snapshot.",
-        get(crate::machine_resources::list),
+        get(cctui_server_dispatch::machine_resources::list::<crate::state::AppState>),
         Authn::Bearer,
         Authenticated,
     )
@@ -93,7 +93,7 @@ pub(super) fn register(r: Routes) -> Routes {
         &[GET],
         "/machines/{machine_id}/status",
         "Machine connectivity/liveness snapshot (remote-enroll verification).",
-        get(routes::enroll::machine_status),
+        get(cctui_server_dispatch::routes::enroll::machine_status::<crate::state::AppState>),
         Authn::Bearer,
         Authz::Resource(ResourceKind::Machine, Action::Read, IdFrom::Path("machine_id")),
     )
@@ -101,7 +101,7 @@ pub(super) fn register(r: Routes) -> Routes {
         &[Method::POST],
         "/deenroll",
         "Deenroll the current machine.",
-        post(routes::enroll::deenroll),
+        post(cctui_server_dispatch::targets::enrollment::deenroll::<crate::state::AppState>),
         Authn::Bearer,
         // In-handler: requires a machine token (machine_id present).
         Authenticated,

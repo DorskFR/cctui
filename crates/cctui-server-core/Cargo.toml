@@ -10,10 +10,15 @@ doctest = false
 workspace = true
 
 [features]
-test-support = ["cctui-server-kernel/test-support", "cctui-server-accounts/test-support"]
+test-support = [
+    "cctui-server-kernel/test-support",
+    "cctui-server-accounts/test-support",
+    "cctui-server-dispatch/test-support",
+]
 
 [dependencies]
 cctui-server-accounts.workspace = true
+cctui-server-dispatch.workspace = true
 cctui-server-kernel.workspace = true
 regex.workspace = true
 base64.workspace = true

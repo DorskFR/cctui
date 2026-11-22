@@ -179,7 +179,7 @@ impl ChildCount for AppState {
     }
 }
 impl ChildExecutionContext for AppState {
-    fn child_state(&self) -> &cctui_server_core::state::CoreState {
+    fn child_state(&self) -> &impl cctui_server_dispatch::context::DispatchCore {
         &self.core
     }
     fn profiles_available(&self) -> bool {

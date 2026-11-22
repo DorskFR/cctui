@@ -60,7 +60,10 @@ pub(super) fn on_heartbeat(state: &AppState, machine_id: Uuid, frame: DaemonFram
         if let Some(report) = harness
             && updates
         {
-            crate::routes::harness_update::on_heartbeat(&state, machine_id, &report).await;
+            cctui_server_dispatch::routes::harness_update::on_heartbeat(
+                &state, machine_id, &report,
+            )
+            .await;
         }
     });
 }

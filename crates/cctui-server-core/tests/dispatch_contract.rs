@@ -93,6 +93,9 @@ impl DispatchContext for Host {
         self.callbacks.lock().unwrap().push("context");
     }
 }
+cctui_server_core::impl_dispatch_account_resolution!(Host);
+cctui_server_core::impl_dispatch_mint!(Host);
+cctui_server_core::impl_dispatch_account_store!(Host, pool);
 
 struct Fixture {
     host: Host,

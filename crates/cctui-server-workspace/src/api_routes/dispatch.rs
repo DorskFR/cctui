@@ -1,9 +1,9 @@
 //! Dispatch and dispatcher-enrolment routes.
 
 use super::GET;
+use crate::auth;
 use crate::authz::Authz::{Authenticated, Scope as ScopeAz};
 use crate::authz::{Authn, Routes};
-use crate::{auth, routes};
 use axum::http::Method;
 use axum::routing::{get, patch, post};
 
@@ -12,7 +12,7 @@ pub(super) fn register(r: Routes) -> Routes {
         &[Method::POST],
         "/sessions/dispatch",
         "Dispatch a session to an enrolled executor (remote runner).",
-        post(routes::dispatch::dispatch),
+        post(cctui_server_dispatch::routes::dispatch::dispatch::<crate::state::AppState>),
         Authn::Bearer,
         ScopeAz(auth::Scope::Dispatch),
     )
@@ -20,7 +20,7 @@ pub(super) fn register(r: Routes) -> Routes {
         &[GET],
         "/sessions/dispatchers",
         "List dispatch targets available for a spawn.",
-        get(routes::dispatch::list_dispatchers),
+        get(cctui_server_dispatch::routes::dispatch::list_dispatchers::<crate::state::AppState>),
         Authn::Bearer,
         // owner_filter() SQL filter in the handler.
         Authenticated,
@@ -29,7 +29,9 @@ pub(super) fn register(r: Routes) -> Routes {
         &[GET],
         "/dispatch-records/failed",
         "Dispatches the dispatcher refused or whose worker never ran to a session.",
-        get(routes::dispatch::list_failed_dispatches),
+        get(cctui_server_dispatch::routes::dispatch::list_failed_dispatches::<
+            crate::state::AppState,
+        >),
         Authn::Bearer,
         // owner_filter() SQL filter in the handler.
         Authenticated,
@@ -38,7 +40,7 @@ pub(super) fn register(r: Routes) -> Routes {
         &[Method::POST],
         "/dispatch-records/{id}/redispatch",
         "Send a recorded dispatch again as a new dispatch.",
-        post(routes::dispatch::redispatch),
+        post(cctui_server_dispatch::routes::dispatch::redispatch::<crate::state::AppState>),
         Authn::Bearer,
         ScopeAz(auth::Scope::Dispatch),
     )
@@ -46,7 +48,11 @@ pub(super) fn register(r: Routes) -> Routes {
         &[Method::POST],
         "/dispatch-records/{id}/dismiss",
         "Hide a failed dispatch from the caller's list.",
-        post(routes::dispatch::dismiss_failed_dispatch),
+        post(
+            cctui_server_dispatch::routes::dispatch::dismiss_failed_dispatch::<
+                crate::state::AppState,
+            >,
+        ),
         Authn::Bearer,
         // owner_filter() SQL filter in the handler.
         Authenticated,
@@ -55,7 +61,11 @@ pub(super) fn register(r: Routes) -> Routes {
         &[Method::POST],
         "/dispatch-records/dismiss-all",
         "Hide every failed dispatch the caller's list shows.",
-        post(routes::dispatch::dismiss_all_failed_dispatches),
+        post(
+            cctui_server_dispatch::routes::dispatch::dismiss_all_failed_dispatches::<
+                crate::state::AppState,
+            >,
+        ),
         Authn::Bearer,
         // owner_filter() SQL filter in the handler.
         Authenticated,
@@ -66,7 +76,9 @@ pub(super) fn register(r: Routes) -> Routes {
         &[GET],
         "/dispatchers",
         "List enrolled dispatchers with liveness.",
-        get(routes::dispatchers::list_dispatchers),
+        get(cctui_server_dispatch::targets::dispatcher_management::list_dispatchers::<
+            crate::state::AppState,
+        >),
         Authn::Bearer,
         // owner_filter() filter.
         Authenticated,
@@ -75,8 +87,16 @@ pub(super) fn register(r: Routes) -> Routes {
         &[Method::PATCH, Method::DELETE],
         "/dispatchers/{id}",
         "Rename or remove an enrolled dispatcher.",
-        patch(routes::dispatchers::update_dispatcher)
-            .delete(routes::dispatchers::delete_dispatcher),
+        patch(
+            cctui_server_dispatch::targets::dispatcher_management::update_dispatcher::<
+                crate::state::AppState,
+            >,
+        )
+        .delete(
+            cctui_server_dispatch::targets::dispatcher_management::delete_dispatcher::<
+                crate::state::AppState,
+            >,
+        ),
         Authn::Bearer,
         ScopeAz(auth::Scope::Enroll),
     )
@@ -84,7 +104,7 @@ pub(super) fn register(r: Routes) -> Routes {
         &[Method::POST],
         "/dispatcher/enroll",
         "Enroll a new dispatcher (executor) and mint its key.",
-        post(routes::dispatcher::enroll),
+        post(cctui_server_dispatch::targets::dispatcher::enroll::<crate::state::AppState>),
         Authn::Bearer,
         ScopeAz(auth::Scope::Enroll),
     )

@@ -9,7 +9,7 @@
 //! Election reuses the ranker in [`crate::account_pick`]; there is exactly one
 //! of those, and this module does not add a second.
 pub use cctui_server_kernel::accounts_types::{
-    AccountResolutionContext, LIVENESS_ACTIVE_SECS, ResolveError,
+    AccountResolutionContext, Bound, LIVENESS_ACTIVE_SECS, ResolveError,
 };
 
 use uuid::Uuid;
@@ -24,13 +24,6 @@ use crate::store::account_pools::{self, AccountPool, STRATEGY_ORDERED};
 pub enum Target {
     Account(String),
     Pool(AccountPool),
-}
-
-/// The account to bind, plus the pool it must stay inside (if any).
-#[derive(Debug, PartialEq, Eq)]
-pub struct Bound {
-    pub account: String,
-    pub pool_id: Option<Uuid>,
 }
 
 /// An account and a pool may share a name.

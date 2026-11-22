@@ -1142,6 +1142,7 @@ dependencies = [
  "cctui-crypto",
  "cctui-proto",
  "cctui-server-accounts",
+ "cctui-server-dispatch",
  "cctui-server-kernel",
  "cctui-telemetry",
  "chrono",
@@ -1165,6 +1166,37 @@ dependencies = [
  "tower",
  "tracing",
  "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
+name = "cctui-server-dispatch"
+version = "0.32.0-beta.21"
+dependencies = [
+ "async-trait",
+ "axum",
+ "base64 0.23.1",
+ "cctui-crypto",
+ "cctui-proto",
+ "cctui-server-kernel",
+ "cctui-telemetry",
+ "chrono",
+ "dashmap",
+ "futures-util",
+ "hex",
+ "hmac 0.12.1",
+ "http",
+ "reqwest",
+ "ring",
+ "rustls",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "sqlx",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tracing",
  "uuid",
 ]
 
@@ -1280,6 +1312,7 @@ dependencies = [
  "cctui-server-accounts",
  "cctui-server-blobs",
  "cctui-server-core",
+ "cctui-server-dispatch",
  "cctui-server-extras",
  "cctui-server-kernel",
  "cctui-server-search",

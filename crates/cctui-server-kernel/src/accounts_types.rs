@@ -2,14 +2,22 @@
 use std::sync::Arc;
 
 use axum::http::StatusCode;
+use cctui_proto::adapter::SessionSpec;
+use cctui_proto::api::account_redirects::AccountRedirect;
 use cctui_proto::api::soft_limit::{SoftLimits, UsageWindow};
-use cctui_proto::hook_policy::AddOnlyError;
+use cctui_proto::hook_policy::{
+    AddOnlyError, DISPATCH_ADDITIONS_FIELD, HookPolicy, HookPolicyStatus, HookRule,
+    SessionHookPolicy, effective_rules, no_direct_harness_rule, normalize_rules,
+    supports_hook_policy,
+};
 use chrono::{DateTime, Utc};
 use dashmap::DashMap;
 use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::error::AppError;
+
+pub mod pick;
 
 /// Anthropic Claude-Code OAuth token endpoint + client id.
 ///
@@ -388,4 +396,212 @@ impl From<AddOnlyError> for PolicyError {
     fn from(error: AddOnlyError) -> Self {
         Self::Rejected(error.to_string())
     }
+}
+
+/// The account to bind, plus the pool it must stay inside (if any).
+#[derive(Debug, PartialEq, Eq)]
+pub struct Bound {
+    pub account: String,
+    pub pool_id: Option<Uuid>,
+}
+
+/// Loaded account row (decrypted in-process; never serialized out).
+pub struct Account {
+    pub id: Uuid,
+    pub provider: String,
+    pub access_token: Option<String>,
+    /// `None` for compatible endpoints (static credential, no refresh).
+    pub refresh_token: Option<String>,
+    pub expires_at: Option<chrono::DateTime<Utc>>,
+    /// For Codex/OpenAI accounts: the `chatgpt_account_id` claim, sent upstream
+    /// as the `Chatgpt-Account-Id` header. NULL for anthropic / manual
+    /// refresh-token accounts.
+    pub provider_account_id: Option<String>,
+    /// Compatible-endpoint upstream base URL. NULL → built-in upstream.
+    pub base_url: Option<String>,
+    /// `oauth` (refreshing subscription) | `bearer` | `api_key` (static).
+    pub auth_scheme: String,
+    /// Per-account soft limits on cctui's own share of the usage windows.
+    /// Enforced in `passthrough` against the cached usage. All NULL ⇒
+    /// no soft limit (prior behaviour).
+    pub soft_limits: cctui_proto::api::soft_limit::SoftLimits,
+    /// Per-provider usage ticker setting; off ⇒ the proxy skips it.
+    pub usage_notices: cctui_proto::api::gateway::UsageNotices,
+    /// Per-provider gateway request-shaping settings; see `FireworksSettings`.
+    pub provider_settings: Option<serde_json::Value>,
+    /// Per-(account, provider) RPM/TPM ceilings enforced in the proxy path.
+    /// Unset ⇒ no throttling.
+    pub rate_limits: cctui_proto::api::gateway::RateLimits,
+}
+
+impl Account {
+    /// A static-credential compatible account forwards its stored credential
+    /// verbatim and skips the OAuth refresh round-trip.
+    #[must_use]
+    pub fn is_static(&self) -> bool {
+        self.auth_scheme != "oauth"
+    }
+}
+
+/// Merge a `CctuiAgent` child's per-session dollar budget into `cap` as a
+/// `session_usd` limit.
+///
+/// A budget on the child always wins over an account-level
+/// `session_usd`: it is the tighter, purpose-set ceiling.
+#[must_use]
+pub fn merge_session_budget(
+    cap: &cctui_proto::api::soft_limit::SoftLimits,
+    budget_usd: Option<f64>,
+) -> cctui_proto::api::soft_limit::SoftLimits {
+    let Some(budget) = budget_usd.filter(|b| b.is_finite() && *b > 0.0) else {
+        return cap.clone();
+    };
+    let mut merged = cap.clone();
+    let entry =
+        merged.limits.entry(cctui_proto::api::soft_limit::KEY_SESSION_USD.to_owned()).or_default();
+    entry.cap_usd = Some(budget);
+    merged
+}
+
+/// Whether the soft-limit check must refresh usage from upstream before deciding.
+///
+/// A cold (`None`) or stale cache must trigger a refresh — treating a cold
+/// cache as "no data → allow" would let a capped account run to 100% whenever
+/// no human was viewing it.
+#[must_use]
+pub fn usage_cache_stale(entry_age: Option<std::time::Duration>, ttl: std::time::Duration) -> bool {
+    entry_age.is_none_or(|age| age >= ttl)
+}
+
+/// Map `model` through one provider row's aliases, then its catalog.
+///
+/// `catalog_fallback` lets a `fireworks` catalog miss resolve to the first
+/// entry, as a spawn needs; without it only an exact id or label match counts.
+#[must_use]
+pub fn resolve_row_model(row: &ProviderRow, model: &str, catalog_fallback: bool) -> String {
+    let aliased = row
+        .model_aliases
+        .as_ref()
+        .and_then(|v| v.get(model))
+        .and_then(serde_json::Value::as_str)
+        .filter(|s| !s.trim().is_empty())
+        .map_or_else(|| model.to_owned(), str::to_owned);
+    if row.family() != Family::Fireworks {
+        return aliased;
+    }
+    let resolved = if catalog_fallback {
+        resolve_catalog_model(row.models.as_ref(), &aliased)
+    } else {
+        resolve_exact_catalog_model(row.models.as_ref(), &aliased)
+    };
+    resolved.unwrap_or(aliased)
+}
+
+/// Resolve a model ID or label against an account catalog.
+///
+/// Resolve a model against an account's catalog: an exact `model` id passes
+/// through, a catalog `label` maps to its id, and anything else (including an
+/// empty request) falls back to the first catalog entry. `None` when the catalog
+/// is empty — the caller then keeps the requested model verbatim.
+#[must_use]
+pub fn resolve_catalog_model(models: Option<&serde_json::Value>, model: &str) -> Option<String> {
+    resolve_exact_catalog_model(models, model)
+        .or_else(|| models?.as_array()?.iter().find_map(catalog_entry_id))
+}
+
+/// [`resolve_catalog_model`] without the first-entry fallback: only an exact
+/// catalog id or label resolves.
+#[must_use]
+pub fn resolve_exact_catalog_model(
+    models: Option<&serde_json::Value>,
+    model: &str,
+) -> Option<String> {
+    let wanted = model.trim();
+    if wanted.is_empty() {
+        return None;
+    }
+    models?
+        .as_array()?
+        .iter()
+        .find(|e| {
+            catalog_entry_id(e).as_deref() == Some(wanted)
+                || e.get("label").and_then(serde_json::Value::as_str) == Some(wanted)
+        })
+        .and_then(catalog_entry_id)
+}
+
+fn catalog_entry_id(entry: &serde_json::Value) -> Option<String> {
+    entry.get("model").and_then(serde_json::Value::as_str).map(str::to_owned)
+}
+
+/// The side-door rule, then `rules`, as the launch of `adapter` carries them.
+///
+/// # Errors
+/// The union is over the limits: the launch must not go out without it.
+pub fn carry(adapter: &str, rules: Vec<HookRule>) -> Result<SessionHookPolicy, String> {
+    let mut all = vec![no_direct_harness_rule()];
+    all.extend(rules);
+    let rules = normalize_rules(all)?;
+    let status = if supports_hook_policy(adapter) {
+        HookPolicyStatus::Applied
+    } else {
+        HookPolicyStatus::Unsupported
+    };
+    Ok(SessionHookPolicy { rules, status: Some(status) })
+}
+
+/// Add the account rules to what the spec already carries.
+///
+/// # Errors
+/// See [`carry`].
+pub fn attach(spec: &mut SessionSpec, rules: Vec<HookRule>) -> Result<SessionHookPolicy, String> {
+    let mut all = spec.hook_policy.take().map(|p| p.rules).unwrap_or_default();
+    all.extend(rules);
+    let carried = carry(spec.adapter_id.as_str(), all)?;
+    spec.hook_policy = Some(HookPolicy { rules: carried.rules.clone() });
+    Ok(carried)
+}
+
+/// Parse and check a dispatch payload's `hook_rules` additions.
+///
+/// They are checked against the side-door rule every worker inherits, so a
+/// dispatch weakening it is refused before anything is minted for the worker.
+///
+/// # Errors
+/// [`PolicyError::Rejected`] for unreadable or weakening additions.
+pub fn dispatch_additions(payload: &serde_json::Value) -> Result<Vec<HookRule>, PolicyError> {
+    let additions = match payload.get(DISPATCH_ADDITIONS_FIELD) {
+        None | Some(serde_json::Value::Null) => Vec::new(),
+        Some(raw) => serde_json::from_value::<Vec<HookRule>>(raw.clone())
+            .map_err(|e| PolicyError::Rejected(format!("invalid payload.hook_rules: {e}")))?,
+    };
+    effective_rules(&[no_direct_harness_rule()], additions.clone())?;
+    Ok(additions)
+}
+
+/// Follow account-level rules (`to_account` set, `match_model` NULL) from `from`
+/// transitively.
+///
+/// The visited set ends a cycle at its last new hop and the cap bounds pathological chains;
+/// both degrade to "stop here", never an error — a broken rule must not fail a launch. `None`
+/// when no rule moves `from` at all.
+#[must_use]
+pub fn follow_account_chain(rules: &[AccountRedirect], from: Uuid, family: &str) -> Option<Uuid> {
+    let mut visited = vec![from];
+    let mut cur = from;
+    for _ in 0..4 {
+        let Some(rule) = rules
+            .iter()
+            .find(|r| r.from_account == cur && r.family == family && r.to_account.is_some())
+        else {
+            break;
+        };
+        let next = rule.to_account.expect("filtered on to_account.is_some()");
+        if visited.contains(&next) {
+            break;
+        }
+        visited.push(next);
+        cur = next;
+    }
+    (cur != from).then_some(cur)
 }

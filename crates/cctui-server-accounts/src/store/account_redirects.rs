@@ -3,6 +3,7 @@ use sqlx::PgExecutor;
 use uuid::Uuid;
 
 pub use cctui_proto::api::account_redirects::AccountRedirect;
+pub use cctui_server_kernel::accounts_types::follow_account_chain;
 
 const COLS: &str = "id, user_id, from_account, to_account, family, match_model, to_model, \
                     expires_at, reason, created_at";
@@ -135,33 +136,6 @@ pub async fn live_all(exec: impl PgExecutor<'_>) -> Result<Vec<AccountRedirect>,
     )))
     .fetch_all(exec)
     .await
-}
-
-/// Follow account-level rules (`to_account` set, `match_model` NULL) from `from`
-/// transitively.
-///
-/// The visited set ends a cycle at its last new hop and the cap bounds pathological chains;
-/// both degrade to "stop here", never an error — a broken rule must not fail a launch. `None`
-/// when no rule moves `from` at all.
-#[must_use]
-pub fn follow_account_chain(rules: &[AccountRedirect], from: Uuid, family: &str) -> Option<Uuid> {
-    let mut visited = vec![from];
-    let mut cur = from;
-    for _ in 0..4 {
-        let Some(rule) = rules
-            .iter()
-            .find(|r| r.from_account == cur && r.family == family && r.to_account.is_some())
-        else {
-            break;
-        };
-        let next = rule.to_account.expect("filtered on to_account.is_some()");
-        if visited.contains(&next) {
-            break;
-        }
-        visited.push(next);
-        cur = next;
-    }
-    (cur != from).then_some(cur)
 }
 
 /// The model a session on `account` should spawn with instead of `requested`.
