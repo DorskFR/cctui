@@ -23,7 +23,8 @@ pub(super) fn register(r: Routes) -> Routes {
         &[GET, Method::PATCH],
         "/users/{id}/acls",
         "Get or set a user's scope ceiling (admin).",
-        get(routes::admin_auth::get_user_acls).patch(routes::admin_auth::set_user_acls),
+        get(cctui_server_accounts::identity::admin::get_user_acls::<crate::state::AppState>)
+            .patch(cctui_server_accounts::identity::admin::set_user_acls::<crate::state::AppState>),
         Authn::Bearer,
         ScopeAz(auth::Scope::Admin),
     )
@@ -31,7 +32,8 @@ pub(super) fn register(r: Routes) -> Routes {
         &[GET, Method::POST],
         "/users/{id}/keys",
         "List or mint a user's API keys (admin).",
-        get(routes::admin_auth::list_user_keys).post(routes::admin_auth::mint_user_key),
+        get(cctui_server_accounts::identity::admin::list_user_keys::<crate::state::AppState>)
+            .post(cctui_server_accounts::identity::admin::mint_user_key::<crate::state::AppState>),
         Authn::Bearer,
         ScopeAz(auth::Scope::Admin),
     )
@@ -39,7 +41,7 @@ pub(super) fn register(r: Routes) -> Routes {
         &[Method::DELETE],
         "/users/{id}/keys/{kid}",
         "Revoke a user's API key (admin).",
-        delete(routes::admin_auth::revoke_user_key),
+        delete(cctui_server_accounts::identity::admin::revoke_user_key::<crate::state::AppState>),
         Authn::Bearer,
         ScopeAz(auth::Scope::Admin),
     )
@@ -47,7 +49,7 @@ pub(super) fn register(r: Routes) -> Routes {
         &[Method::PATCH],
         "/users/{id}/keys/{kid}/acls",
         "Set a key's scope grant (admin).",
-        patch(routes::admin_auth::set_key_acls),
+        patch(cctui_server_accounts::identity::admin::set_key_acls::<crate::state::AppState>),
         Authn::Bearer,
         ScopeAz(auth::Scope::Admin),
     )

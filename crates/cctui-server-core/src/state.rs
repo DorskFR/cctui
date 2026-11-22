@@ -93,3 +93,15 @@ impl CoreState {
         }
     }
 }
+
+impl crate::identity::IdentityContext for CoreState {
+    fn pool(&self) -> &PgPool {
+        &self.pool
+    }
+    fn bus(&self) -> &Bus {
+        &self.bus
+    }
+    fn auth_config(&self) -> &AuthConfig {
+        &self.auth_config
+    }
+}

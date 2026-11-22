@@ -20,7 +20,7 @@ pub(super) fn register(r: Routes) -> Routes {
         &[GET],
         "/passkeys",
         "List the passkeys enrolled on your account.",
-        get(routes::passkeys::list),
+        get(routes::passkeys::list::<crate::state::AppState>),
         Authn::Bearer,
         Authenticated,
     )
@@ -28,7 +28,7 @@ pub(super) fn register(r: Routes) -> Routes {
         &[Method::POST],
         "/passkeys/register/start",
         "Begin enrolling a passkey on your account.",
-        post(routes::passkeys::register_start),
+        post(routes::passkeys::register_start::<crate::state::AppState>),
         Authn::Bearer,
         Authenticated,
     )
@@ -36,7 +36,7 @@ pub(super) fn register(r: Routes) -> Routes {
         &[Method::POST],
         "/passkeys/register/finish",
         "Finish enrolling a passkey and store the credential.",
-        post(routes::passkeys::register_finish),
+        post(routes::passkeys::register_finish::<crate::state::AppState>),
         Authn::Bearer,
         Authenticated,
     )
@@ -44,7 +44,7 @@ pub(super) fn register(r: Routes) -> Routes {
         &[Method::POST],
         "/passkeys/test/start",
         "Begin a test of an enrolled passkey without signing out.",
-        post(routes::passkeys::test_start),
+        post(routes::passkeys::test_start::<crate::state::AppState>),
         Authn::Bearer,
         Authenticated,
     )
@@ -52,7 +52,7 @@ pub(super) fn register(r: Routes) -> Routes {
         &[Method::POST],
         "/passkeys/test/finish",
         "Finish a passkey test and report which key answered.",
-        post(routes::passkeys::test_finish),
+        post(routes::passkeys::test_finish::<crate::state::AppState>),
         Authn::Bearer,
         Authenticated,
     )
@@ -60,7 +60,8 @@ pub(super) fn register(r: Routes) -> Routes {
         &[Method::PATCH, Method::DELETE],
         "/passkeys/{id}",
         "Rename or revoke one of your passkeys.",
-        patch(routes::passkeys::relabel).delete(routes::passkeys::revoke),
+        patch(routes::passkeys::relabel::<crate::state::AppState>)
+            .delete(routes::passkeys::revoke::<crate::state::AppState>),
         Authn::Bearer,
         Authenticated,
     )
@@ -68,7 +69,7 @@ pub(super) fn register(r: Routes) -> Routes {
         &[Method::PUT],
         "/admin/passkeys/auto-prompt",
         "Server-wide: try the passkey as soon as the login screen opens (admin).",
-        put(routes::passkeys::set_auto_prompt),
+        put(routes::passkeys::set_auto_prompt::<crate::state::AppState>),
         Authn::Bearer,
         ScopeAz(auth::Scope::Admin),
     )

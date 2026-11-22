@@ -12,7 +12,8 @@ pub(super) fn register(r: Routes) -> Routes {
         &[Method::DELETE, Method::PATCH],
         "/admin/users/{id}",
         "Revoke or update a user (admin).",
-        delete(routes::admin_auth::revoke_user).patch(routes::admin_auth::update_user),
+        delete(cctui_server_accounts::identity::admin::revoke_user::<crate::state::AppState>)
+            .patch(cctui_server_accounts::identity::admin::update_user::<crate::state::AppState>),
         Authn::Bearer,
         ScopeAz(auth::Scope::Admin),
     )
@@ -20,7 +21,7 @@ pub(super) fn register(r: Routes) -> Routes {
         &[Method::DELETE],
         "/admin/users/{id}/purge",
         "Hard-delete a user and all their data (admin).",
-        delete(routes::admin_auth::purge_user),
+        delete(cctui_server_accounts::identity::admin::purge_user::<crate::state::AppState>),
         Authn::Bearer,
         ScopeAz(auth::Scope::Admin),
     )
@@ -28,7 +29,7 @@ pub(super) fn register(r: Routes) -> Routes {
         &[Method::POST],
         "/admin/users/{id}/rotate",
         "Rotate a user's tokens (admin).",
-        post(routes::admin_auth::rotate_user),
+        post(cctui_server_accounts::identity::admin::rotate_user::<crate::state::AppState>),
         Authn::Bearer,
         ScopeAz(auth::Scope::Admin),
     )
@@ -36,7 +37,7 @@ pub(super) fn register(r: Routes) -> Routes {
         &[GET],
         "/admin/users/{id}/machines",
         "List a user's machines (admin).",
-        get(routes::admin_auth::list_user_machines),
+        get(cctui_server_accounts::identity::admin::list_user_machines::<crate::state::AppState>),
         Authn::Bearer,
         ScopeAz(auth::Scope::Admin),
     )
@@ -44,7 +45,7 @@ pub(super) fn register(r: Routes) -> Routes {
         &[GET],
         "/admin/users/{id}/tokens",
         "List a user's tokens (admin).",
-        get(routes::admin_auth::list_user_tokens),
+        get(cctui_server_accounts::identity::admin::list_user_tokens::<crate::state::AppState>),
         Authn::Bearer,
         ScopeAz(auth::Scope::Admin),
     )
@@ -52,7 +53,10 @@ pub(super) fn register(r: Routes) -> Routes {
         &[Method::PATCH, Method::DELETE],
         "/admin/users/{id}/tokens/{token_id}",
         "Relabel or revoke a user's token (admin).",
-        patch(routes::admin_auth::relabel_user_token).delete(routes::admin_auth::revoke_user_token),
+        patch(cctui_server_accounts::identity::admin::relabel_user_token::<crate::state::AppState>)
+            .delete(
+                cctui_server_accounts::identity::admin::revoke_user_token::<crate::state::AppState>,
+            ),
         Authn::Bearer,
         ScopeAz(auth::Scope::Admin),
     )
@@ -60,7 +64,7 @@ pub(super) fn register(r: Routes) -> Routes {
         &[Method::DELETE],
         "/admin/users/{id}/tokens/{token_id}/purge",
         "Hard-delete a user's token (admin).",
-        delete(routes::admin_auth::delete_user_token),
+        delete(cctui_server_accounts::identity::admin::delete_user_token::<crate::state::AppState>),
         Authn::Bearer,
         ScopeAz(auth::Scope::Admin),
     )
@@ -78,7 +82,10 @@ pub(super) fn register(r: Routes) -> Routes {
         &[Method::DELETE, Method::PATCH],
         "/admin/machines/{id}",
         "Revoke or rename a machine (admin).",
-        delete(routes::admin_auth::revoke_machine).patch(routes::admin_auth::rename_machine),
+        delete(cctui_server_accounts::identity::admin::revoke_machine::<crate::state::AppState>)
+            .patch(
+                cctui_server_accounts::identity::admin::rename_machine::<crate::state::AppState>,
+            ),
         Authn::Bearer,
         ScopeAz(auth::Scope::Admin),
     )
@@ -86,7 +93,7 @@ pub(super) fn register(r: Routes) -> Routes {
         &[Method::POST],
         "/admin/machines/{id}/rotate",
         "Rotate a machine's key (admin).",
-        post(routes::admin_auth::rotate_machine),
+        post(cctui_server_accounts::identity::admin::rotate_machine::<crate::state::AppState>),
         Authn::Bearer,
         ScopeAz(auth::Scope::Admin),
     )
@@ -94,7 +101,7 @@ pub(super) fn register(r: Routes) -> Routes {
         &[Method::DELETE],
         "/admin/machines/{id}/purge",
         "Hard-delete a machine (admin).",
-        delete(routes::admin_auth::delete_machine),
+        delete(cctui_server_accounts::identity::admin::delete_machine::<crate::state::AppState>),
         Authn::Bearer,
         ScopeAz(auth::Scope::Admin),
     )

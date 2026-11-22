@@ -18,7 +18,8 @@ fn instance(r: Routes) -> Routes {
             &[Method::POST, GET],
             "/admin/users",
             "List all users, or create a user (admin).",
-            post(routes::admin_auth::create_user).get(routes::admin_auth::list_users),
+            post(cctui_server_accounts::identity::admin::create_user::<crate::state::AppState>)
+                .get(cctui_server_accounts::identity::admin::list_users::<crate::state::AppState>),
             Authn::Bearer,
             ScopeAz(auth::Scope::Admin),
         )

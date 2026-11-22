@@ -3,13 +3,13 @@ pub mod execution_failures;
 pub mod schema;
 pub mod skills;
 
-mod account_resolve;
+mod accounts_context;
 mod api_routes;
 mod auth;
 mod authz;
 mod auto_archive;
 mod auto_followup;
-mod auto_redeem;
+use cctui_server_accounts::auto_redeem;
 mod auto_resume;
 mod bandwidth_watch;
 mod brief;
@@ -48,11 +48,9 @@ mod pace;
 mod peer_policy;
 mod plugin_proxy;
 mod plugin_store;
-mod pool_usage;
 mod presence;
 mod presets;
 mod preview;
-mod provider_status;
 mod redteam_runs;
 mod registry;
 mod rooms;
@@ -63,7 +61,6 @@ mod sealed_env;
 mod session_emoji;
 mod session_plugins;
 mod session_viewers;
-mod settings_catalog;
 mod skill_store;
 mod soft_limit;
 mod spawn_labels;
@@ -73,10 +70,9 @@ mod transcript_md;
 mod turn_dedupe;
 mod update_check;
 mod uploads;
-mod usage_history;
-mod usage_probe;
+use cctui_server_accounts::usage_history;
 mod voice_context;
-mod webauthn;
+use cctui_server_accounts::webauthn;
 mod webhook;
 mod ws;
 
@@ -409,8 +405,8 @@ async fn start_background_tasks(state: &AppState) {
 
     // Statuspage poller behind `GET /provider-status` and the usage payloads;
     // `CCTUI_PROVIDER_STATUS=0` keeps every family on `unknown`.
-    if provider_status::enabled_from_env() {
-        tokio::spawn(provider_status::task(
+    if cctui_server_accounts::provider_status::enabled_from_env() {
+        tokio::spawn(cctui_server_accounts::provider_status::task(
             state.provider_status.clone(),
             state.http_client.clone(),
         ));
@@ -592,21 +588,25 @@ fn outer_routes(features: FeatureSet) -> OuterRoutes {
         // Browser auth-cookie endpoints. Self-authenticating: `login`
         // validates the presented token and sets the `HttpOnly` cookie, `logout`
         // clears it — both live outside the `auth_middleware` group.
-        .route("/api/v1/auth/login", post(routes::auth::login))
-        .route("/api/v1/auth/logout", post(routes::auth::logout))
+        .route("/api/v1/auth/login", post(routes::auth::login::<crate::state::AppState>))
+        .route("/api/v1/auth/logout", post(routes::auth::logout::<crate::state::AppState>))
         // Passkey login. Unauthenticated for the same reason `login` is: the
         // assertion IS the credential. `config` is the pre-auth probe the login
         // screen makes to decide whether to offer the passkey button at all.
-        .feature(Feature::Passkeys, "/api/v1/auth/passkey/config", get(routes::passkeys::config))
+        .feature(
+            Feature::Passkeys,
+            "/api/v1/auth/passkey/config",
+            get(routes::passkeys::config::<crate::state::AppState>),
+        )
         .feature(
             Feature::Passkeys,
             "/api/v1/auth/passkey/login/start",
-            post(routes::passkeys::login_start),
+            post(routes::passkeys::login_start::<crate::state::AppState>),
         )
         .feature(
             Feature::Passkeys,
             "/api/v1/auth/passkey/login/finish",
-            post(routes::passkeys::login_finish),
+            post(routes::passkeys::login_finish::<crate::state::AppState>),
         )
         // Device-authorization login. Unauthenticated because the device has no
         // credential yet; a request is worthless until an authenticated user
@@ -614,9 +614,13 @@ fn outer_routes(features: FeatureSet) -> OuterRoutes {
         .feature(
             Feature::DeviceLogin,
             "/api/v1/auth/device/start",
-            post(routes::device_auth::start),
+            post(routes::device_auth::start::<crate::state::AppState>),
         )
-        .feature(Feature::DeviceLogin, "/api/v1/auth/device/poll", post(routes::device_auth::poll))
+        .feature(
+            Feature::DeviceLogin,
+            "/api/v1/auth/device/poll",
+            post(routes::device_auth::poll::<crate::state::AppState>),
+        )
         // The token in the path is the credential; `GET` only renders the confirm page.
         .route("/n/{token}", get(routes::notifications::confirm_page))
         .route(
@@ -757,10 +761,16 @@ fn infra_routes(r: OuterRoutes) -> OuterRoutes {
         // token in the request's own Authorization header — NOT the user-token
         // `api_router` middleware — so it lives on the outer app. Matches any
         // method + sub-path under each provider prefix.
-        .route("/gateway/anthropic/{*path}", any(routes::gateway::anthropic))
-        .route("/gateway/openai/{*path}", any(routes::gateway::openai))
-        .route("/gateway/fireworks/{*path}", any(routes::gateway::fireworks))
-        .route("/gateway/google/{*path}", any(routes::gateway::google))
+        .route(
+            "/gateway/anthropic/{*path}",
+            any(routes::gateway::anthropic::<crate::state::AppState>),
+        )
+        .route("/gateway/openai/{*path}", any(routes::gateway::openai::<crate::state::AppState>))
+        .route(
+            "/gateway/fireworks/{*path}",
+            any(routes::gateway::fireworks::<crate::state::AppState>),
+        )
+        .route("/gateway/google/{*path}", any(routes::gateway::google::<crate::state::AppState>))
         // Pod-to-pod bus endpoints. Self-authenticating via the
         // cluster-internal shared secret (constant-time compare; user/machine
         // tokens never accepted), so they live outside the `api_router` auth
@@ -1308,6 +1318,9 @@ mod tests {
             );
             assert!(tracing::enabled!(target: "cctui_server_kernel::authz", tracing::Level::DEBUG));
             assert!(tracing::enabled!(target: "cctui_server_search", tracing::Level::DEBUG));
+            assert!(
+                tracing::enabled!(target: "cctui_server_accounts::routes::gateway", tracing::Level::DEBUG)
+            );
             assert!(tracing::enabled!(target: "cctui_server_blobs::routes", tracing::Level::DEBUG));
             assert!(tracing::enabled!(target: "cctui_server_voice::engine", tracing::Level::DEBUG));
             assert!(

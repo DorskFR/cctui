@@ -4,13 +4,10 @@
 //! Owns identity, execution persistence, account selection, launch tracking and
 //! provider credentials. Hosts supply transport and optional workspace behavior.
 
-pub mod account_pick;
-pub mod account_resolve;
+pub use cctui_server_accounts::{account_pick, account_resolve, fireworks_billing, gateway};
 pub use cctui_server_kernel::{auth, commands, cost};
-pub mod fireworks_billing;
-pub mod gateway;
 pub mod store;
-pub mod usage_probe;
+pub use cctui_server_accounts::usage_probe;
 
 #[cfg(any(test, feature = "test-support"))]
 pub use cctui_server_kernel::test_support;
@@ -21,31 +18,31 @@ pub use cctui_server_kernel::registry;
 
 pub use cctui_server_kernel::{client, outbound};
 
-pub mod hook_policy;
+pub use cctui_server_accounts::hook_policy;
 pub mod launch;
 
-pub mod launch_settings;
+pub use cctui_server_accounts::launch_settings;
 
 pub use cctui_server_kernel::events;
 pub mod lifecycle;
-mod live_sessions;
+pub use cctui_server_kernel::{ended_signals, live_sessions_predicate};
 
 pub mod dispatch;
 pub mod dispatch_identity;
 pub mod dispatch_policy;
 
-pub mod provider_status;
+pub use cctui_server_accounts::provider_status;
 
 pub use cctui_server_kernel::error;
 pub mod machine_spawn;
 
-pub mod execution_settings;
+pub use cctui_server_kernel::execution_settings;
 
-pub mod session_credentials;
+pub use cctui_server_accounts::session_credentials;
 
 pub mod state;
 
-pub mod identity;
+pub use cctui_server_accounts::identity;
 pub mod targets;
 
 pub use cctui_server_kernel::normalize;
@@ -56,15 +53,14 @@ pub mod launch_credentials;
 
 pub mod spawn_defaults;
 
-pub mod accounts;
+pub use cctui_server_accounts::{accounts, settings_catalog};
 pub use cctui_server_kernel::resource_owners;
-pub mod settings_catalog;
 
 pub mod machine_adapters;
 pub mod machine_policy;
 
 pub mod daemon_checkpoints;
-pub mod daemon_usage;
+pub use cctui_server_accounts::daemon_usage;
 
 pub mod webhook;
 

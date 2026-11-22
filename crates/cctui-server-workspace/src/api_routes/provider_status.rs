@@ -11,7 +11,7 @@ pub(super) fn register(r: Routes) -> Routes {
         &[GET],
         "/provider-status",
         "What each upstream provider family reports on its status page.",
-        get(routes::provider_status::provider_status),
+        get(routes::provider_status::provider_status::<crate::state::AppState>),
         Authn::Bearer,
         Authenticated,
     )

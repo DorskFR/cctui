@@ -55,8 +55,6 @@ pub struct AppState {
     pub upload_caps: Arc<std::sync::RwLock<crate::uploads::UploadCaps>>,
 }
 
-pub use cctui_server_core::gateway::usage::CachedUsage;
-
 pub use cctui_server_kernel::commands::{
     CommandVerdict, FailedSpawnRow, resolve_verdict, track_command,
 };

@@ -38,7 +38,8 @@ pub(super) fn register(r: Routes) -> Routes {
         &[GET, Method::POST],
         "/account-pools",
         "List the caller's account pools, or create one.",
-        get(routes::account_pools::list_pools).post(routes::account_pools::create_pool),
+        get(routes::account_pools::list_pools::<crate::state::AppState>)
+            .post(routes::account_pools::create_pool::<crate::state::AppState>),
         Authn::Bearer,
         Human,
     )
@@ -46,7 +47,7 @@ pub(super) fn register(r: Routes) -> Routes {
         &[GET],
         "/account-pools/usage",
         "Every pool's quota windows aggregated per provider family: level, pace, projection.",
-        get(routes::account_pools::pools_usage),
+        get(routes::account_pools::pools_usage::<crate::state::AppState>),
         Authn::Bearer,
         Human,
     )
@@ -54,7 +55,8 @@ pub(super) fn register(r: Routes) -> Routes {
         &[Method::PATCH, Method::DELETE],
         "/account-pools/{id}",
         "Edit a pool (name, strategy, failover, membership) or delete it.",
-        patch(routes::account_pools::update_pool).delete(routes::account_pools::delete_pool),
+        patch(routes::account_pools::update_pool::<crate::state::AppState>)
+            .delete(routes::account_pools::delete_pool::<crate::state::AppState>),
         Authn::Bearer,
         Human,
     )
@@ -62,7 +64,7 @@ pub(super) fn register(r: Routes) -> Routes {
         &[GET],
         "/sessions/{id}/rebinds",
         "Every mid-run account move this session made, newest first.",
-        get(routes::account_pools::list_session_rebinds),
+        get(routes::account_pools::list_session_rebinds::<crate::state::AppState>),
         Authn::Bearer,
         sess_read(),
     )

@@ -88,7 +88,7 @@ fn register_policies(r: Routes) -> Routes {
         &[Method::GET],
         "/sessions/{id}/hook-policy",
         "Read the hook rules the session was launched with.",
-        get(routes::tool_policy::get_session_hook_policy),
+        get(routes::tool_policy::get_session_hook_policy::<crate::state::AppState>),
         Authn::Bearer,
         sess_read(),
     )
@@ -96,7 +96,8 @@ fn register_policies(r: Routes) -> Routes {
         &[Method::GET, Method::PUT],
         "/sessions/{id}/tool-guard",
         "Read or toggle the session's gateway tool-guard bypass.",
-        get(routes::tool_guard::get_tool_guard).put(routes::tool_guard::put_tool_guard),
+        get(routes::tool_guard::get_tool_guard::<crate::state::AppState>)
+            .put(routes::tool_guard::put_tool_guard::<crate::state::AppState>),
         Authn::Bearer,
         sess_write(),
     )

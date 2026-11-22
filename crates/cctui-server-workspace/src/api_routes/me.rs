@@ -13,7 +13,7 @@ pub(super) fn register(r: Routes) -> Routes {
         &[GET],
         "/me",
         "Get the current principal (user, scopes, machine).",
-        get(routes::me::me),
+        get(cctui_server_accounts::identity::me::me::<crate::state::AppState>),
         Authn::Bearer,
         Authenticated,
     )
@@ -21,7 +21,7 @@ pub(super) fn register(r: Routes) -> Routes {
         &[Method::DELETE],
         "/me/key",
         "Revoke the credential this request authenticated with.",
-        delete(routes::me::revoke_current_key),
+        delete(cctui_server_accounts::identity::me::revoke_current_key::<crate::state::AppState>),
         Authn::Bearer,
         Authenticated,
     )

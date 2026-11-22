@@ -234,6 +234,10 @@ jobs:
         if: env.WARM_ONLY != 'true' && contains(format(' {0} ', needs.changes.outputs.crates), ' cctui-server-extras ')
         run: cargo check -p cctui-server-extras --all-targets --locked
 
+      - name: Accounts builds on the kernel alone
+        if: env.WARM_ONLY != 'true' && contains(format(' {0} ', needs.changes.outputs.crates), ' cctui-server-accounts ')
+        run: cargo check -p cctui-server-accounts --all-targets --locked
+
   test:
     name: cargo test
     needs: changes

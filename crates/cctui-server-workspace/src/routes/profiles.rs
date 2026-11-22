@@ -97,7 +97,7 @@ fn clean_spec(spec: ProfileSpec) -> Result<ProfileSpec, AppError> {
         model_alias: opt(spec.model_alias),
         effort: opt(spec.effort),
         permission_mode,
-        service_tier: crate::settings_catalog::codex::normalize_service_tier(
+        service_tier: cctui_server_accounts::settings_catalog::codex::normalize_service_tier(
             opt(spec.service_tier).as_deref(),
         ),
         context_items: spec.context_items,

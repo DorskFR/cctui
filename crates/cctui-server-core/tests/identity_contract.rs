@@ -83,13 +83,13 @@ async fn headless_admin_provisions_scoped_identity_and_revokes_cached_credential
     let auth = state.auth_config.clone();
     let mut notices = state.bus.subscribe_server();
     let app = Router::new()
-        .route("/admin/users", post(admin::create_user))
-        .route("/users/{id}/keys", post(admin::mint_user_key))
-        .route("/users/{id}/keys/{kid}", delete(admin::revoke_user_key))
+        .route("/admin/users", post(admin::create_user::<CoreState>))
+        .route("/users/{id}/keys", post(admin::mint_user_key::<CoreState>))
+        .route("/users/{id}/keys/{kid}", delete(admin::revoke_user_key::<CoreState>))
         .route("/enroll", post(cctui_server_core::targets::enrollment::enroll))
         .route("/deenroll", post(cctui_server_core::targets::enrollment::deenroll))
-        .route("/me", get(me::me))
-        .route("/me/key", delete(me::revoke_current_key))
+        .route("/me", get(me::me::<CoreState>))
+        .route("/me/key", delete(me::revoke_current_key::<CoreState>))
         .with_state(state)
         .layer(axum::middleware::from_fn(auth_middleware))
         .layer(Extension(auth));

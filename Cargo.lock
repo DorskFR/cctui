@@ -1079,6 +1079,37 @@ dependencies = [
 ]
 
 [[package]]
+name = "cctui-server-accounts"
+version = "0.32.0-beta.21"
+dependencies = [
+ "axum",
+ "base64 0.23.1",
+ "cctui-crypto",
+ "cctui-proto",
+ "cctui-secrets",
+ "cctui-server-kernel",
+ "cctui-telemetry",
+ "chrono",
+ "dashmap",
+ "futures-util",
+ "hex",
+ "http",
+ "regex",
+ "reqwest",
+ "rustls",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "sqlx",
+ "tokio",
+ "toml",
+ "tracing",
+ "uuid",
+ "webauthn-rs",
+ "webauthn-rs-proto",
+]
+
+[[package]]
 name = "cctui-server-blobs"
 version = "0.32.0-beta.21"
 dependencies = [
@@ -1110,6 +1141,7 @@ dependencies = [
  "base64 0.23.1",
  "cctui-crypto",
  "cctui-proto",
+ "cctui-server-accounts",
  "cctui-server-kernel",
  "cctui-telemetry",
  "chrono",
@@ -1245,6 +1277,7 @@ dependencies = [
  "cctui-proto",
  "cctui-query",
  "cctui-secrets",
+ "cctui-server-accounts",
  "cctui-server-blobs",
  "cctui-server-core",
  "cctui-server-extras",

@@ -13,6 +13,7 @@ workspace = true
 aws-sm = ["cctui-secrets/aws-sm"]
 
 [dependencies]
+cctui-server-accounts.workspace = true
 cctui-server-blobs.workspace = true
 cctui-server-core.workspace = true
 cctui-server-extras.workspace = true

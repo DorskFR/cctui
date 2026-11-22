@@ -54,3 +54,71 @@ where
         std::panic::resume_unwind(panic);
     }
 }
+
+/// Kernel state for domain tests, built like the host's `AppState::for_test`.
+#[derive(Clone)]
+pub struct TestHost {
+    pub pool: sqlx::PgPool,
+    pub bus: crate::bus::Bus,
+    pub auth_config: crate::auth::AuthConfig,
+    pub config: crate::config::Config,
+    pub http_client: reqwest::Client,
+    pub registry: crate::registry::SharedRegistry,
+    pub pending_commands:
+        std::sync::Arc<dashmap::DashMap<uuid::Uuid, crate::commands::PendingCommand>>,
+    pub command_waiters: crate::commands::CommandWaiters,
+    pub spawn_capabilities:
+        std::sync::Arc<dashmap::DashMap<String, cctui_proto::api::SpawnCapability>>,
+    pub session_usd_budgets: std::sync::Arc<dashmap::DashMap<String, f64>>,
+}
+
+impl TestHost {
+    #[must_use]
+    pub fn new(pool: sqlx::PgPool) -> Self {
+        Self {
+            pool: pool.clone(),
+            bus: crate::bus::Bus::new(Box::new(crate::bus::NoopTransport)),
+            auth_config: crate::auth::AuthConfig::new(vec![], pool),
+            config: crate::config::Config::for_test(vec![]),
+            http_client: crate::client::build_http_client(),
+            registry: crate::registry::Registry::shared(),
+            pending_commands: std::sync::Arc::new(dashmap::DashMap::new()),
+            command_waiters: std::sync::Arc::new(dashmap::DashMap::new()),
+            spawn_capabilities: std::sync::Arc::new(dashmap::DashMap::new()),
+            session_usd_budgets: std::sync::Arc::new(dashmap::DashMap::new()),
+        }
+    }
+}
+
+impl crate::context::KernelContext for TestHost {
+    fn pool(&self) -> &sqlx::PgPool {
+        &self.pool
+    }
+    fn bus(&self) -> &crate::bus::Bus {
+        &self.bus
+    }
+    fn auth_config(&self) -> &crate::auth::AuthConfig {
+        &self.auth_config
+    }
+    fn config(&self) -> &crate::config::Config {
+        &self.config
+    }
+    fn http_client(&self) -> &reqwest::Client {
+        &self.http_client
+    }
+    fn registry(&self) -> &crate::registry::SharedRegistry {
+        &self.registry
+    }
+    fn pending_commands(&self) -> &dashmap::DashMap<uuid::Uuid, crate::commands::PendingCommand> {
+        &self.pending_commands
+    }
+    fn command_waiters(&self) -> &crate::commands::CommandWaiters {
+        &self.command_waiters
+    }
+    fn spawn_capabilities(&self) -> &dashmap::DashMap<String, cctui_proto::api::SpawnCapability> {
+        &self.spawn_capabilities
+    }
+    fn session_usd_budgets(&self) -> &dashmap::DashMap<String, f64> {
+        &self.session_usd_budgets
+    }
+}

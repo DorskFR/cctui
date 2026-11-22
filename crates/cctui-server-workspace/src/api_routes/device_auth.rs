@@ -14,7 +14,7 @@ pub(super) fn register(r: Routes) -> Routes {
         &[GET],
         "/auth/device/{user_code}",
         "What a pending device login is asking for.",
-        get(routes::device_auth::info),
+        get(routes::device_auth::info::<crate::state::AppState>),
         Authn::Bearer,
         Authenticated,
     )
@@ -22,7 +22,7 @@ pub(super) fn register(r: Routes) -> Routes {
         &[Method::POST],
         "/auth/device/{user_code}/decision",
         "Approve or deny a device login, granting it your scopes.",
-        post(routes::device_auth::decide),
+        post(routes::device_auth::decide::<crate::state::AppState>),
         Authn::Bearer,
         Authenticated,
     )

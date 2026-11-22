@@ -189,8 +189,8 @@ async fn bound_launch(
     // Codex defaults to the `priority` tier, so a relaunch with no opinion is the
     // expensive one. Serve a concrete tier to a codex session, and only to one:
     // the OpenAI-wire ACP agents share the family but cannot use the key.
-    if crate::settings_catalog::codex::adapter_takes_service_tier(&adapter) {
-        settings = crate::settings_catalog::codex::overlay_service_tier(settings);
+    if cctui_server_accounts::settings_catalog::codex::adapter_takes_service_tier(&adapter) {
+        settings = cctui_server_accounts::settings_catalog::codex::overlay_service_tier(settings);
     }
     // This pull only happens when the daemon is actually (re)launching the
     // worker, so a session marked `ended` (possibly by a spurious end) is
@@ -764,8 +764,10 @@ mod tests {
                 .await
                 .unwrap()
                 .unwrap_or_default();
-            if crate::settings_catalog::codex::adapter_takes_service_tier(&adapter) {
-                settings = crate::settings_catalog::codex::overlay_service_tier(settings);
+            if cctui_server_accounts::settings_catalog::codex::adapter_takes_service_tier(&adapter)
+            {
+                settings =
+                    cctui_server_accounts::settings_catalog::codex::overlay_service_tier(settings);
             }
             sqlx::query(
                 "UPDATE sessions SET status = 'active', ended_at = NULL, end_reason = NULL, \

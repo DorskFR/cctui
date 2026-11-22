@@ -15,7 +15,7 @@ pub(super) fn register(r: Routes) -> Routes {
             &[Method::POST],
             "/accounts/{id}/providers",
             "Attach a provider credential to an account.",
-            post(routes::accounts::add_provider),
+            post(routes::accounts::add_provider::<crate::state::AppState>),
             Authn::Bearer,
             Human,
         )
@@ -23,7 +23,8 @@ pub(super) fn register(r: Routes) -> Routes {
             &[Method::PATCH, Method::DELETE],
             "/accounts/{id}/providers/{provider_id}",
             "Edit or remove one of an account's provider credentials.",
-            patch(routes::accounts::update_provider).delete(routes::accounts::delete_provider),
+            patch(routes::accounts::update_provider::<crate::state::AppState>)
+                .delete(routes::accounts::delete_provider::<crate::state::AppState>),
             Authn::Bearer,
             Human,
         )
@@ -31,7 +32,7 @@ pub(super) fn register(r: Routes) -> Routes {
             &[Method::POST],
             "/accounts/{id}/providers/{provider_id}/move",
             "Move a provider credential to another account of the same owner.",
-            post(routes::accounts::move_provider),
+            post(routes::accounts::move_provider::<crate::state::AppState>),
             Authn::Bearer,
             Human,
         )
@@ -39,7 +40,7 @@ pub(super) fn register(r: Routes) -> Routes {
             &[GET],
             "/accounts/usage",
             "Usage windows of every provider credential the caller owns, in one call.",
-            get(routes::accounts::all_accounts_usage),
+            get(routes::accounts::all_accounts_usage::<crate::state::AppState>),
             Authn::Bearer,
             Human,
         )
@@ -47,7 +48,7 @@ pub(super) fn register(r: Routes) -> Routes {
             &[GET],
             "/accounts/{id}/usage",
             "Get an account's usage/limits.",
-            get(routes::accounts::account_usage),
+            get(routes::accounts::account_usage::<crate::state::AppState>),
             Authn::Bearer,
             Human,
         )
@@ -55,7 +56,7 @@ pub(super) fn register(r: Routes) -> Routes {
             &[GET],
             "/accounts/{id}/usage/history",
             "Sampled usage of one provider credential over time.",
-            get(routes::usage_history::account_usage_history),
+            get(routes::usage_history::account_usage_history::<crate::state::AppState>),
             Authn::Bearer,
             Human,
         )
@@ -63,7 +64,7 @@ pub(super) fn register(r: Routes) -> Routes {
             &[GET],
             "/accounts/{id}/usage/closes",
             "Closed usage windows of one provider credential, with unused share.",
-            get(routes::usage_history::account_usage_closes),
+            get(routes::usage_history::account_usage_closes::<crate::state::AppState>),
             Authn::Bearer,
             Human,
         )
@@ -71,7 +72,7 @@ pub(super) fn register(r: Routes) -> Routes {
             &[GET],
             "/accounts/usage/closes",
             "Closed usage windows of every owned credential, with unused share.",
-            get(routes::usage_history::all_usage_closes),
+            get(routes::usage_history::all_usage_closes::<crate::state::AppState>),
             Authn::Bearer,
             Human,
         )
@@ -79,7 +80,7 @@ pub(super) fn register(r: Routes) -> Routes {
             &[GET],
             "/accounts/usage/ledger",
             "Every reset of every visible credential's windows, with what went unused.",
-            get(routes::usage_ledger::account_usage_ledger),
+            get(routes::usage_ledger::account_usage_ledger::<crate::state::AppState>),
             Authn::Bearer,
             Human,
         )
@@ -87,7 +88,7 @@ pub(super) fn register(r: Routes) -> Routes {
             &[Method::POST],
             "/accounts/{id}/limit-reset",
             "Claim a usage-limit reset on a provider credential.",
-            post(routes::limit_reset::limit_reset),
+            post(routes::limit_reset::limit_reset::<crate::state::AppState>),
             Authn::Bearer,
             Human,
         )

@@ -14,7 +14,8 @@ pub(super) fn register(r: Routes) -> Routes {
             &[GET, Method::POST],
             "/keys",
             "List your provider API keys, or store a new one.",
-            get(routes::credentials::list_api_keys).post(routes::credentials::create_api_key),
+            get(routes::credentials::list_api_keys::<crate::state::AppState>)
+                .post(routes::credentials::create_api_key::<crate::state::AppState>),
             Authn::Bearer,
             Authenticated,
         )
@@ -22,7 +23,7 @@ pub(super) fn register(r: Routes) -> Routes {
             &[Method::DELETE],
             "/keys/{id}",
             "Delete a stored provider API key.",
-            delete(routes::credentials::delete_api_key),
+            delete(routes::credentials::delete_api_key::<crate::state::AppState>),
             Authn::Bearer,
             Authenticated,
         )

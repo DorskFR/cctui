@@ -514,10 +514,10 @@ async fn spawn_service_tier(
     // Codex's own default tier is `priority`, so an unset tier is the expensive
     // one: resolve to a concrete value here rather than letting the worker
     // inherit whatever the machine's config.toml happens to say.
-    if crate::settings_catalog::codex::adapter_takes_service_tier(adapter_id) {
+    if cctui_server_accounts::settings_catalog::codex::adapter_takes_service_tier(adapter_id) {
         let account_settings =
             crate::routes::gateway::resolve_session_settings(state, token_session_id).await;
-        Some(crate::settings_catalog::codex::resolve_service_tier(
+        Some(cctui_server_accounts::settings_catalog::codex::resolve_service_tier(
             req.service_tier.as_deref(),
             account_settings.as_ref(),
         ))
@@ -1642,19 +1642,20 @@ mod tests {
             );
         }
         assert_eq!(
-            crate::account_resolve::choose_target(
+            cctui_server_accounts::account_resolve::choose_target(
                 "refused",
                 true,
-                Some(crate::store::account_pools::AccountPool {
+                Some(cctui_server_accounts::store::account_pools::AccountPool {
                     id: Uuid::nil(),
                     user_id: Uuid::nil(),
                     name: "refused".to_owned(),
-                    strategy: crate::store::account_pools::STRATEGY_HEADROOM.to_owned(),
+                    strategy: cctui_server_accounts::store::account_pools::STRATEGY_HEADROOM
+                        .to_owned(),
                     failover: false,
                     created_at: chrono::Utc::now(),
                 })
             ),
-            crate::account_resolve::Target::Account("refused".to_owned())
+            cctui_server_accounts::account_resolve::Target::Account("refused".to_owned())
         );
     }
 
@@ -1738,12 +1739,18 @@ mod tests {
             .await
             .unwrap();
         }
-        let usable = crate::store::account_pools::usable_members(&pool, pool_id, me, "fireworks")
-            .await
-            .unwrap();
+        let usable = cctui_server_accounts::store::account_pools::usable_members(
+            &pool,
+            pool_id,
+            me,
+            "fireworks",
+        )
+        .await
+        .unwrap();
         let usable: Vec<&str> = usable.iter().map(|m| m.name.as_str()).collect();
         assert_eq!(usable, ["Fireworks cloud", "Lent cloud"]);
-        let stored = crate::store::account_pools::members(&pool, pool_id).await.unwrap();
+        let stored =
+            cctui_server_accounts::store::account_pools::members(&pool, pool_id).await.unwrap();
         assert_eq!(stored.len(), 4, "membership rows are kept, only elections skip them");
 
         for uid in [me, lender] {

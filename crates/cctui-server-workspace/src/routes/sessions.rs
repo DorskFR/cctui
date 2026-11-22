@@ -4088,7 +4088,10 @@ pub async fn fork_session(
     {
         let account_settings =
             crate::routes::gateway::resolve_session_settings(&state, &session_id).await;
-        Some(crate::settings_catalog::codex::resolve_service_tier(None, account_settings.as_ref()))
+        Some(cctui_server_accounts::settings_catalog::codex::resolve_service_tier(
+            None,
+            account_settings.as_ref(),
+        ))
     } else {
         None
     };
