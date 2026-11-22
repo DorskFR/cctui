@@ -55,9 +55,7 @@ pub struct AppState {
     pub upload_caps: Arc<std::sync::RwLock<crate::uploads::UploadCaps>>,
 }
 
-pub use cctui_server_kernel::commands::{
-    CommandVerdict, FailedSpawnRow, resolve_verdict, track_command,
-};
+pub use cctui_server_kernel::commands::FailedSpawnRow;
 
 #[cfg(test)]
 impl AppState {
@@ -93,9 +91,6 @@ impl AppState {
         }
     }
 }
-
-#[cfg(test)]
-pub use cctui_server_kernel::commands::wait_for_verdict;
 
 impl std::ops::Deref for AppState {
     type Target = cctui_server_core::state::CoreState;

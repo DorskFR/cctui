@@ -12,7 +12,7 @@ pub(super) fn register(r: Routes) -> Routes {
         &[Method::POST],
         "/users/{id}/tokens",
         "Mint a token for a user (self or admin).",
-        post(routes::daemon::mint_user_token),
+        post(routes::daemon::mint_user_token::<crate::state::AppState>),
         Authn::Bearer,
         // In-handler: admin may mint for anyone; a user only for itself.
         Authenticated,

@@ -76,7 +76,7 @@ impl From<&Plugin> for cctui_proto::api::plugins::AdminPluginInfo {
     }
 }
 
-pub const MAX_SETTING_VALUE_CHARS: usize = 512;
+pub use cctui_server_kernel::extras_types::MAX_SETTING_VALUE_CHARS;
 /// Instance settings hold URLs and tokens, not the 512-char per-user strings.
 pub const MAX_INSTANCE_SETTING_VALUE_CHARS: usize = 2048;
 const MAX_SETTINGS: usize = 32;
@@ -695,6 +695,30 @@ pub fn mime_for(path: &str) -> &'static str {
     }
 }
 
+/// The skill bundles and setting env of every installed plugin the user
+/// enabled; plugins that contribute neither are skipped.
+pub fn session_plugins(
+    registry: &PluginRegistry,
+    settings: Option<&serde_json::Value>,
+) -> Vec<cctui_proto::api::SessionPlugin> {
+    enabled_ids(settings)
+        .iter()
+        .filter_map(|id| registry.get(id))
+        .map(|p| {
+            let host_token = crate::plugin_host_token::unsealed(settings, &p.manifest.id);
+            (plugin_env(&p.manifest, settings, host_token.as_deref()), p)
+        })
+        .filter(|(env, p)| !p.skill_files.is_empty() || !env.is_empty())
+        .map(|(env, p)| cctui_proto::api::SessionPlugin {
+            id: p.manifest.id,
+            version: p.manifest.version,
+            skills_hash: p.skills_hash,
+            files: p.skill_files,
+            env,
+        })
+        .collect()
+}
+
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support {
     use std::path::Path;
@@ -1178,5 +1202,58 @@ mod tests {
         assert_eq!(mime_for("f.woff2"), "font/woff2");
         assert_eq!(mime_for("i.svg"), "image/svg+xml");
         assert_eq!(mime_for("x.bin"), "application/octet-stream");
+    }
+
+    #[test]
+    fn session_plugins_follow_the_users_enabled_flags() {
+        use crate::plugins::test_support::write_plugin;
+        let root = tempfile::tempdir().unwrap();
+        write_plugin(
+            root.path(),
+            "on",
+            r#","settings":[{"key":"host","label":"Host","env":"ON_HOST","type":"string"}]"#,
+        );
+        write_plugin(root.path(), "off", "");
+        let noskill = root.path().join("bare");
+        std::fs::create_dir_all(&noskill).unwrap();
+        std::fs::write(
+            noskill.join("plugin.json"),
+            br#"{"id":"bare","name":"b","version":"1","cctuiApi":1}"#,
+        )
+        .unwrap();
+        let registry = crate::plugins::PluginRegistry::from_dir(root.path().to_path_buf());
+        let settings = serde_json::json!({
+            "plugins": {
+                "enabled": { "on": true, "off": false, "bare": true, "ghost": true },
+                "config": { "on": { "host": "10.0.0.5" }, "off": { "host": "x" } }
+            }
+        });
+        let plugins = super::session_plugins(&registry, Some(&settings));
+        assert_eq!(plugins.len(), 1);
+        assert_eq!(plugins[0].id, "on");
+        assert_eq!(plugins[0].version, "1.2.3");
+        assert_eq!(plugins[0].files, vec!["on/SKILL.md", "on/notes.txt"]);
+        assert_eq!(plugins[0].skills_hash.len(), 16);
+        assert_eq!(plugins[0].env.get("ON_HOST").map(String::as_str), Some("10.0.0.5"));
+        assert!(super::session_plugins(&registry, None).is_empty());
+    }
+
+    #[test]
+    fn a_host_token_plugin_with_no_minted_token_exports_none() {
+        use crate::plugins::test_support::write_plugin;
+        let root = tempfile::tempdir().unwrap();
+        write_plugin(root.path(), "asks", r#","hostToken":{"env":"ASKS_TOKEN"}"#);
+        let registry = crate::plugins::PluginRegistry::from_dir(root.path().to_path_buf());
+        let settings = serde_json::json!({ "plugins": { "enabled": { "asks": true } } });
+
+        // Reads the sealed block, which is absent — so this must not reach the
+        // vault key, which is unset outside the server process.
+        let plugins = super::session_plugins(&registry, Some(&settings));
+        assert_eq!(plugins.len(), 1, "the skill files still ship");
+        assert_eq!(plugins[0].id, "asks");
+        assert!(
+            !plugins[0].env.contains_key("ASKS_TOKEN"),
+            "a user with no minted token gets no env entry at all"
+        );
     }
 }

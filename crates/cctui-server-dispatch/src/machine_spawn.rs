@@ -7,12 +7,7 @@ use cctui_server_kernel::accounts_types::{AccountResolutionContext, MintContext,
 use cctui_server_kernel::error::{AppError, DB_ERROR};
 use uuid::Uuid;
 
-/// Execution identity to bind before a machine launch.
-pub struct AccountTarget {
-    pub uid: Uuid,
-    pub adapter_id: String,
-    pub token_session_id: String,
-}
+pub use cctui_server_kernel::dispatch_types::{AccountTarget, BoundAccount};
 
 /// Account routing, credentials and quota cache shared by machine launches.
 pub trait MachineAccountContext:
@@ -42,17 +37,6 @@ impl<
 
 fn bad_request(error: impl Into<String>) -> (StatusCode, Json<ApiError>) {
     (StatusCode::BAD_REQUEST, Json(ApiError { error: error.into() }))
-}
-/// The account binding outcome and the session settings it may have rewritten.
-pub struct BoundAccount {
-    /// Request env plus any minted gateway env.
-    pub env: std::collections::BTreeMap<String, String>,
-    /// The session's model after per-account alias remapping (e.g. `opus` →
-    /// `claude-opus-4-8[1m]`).
-    pub model: Option<String>,
-    pub effort: Option<String>,
-    pub permission_mode: Option<cctui_proto::adapter::PermissionMode>,
-    pub account_choice: Option<String>,
 }
 
 /// Resolve the launch account and mint its execution credentials.

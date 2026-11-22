@@ -3,7 +3,7 @@
 //! `revoked_at IS NULL` guard, a provider mutation's owner + `NOT managed`
 //! predicate — live in exactly one place.
 
+#[cfg(test)]
 pub mod acls;
-pub mod sessions;
+pub use cctui_server_sessions::store::{sessions, tokens};
 pub mod spawn_capabilities;
-pub mod tokens;

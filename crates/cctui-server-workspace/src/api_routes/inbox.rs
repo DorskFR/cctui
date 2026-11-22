@@ -10,7 +10,7 @@ pub(super) fn register(r: Routes) -> Routes {
         &[Method::POST],
         "/inbox/events",
         "Queue an event into a session's inbox lane, deduplicated by source id.",
-        post(routes::inbox::create),
+        post(routes::inbox::create::<crate::state::AppState>),
         Authn::Bearer,
         ScopeAz(auth::Scope::Dispatch),
     )
@@ -18,7 +18,7 @@ pub(super) fn register(r: Routes) -> Routes {
         &[Method::GET],
         "/inbox/events",
         "List your inbox events, by lane and status.",
-        get(routes::inbox::list),
+        get(routes::inbox::list::<crate::state::AppState>),
         Authn::Bearer,
         Authenticated,
     )
@@ -26,7 +26,8 @@ pub(super) fn register(r: Routes) -> Routes {
         &[Method::GET, Method::DELETE],
         "/inbox/events/{id}",
         "Read one inbox event, or cancel it while pending.",
-        get(routes::inbox::get_one).delete(routes::inbox::cancel),
+        get(routes::inbox::get_one::<crate::state::AppState>)
+            .delete(routes::inbox::cancel::<crate::state::AppState>),
         Authn::Bearer,
         Authenticated,
     )
@@ -34,7 +35,7 @@ pub(super) fn register(r: Routes) -> Routes {
         &[Method::POST],
         "/inbox/lanes/{id}/pause",
         "Pause an inbox lane: its events wait until it is resumed.",
-        post(routes::inbox::pause_lane),
+        post(routes::inbox::pause_lane::<crate::state::AppState>),
         Authn::Bearer,
         ScopeAz(auth::Scope::Dispatch),
     )
@@ -42,7 +43,7 @@ pub(super) fn register(r: Routes) -> Routes {
         &[Method::POST],
         "/inbox/lanes/{id}/resume",
         "Resume a paused inbox lane and deliver what waited.",
-        post(routes::inbox::resume_lane),
+        post(routes::inbox::resume_lane::<crate::state::AppState>),
         Authn::Bearer,
         ScopeAz(auth::Scope::Dispatch),
     )
@@ -50,7 +51,7 @@ pub(super) fn register(r: Routes) -> Routes {
         &[Method::POST],
         "/inbox/events/{id}/retry",
         "Return a dead inbox event to pending with its attempts reset.",
-        post(routes::inbox::retry),
+        post(routes::inbox::retry::<crate::state::AppState>),
         Authn::Bearer,
         ScopeAz(auth::Scope::Dispatch),
     )

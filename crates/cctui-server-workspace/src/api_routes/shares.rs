@@ -35,7 +35,8 @@ pub(super) fn register(r: Routes) -> Routes {
             &[GET, Method::POST],
             "/{resource_type}/{id}/shares",
             "List or grant shares of a resource to other users.",
-            get(routes::shares::list_shares).post(routes::shares::grant_share),
+            get(routes::shares::list_shares::<crate::state::AppState>)
+                .post(routes::shares::grant_share::<crate::state::AppState>),
             Authn::Bearer,
             Human,
         )
@@ -43,7 +44,7 @@ pub(super) fn register(r: Routes) -> Routes {
             &[Method::DELETE],
             "/{resource_type}/{id}/shares/{user_id}",
             "Revoke a user's share of a resource.",
-            delete(routes::shares::revoke_share),
+            delete(routes::shares::revoke_share::<crate::state::AppState>),
             Authn::Bearer,
             Human,
         )

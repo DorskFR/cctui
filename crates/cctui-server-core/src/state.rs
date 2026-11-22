@@ -157,3 +157,15 @@ impl cctui_server_dispatch::hooks::DispatchSessions for CoreState {
         crate::targets::daemon::reconcile::enabled_adapter_ids(self, machine_id).await
     }
 }
+
+impl cctui_server_sessions::context::DaemonContext for CoreState {
+    fn daemon_pool(&self) -> &PgPool {
+        &self.pool
+    }
+    fn daemon_bus(&self) -> &Bus {
+        &self.bus
+    }
+    fn mark_ack_daemons(&self) -> &Arc<DashMap<Uuid, ()>> {
+        &self.mark_ack_daemons
+    }
+}

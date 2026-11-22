@@ -32,15 +32,7 @@ pub trait ChildExecutionContext: MachineAccountContext + ChildCount {
         spec: SessionSpec,
     ) -> impl std::future::Future<Output = Result<(), AppError>> + Send;
 }
-/// The parent session's launch context, everything a child inherits.
-#[derive(Debug)]
-pub struct Parent {
-    pub session_id: String,
-    pub machine_uuid: Uuid,
-    pub working_dir: Option<String>,
-    pub user_id: Uuid,
-    pub permission_mode: Option<PermissionMode>,
-}
+pub use cctui_server_kernel::dispatch_types::{ChildCompletion, Parent};
 
 pub async fn load_parent(
     state: &impl ChildExecutionContext,
@@ -574,11 +566,6 @@ pub async fn resolve_child_adapter(
 
 /// A completion becomes a turn in the parent, so it is capped like one.
 pub const MAX_COMPLETION_BYTES: usize = 64 * 1024;
-
-#[derive(serde::Deserialize)]
-pub struct ChildCompletion {
-    pub text: String,
-}
 
 /// Deliver a bounded, neutralized completion only to an owned live parent.
 pub async fn deliver_completion(

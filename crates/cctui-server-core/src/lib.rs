@@ -20,9 +20,8 @@ pub use cctui_server_accounts::hook_policy;
 
 pub use cctui_server_accounts::launch_settings;
 
-pub use cctui_server_kernel::events;
-pub mod lifecycle;
-pub use cctui_server_kernel::{ended_signals, live_sessions_predicate};
+pub use cctui_server_kernel::{ended_signals, events, live_sessions_predicate};
+pub use cctui_server_sessions::lifecycle;
 
 pub use cctui_server_accounts::provider_status;
 
@@ -39,13 +38,13 @@ pub mod targets;
 
 pub use cctui_server_kernel::normalize;
 
-pub mod results;
+pub use cctui_server_sessions::results;
 
 pub use cctui_server_accounts::{accounts, settings_catalog};
 pub use cctui_server_kernel::resource_owners;
 
-pub mod daemon_checkpoints;
 pub use cctui_server_accounts::daemon_usage;
+pub use cctui_server_sessions::daemon_checkpoints;
 
 pub mod schema;
 

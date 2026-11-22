@@ -15,7 +15,7 @@ pub(super) fn register(r: Routes) -> Routes {
             &[Method::POST],
             "/sessions/{id}/launch",
             "Launch a draft session into a live spawn.",
-            post(routes::spawn::launch_draft),
+            post(routes::spawn::launch_draft::<crate::state::AppState>),
             Authn::Bearer,
             sess_write(),
         )
@@ -23,7 +23,7 @@ pub(super) fn register(r: Routes) -> Routes {
             &[Method::POST],
             "/sessions/{id}/discard",
             "Discard a draft session.",
-            post(routes::spawn::discard_draft),
+            post(routes::spawn::discard_draft::<crate::state::AppState>),
             Authn::Bearer,
             sess_write(),
         )
@@ -31,7 +31,7 @@ pub(super) fn register(r: Routes) -> Routes {
             &[Method::POST],
             "/sessions/{id}/schedule-launch",
             "Queue a draft session to launch later.",
-            post(routes::spawn::schedule_draft_launch),
+            post(routes::spawn::schedule_draft_launch::<crate::state::AppState>),
             Authn::Bearer,
             sess_write(),
         )
@@ -39,7 +39,7 @@ pub(super) fn register(r: Routes) -> Routes {
             &[Method::POST],
             "/sessions/{id}/schedule-repeat",
             "Turn a draft session into a repeating schedule.",
-            post(routes::presets::repeat_draft),
+            post(routes::presets::repeat_draft::<crate::state::AppState>),
             Authn::Bearer,
             sess_write(),
         )
@@ -47,7 +47,7 @@ pub(super) fn register(r: Routes) -> Routes {
             &[Method::POST],
             "/sessions/{id}/cancel-launch",
             "Cancel a draft session's queued launch.",
-            post(routes::spawn::cancel_draft_launch),
+            post(routes::spawn::cancel_draft_launch::<crate::state::AppState>),
             Authn::Bearer,
             sess_write(),
         )
@@ -55,7 +55,7 @@ pub(super) fn register(r: Routes) -> Routes {
             &[Method::PUT],
             "/sessions/{id}/draft",
             "Replace a draft session's stored spawn payload in place.",
-            put(routes::sessions::update_draft),
+            put(routes::sessions::update_draft::<crate::state::AppState>),
             Authn::Bearer,
             sess_write(),
         )
@@ -63,7 +63,7 @@ pub(super) fn register(r: Routes) -> Routes {
             &[Method::PUT],
             "/sessions/{id}/draft-attachments",
             "Replace a draft session's stored attachments.",
-            put(routes::spawn::put_draft_attachments)
+            put(routes::spawn::put_draft_attachments::<crate::state::AppState>)
                 .layer(DefaultBodyLimit::max(24 * 1024 * 1024)),
             Authn::Bearer,
             sess_write(),
@@ -75,7 +75,7 @@ pub(super) fn register_control(r: Routes) -> Routes {
         &[Method::POST],
         "/sessions/{id}/interrupt",
         "Interrupt a session's current turn.",
-        post(routes::sessions::interrupt_session),
+        post(routes::sessions::interrupt_session::<crate::state::AppState>),
         Authn::Bearer,
         sess_write(),
     )
@@ -91,7 +91,7 @@ pub(super) fn register_control(r: Routes) -> Routes {
         &[Method::POST],
         "/sessions/{id}/guard/transition",
         "Ask the session's workflow guard to move to a step.",
-        post(crate::guard_step::guard_transition),
+        post(crate::guard_step::guard_transition::<crate::state::AppState>),
         Authn::Bearer,
         sess_write(),
     )
@@ -99,7 +99,7 @@ pub(super) fn register_control(r: Routes) -> Routes {
         &[Method::POST],
         "/sessions/{id}/resume",
         "Resume an exited session.",
-        post(routes::sessions::resume_session),
+        post(routes::sessions::resume_session::<crate::state::AppState>),
         Authn::Bearer,
         sess_write(),
     )
@@ -107,7 +107,7 @@ pub(super) fn register_control(r: Routes) -> Routes {
         &[Method::POST],
         "/sessions/{id}/set-model",
         "Change a session's model.",
-        post(routes::sessions::set_model),
+        post(routes::sessions::set_model::<crate::state::AppState>),
         Authn::Bearer,
         sess_write(),
     )
@@ -115,7 +115,7 @@ pub(super) fn register_control(r: Routes) -> Routes {
         &[Method::POST],
         "/sessions/{id}/switch-account",
         "Switch the account backing a session.",
-        post(routes::sessions::switch_account),
+        post(routes::sessions::switch_account::<crate::state::AppState>),
         Authn::Bearer,
         sess_write(),
     )
@@ -123,7 +123,7 @@ pub(super) fn register_control(r: Routes) -> Routes {
         &[GET],
         "/sessions/{id}/bindings",
         "List a session's per-family account bindings.",
-        get(routes::sessions::session_bindings),
+        get(routes::sessions::session_bindings::<crate::state::AppState>),
         Authn::Bearer,
         sess_read(),
     )

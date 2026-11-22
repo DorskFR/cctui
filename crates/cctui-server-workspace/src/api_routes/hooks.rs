@@ -18,7 +18,8 @@ pub(super) fn register(r: Routes) -> Routes {
         &[Method::GET, Method::POST],
         "/webhooks",
         "List your inbound webhooks, or create one and read its secret once.",
-        get(routes::hooks::list).post(routes::hooks::create),
+        get(routes::hooks::list::<crate::state::AppState>)
+            .post(routes::hooks::create::<crate::state::AppState>),
         Authn::Bearer,
         Authenticated,
     )
@@ -26,7 +27,9 @@ pub(super) fn register(r: Routes) -> Routes {
         &[Method::GET, Method::PUT, Method::DELETE],
         "/webhooks/{id}",
         "Read, replace or delete one inbound webhook.",
-        get(routes::hooks::get_one).put(routes::hooks::update).delete(routes::hooks::delete),
+        get(routes::hooks::get_one::<crate::state::AppState>)
+            .put(routes::hooks::update::<crate::state::AppState>)
+            .delete(routes::hooks::delete::<crate::state::AppState>),
         Authn::Bearer,
         Authenticated,
     )
@@ -34,7 +37,7 @@ pub(super) fn register(r: Routes) -> Routes {
         &[Method::POST],
         "/webhooks/{id}/secret",
         "Replace a webhook's signing secret and read the new one once.",
-        post(routes::hooks::rotate_secret),
+        post(routes::hooks::rotate_secret::<crate::state::AppState>),
         Authn::Bearer,
         Authenticated,
     )
@@ -42,7 +45,7 @@ pub(super) fn register(r: Routes) -> Routes {
         &[Method::GET],
         "/webhooks/{id}/deliveries",
         "A webhook's delivery log: dispatched, duplicate, rejected, rate limited.",
-        get(routes::hooks::deliveries),
+        get(routes::hooks::deliveries::<crate::state::AppState>),
         Authn::Bearer,
         Authenticated,
     )

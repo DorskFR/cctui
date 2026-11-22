@@ -29,7 +29,7 @@ pub(super) fn register(r: Routes) -> Routes {
         &[GET],
         "/settings",
         "Get your user settings.",
-        get(routes::settings::get_settings),
+        get(routes::settings::get_settings::<crate::state::AppState>),
         Authn::Bearer,
         Authenticated,
     )
@@ -37,7 +37,7 @@ pub(super) fn register(r: Routes) -> Routes {
         &[Method::PUT],
         "/settings",
         "Replace your user settings.",
-        put(routes::settings::put_settings),
+        put(routes::settings::put_settings::<crate::state::AppState>),
         Authn::Bearer,
         Authenticated,
     )
@@ -45,7 +45,7 @@ pub(super) fn register(r: Routes) -> Routes {
         &[Method::POST],
         "/settings/rescrub",
         "Start a privacy scan over your stored events; returns its job.",
-        post(routes::privacy_scan::start),
+        post(routes::privacy_scan::start::<crate::state::AppState>),
         Authn::Bearer,
         Authenticated,
     )
@@ -53,7 +53,7 @@ pub(super) fn register(r: Routes) -> Routes {
         &[GET],
         "/settings/rescrub",
         "Your most recent privacy scan job, running or finished.",
-        get(routes::privacy_scan::latest),
+        get(routes::privacy_scan::latest::<crate::state::AppState>),
         Authn::Bearer,
         Authenticated,
     )
@@ -61,7 +61,7 @@ pub(super) fn register(r: Routes) -> Routes {
         &[Method::POST],
         "/settings/rescrub/cancel",
         "Cancel your running privacy scan.",
-        post(routes::privacy_scan::cancel),
+        post(routes::privacy_scan::cancel::<crate::state::AppState>),
         Authn::Bearer,
         Authenticated,
     )
@@ -69,7 +69,7 @@ pub(super) fn register(r: Routes) -> Routes {
         &[GET],
         "/capabilities",
         "List server capabilities/feature flags.",
-        get(routes::capabilities::capabilities),
+        get(routes::capabilities::capabilities::<crate::state::AppState>),
         Authn::Bearer,
         Authenticated,
     )
@@ -113,7 +113,7 @@ fn register_hidden_owners(r: Routes) -> Routes {
         &[GET],
         "/me/hidden-owners",
         "Your hidden users and machines: their sessions stay out of your lists (admin).",
-        get(routes::hidden_owners::list),
+        get(routes::hidden_owners::list::<crate::state::AppState>),
         Authn::Bearer,
         ScopeAz(auth::Scope::Admin),
     )
@@ -121,7 +121,7 @@ fn register_hidden_owners(r: Routes) -> Routes {
         &[Method::PUT],
         "/me/hidden-owners/{kind}/{target_id}",
         "Hide a user's or machine's sessions from your own lists (admin).",
-        put(routes::hidden_owners::hide),
+        put(routes::hidden_owners::hide::<crate::state::AppState>),
         Authn::Bearer,
         ScopeAz(auth::Scope::Admin),
     )
@@ -129,7 +129,7 @@ fn register_hidden_owners(r: Routes) -> Routes {
         &[Method::DELETE],
         "/me/hidden-owners/{kind}/{target_id}",
         "Show a hidden user's or machine's sessions in your lists again (admin).",
-        delete(routes::hidden_owners::unhide),
+        delete(routes::hidden_owners::unhide::<crate::state::AppState>),
         Authn::Bearer,
         ScopeAz(auth::Scope::Admin),
     )

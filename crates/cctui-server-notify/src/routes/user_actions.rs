@@ -175,12 +175,7 @@ pub async fn republish(state: &impl KernelContext, session_id: &str) {
     }
 }
 
-/// How a tick landed.
-pub enum Ticked {
-    Applied(UserActionList),
-    AlreadyResolved(UserActionList, UserAction),
-    Missing,
-}
+pub use cctui_server_kernel::notify_types::Ticked;
 
 /// Resolve one open item. A tick on an item someone already resolved changes
 /// nothing and broadcasts nothing, so a racing user and agent resolve it once.

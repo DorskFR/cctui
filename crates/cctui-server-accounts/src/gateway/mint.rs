@@ -253,12 +253,7 @@ pub async fn mint_session_env_for_account(
     Ok(Some(mint_env_for_account(state, provider_id, &provider, session_id, None).await?))
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SessionBinding {
-    pub acting: Option<Uuid>,
-    /// A `None` trust refuses that provider's mint and settings.
-    pub accounts: Vec<(Uuid, Option<Trust>)>,
-}
+pub use cctui_server_kernel::accounts_types::{SessionBinding, Trust};
 
 #[tracing::instrument(
     target = "otel",
@@ -363,15 +358,6 @@ pub async fn resolve_session_accounts(state: &impl MintContext, session_id: &str
         ids.push(aid);
     }
     ids
-}
-
-/// Whether a launch runs under its own user's account or under one merely SHARED to them.
-///
-/// A grantee gets the credential and nothing else: the owner's `settings_json` and `env_json` are authored for the owner's own machines, and several of their keys are shell commands.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Trust {
-    Owner,
-    Grantee,
 }
 
 /// The `(account identity, owner)` behind a provider row, or `None` when the row

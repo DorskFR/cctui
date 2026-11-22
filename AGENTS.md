@@ -44,6 +44,12 @@ that you are blocked.
   ntfy, email, Web Push; producers, expiry, retention), their routes and the
   session user-action list; reaches the host through `NotifyContext` and its
   `hooks` traits (sessions, dispatch), depends only on the kernel.
+- `crates/cctui-server-sessions` — sessions: daemon transport and ingest,
+  lifecycle, spawn and child sessions, follow-ups, keep-alive, presets, the
+  inbox and scheduled messages, hooks, context, settings and the session
+  routes; reaches the host through `SessionsContext` and its `ports` traits
+  (accounts, blobs, dispatch, extras, notify, search, host), depends only on
+  the kernel.
 - `crates/cctui-daemon` — long-lived per-machine daemon that spawns/observes sessions.
 - `crates/cctui-admin`, `crates/cctui-proto` — share the workspace version.
 - `crates/cctui-tui` — the terminal client (`cctui`). Maintained; see

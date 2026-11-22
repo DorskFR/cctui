@@ -11,7 +11,8 @@ pub(super) fn register(r: Routes) -> Routes {
         &[Method::GET, Method::POST],
         "/presets",
         "List your launch presets, or save one.",
-        get(routes::presets::list).post(routes::presets::create),
+        get(routes::presets::list::<crate::state::AppState>)
+            .post(routes::presets::create::<crate::state::AppState>),
         Authn::Bearer,
         Authenticated,
     )
@@ -19,7 +20,9 @@ pub(super) fn register(r: Routes) -> Routes {
         &[Method::GET, Method::PUT, Method::DELETE],
         "/presets/{id}",
         "Read, replace or delete one launch preset.",
-        get(routes::presets::get_one).put(routes::presets::update).delete(routes::presets::delete),
+        get(routes::presets::get_one::<crate::state::AppState>)
+            .put(routes::presets::update::<crate::state::AppState>)
+            .delete(routes::presets::delete::<crate::state::AppState>),
         Authn::Bearer,
         Authenticated,
     )
@@ -27,7 +30,8 @@ pub(super) fn register(r: Routes) -> Routes {
         &[Method::PUT],
         "/presets/{id}/attachments",
         "Replace the files every run of a launch preset gets.",
-        put(routes::presets::put_attachments).layer(DefaultBodyLimit::max(24 * 1024 * 1024)),
+        put(routes::presets::put_attachments::<crate::state::AppState>)
+            .layer(DefaultBodyLimit::max(24 * 1024 * 1024)),
         Authn::Bearer,
         Authenticated,
     )
@@ -35,7 +39,7 @@ pub(super) fn register(r: Routes) -> Routes {
         &[Method::POST],
         "/presets/{id}/run",
         "Run a launch preset now, whatever its schedule.",
-        post(routes::presets::run),
+        post(routes::presets::run::<crate::state::AppState>),
         Authn::Bearer,
         Authenticated,
     )

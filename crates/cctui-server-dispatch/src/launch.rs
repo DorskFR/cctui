@@ -1,7 +1,7 @@
 //! Delivery and early acknowledgment for a prepared, authorized machine spawn.
 
 use crate::context::DispatchCore;
-use cctui_proto::adapter::{AdapterCommand, SessionSpec};
+use cctui_proto::adapter::AdapterCommand;
 use cctui_proto::models::MachineLiveness;
 use cctui_proto::ws::DaemonFrameDown;
 use chrono::{DateTime, Utc};
@@ -10,43 +10,13 @@ use uuid::Uuid;
 
 use cctui_server_kernel::bus::{Bus, BusError};
 use cctui_server_kernel::commands::{
-    CommandWaiters, EARLY_VERDICT_WAIT, FailedSpawnRow, PendingCommand, await_early_verdict,
-    track_command, wait_for_verdict,
+    CommandWaiters, EARLY_VERDICT_WAIT, PendingCommand, await_early_verdict, track_command,
+    wait_for_verdict,
 };
 
-/// The authorized target and prepared worker input, without workspace storage.
-pub struct MachineSpawn {
-    pub machine_id: Uuid,
-    pub command_id: Uuid,
-    pub token_key: Uuid,
-    pub spec: SessionSpec,
-    pub failed: FailedSpawnRow,
-    /// Deliver on the connection that announced this session, not the
-    /// machine's newest one: dispatched workers share one machine identity.
-    pub route_session: Option<String>,
-}
-
-#[derive(Debug, thiserror::Error)]
-pub enum LaunchError {
-    #[error("could not persist machine launch: {0}")]
-    Storage(#[from] sqlx::Error),
-    #[error(transparent)]
-    Delivery(#[from] BusError),
-    #[error("the daemon refused the spawn: {0}")]
-    Refused(String),
-    #[error("hook policy: {0}")]
-    Policy(String),
-}
-
-/// Pre-mint the session identity only for a harness that accepts it.
-///
-/// Other harnesses echo the command key when announcing their own session ID,
-/// allowing the host to rebind temporary credentials and launch intents.
-#[must_use]
-pub fn spawn_ids(adapter_id: &str, command_id: Uuid) -> (Option<Uuid>, Uuid) {
-    let pre_session_id = (adapter_id == "claude-code").then(Uuid::new_v4);
-    (pre_session_id, pre_session_id.unwrap_or(command_id))
-}
+pub use cctui_server_kernel::dispatch_types::{
+    DAEMON_OFFLINE, LaunchError, MachineSpawn, spawn_ids,
+};
 
 struct LaunchWaiter<'a> {
     waiters: &'a CommandWaiters,
@@ -123,9 +93,6 @@ pub async fn launch_durable(
     }
     result
 }
-
-/// What a launch tells the user when the daemon's machine is offline.
-pub const DAEMON_OFFLINE: &str = "daemon for that machine is offline — start `cctui-daemon` first";
 
 /// What a launch tells the user when the machine is online but no replica
 /// reached its daemon connection.

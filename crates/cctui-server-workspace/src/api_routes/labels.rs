@@ -15,7 +15,8 @@ pub(super) fn register(r: Routes) -> Routes {
             &[GET, Method::POST],
             "/labels",
             "List label definitions, or create one.",
-            get(routes::labels::list_labels).post(routes::labels::create_label),
+            get(routes::labels::list_labels::<crate::state::AppState>)
+                .post(routes::labels::create_label::<crate::state::AppState>),
             Authn::Bearer,
             Authenticated,
         )
@@ -23,7 +24,8 @@ pub(super) fn register(r: Routes) -> Routes {
             &[Method::PATCH, Method::DELETE],
             "/labels/{id}",
             "Rename or delete a label definition.",
-            axum::routing::patch(routes::labels::update_label).delete(routes::labels::delete_label),
+            axum::routing::patch(routes::labels::update_label::<crate::state::AppState>)
+                .delete(routes::labels::delete_label::<crate::state::AppState>),
             Authn::Bearer,
             Authenticated,
         )
@@ -31,7 +33,7 @@ pub(super) fn register(r: Routes) -> Routes {
             &[Method::POST],
             "/sessions/{id}/labels",
             "Attach a label to a session.",
-            post(routes::labels::attach_label),
+            post(routes::labels::attach_label::<crate::state::AppState>),
             Authn::Bearer,
             sess_write(),
         )
@@ -39,7 +41,7 @@ pub(super) fn register(r: Routes) -> Routes {
             &[Method::DELETE],
             "/sessions/{id}/labels/{label_id}",
             "Detach a label from a session.",
-            axum::routing::delete(routes::labels::detach_label),
+            axum::routing::delete(routes::labels::detach_label::<crate::state::AppState>),
             Authn::Bearer,
             sess_write(),
         )

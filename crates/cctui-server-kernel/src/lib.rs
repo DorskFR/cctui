@@ -33,6 +33,8 @@ pub mod preview_host;
 pub mod registry;
 pub mod resource_owners;
 pub mod schema;
+pub mod search_text;
+pub mod search_types;
 pub mod sessions_types;
 pub mod state_events;
 pub mod store;

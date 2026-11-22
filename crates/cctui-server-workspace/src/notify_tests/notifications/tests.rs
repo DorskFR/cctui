@@ -204,7 +204,8 @@ async fn decision_events(state: &AppState, id: Uuid) -> Vec<Value> {
 #[tokio::test]
 async fn a_live_approval_needs_the_confirm_path_and_then_expires() {
     let Some(state) = state("notif_routes_dismiss_live").await else { return };
-    let (alice, sid) = crate::inbox::store_tests::seed_session(&state.pool, "dismiss-live").await;
+    let (alice, sid) =
+        cctui_server_kernel::test_support::seed_session(&state.pool, "dismiss-live").await;
     let approval = session_approval(&state, alice, &sid).await;
 
     let refused = dismiss_as(&state, alice, approval, false).await.unwrap_err();
@@ -225,7 +226,7 @@ async fn a_live_approval_needs_the_confirm_path_and_then_expires() {
 #[tokio::test]
 async fn a_stale_approval_dismisses_without_confirm() {
     let Some(state) = state("notif_routes_dismiss_stale").await else { return };
-    let seed = crate::inbox::store_tests::seed_session;
+    let seed = cctui_server_kernel::test_support::seed_session;
     let (alice, ended) = seed(&state.pool, "dismiss-ended").await;
     let (_, archived) = seed(&state.pool, "dismiss-archived").await;
     let (_, moved) = seed(&state.pool, "dismiss-moved").await;

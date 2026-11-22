@@ -1144,6 +1144,7 @@ dependencies = [
  "cctui-server-accounts",
  "cctui-server-dispatch",
  "cctui-server-kernel",
+ "cctui-server-sessions",
  "cctui-telemetry",
  "chrono",
  "dashmap",
@@ -1250,6 +1251,7 @@ dependencies = [
  "dashmap",
  "futures-util",
  "http",
+ "regex",
  "reqwest",
  "ring",
  "rustls",
@@ -1263,6 +1265,7 @@ dependencies = [
  "toml",
  "tower",
  "tracing",
+ "unicode-normalization",
  "uuid",
 ]
 
@@ -1297,12 +1300,41 @@ name = "cctui-server-search"
 version = "0.32.0-beta.21"
 dependencies = [
  "cctui-server-kernel",
- "regex",
  "serde_json",
  "sqlx",
  "tokio",
  "tracing",
- "unicode-normalization",
+ "uuid",
+]
+
+[[package]]
+name = "cctui-server-sessions"
+version = "0.32.0-beta.21"
+dependencies = [
+ "anyhow",
+ "axum",
+ "base64 0.23.1",
+ "cctui-crypto",
+ "cctui-proto",
+ "cctui-query",
+ "cctui-server-kernel",
+ "cctui-telemetry",
+ "chrono",
+ "dashmap",
+ "futures-util",
+ "hex",
+ "hmac 0.12.1",
+ "http",
+ "http-body-util",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "sqlx",
+ "tempfile",
+ "tokio",
+ "tower",
+ "tracing",
  "uuid",
 ]
 
@@ -1350,6 +1382,7 @@ dependencies = [
  "cctui-server-kernel",
  "cctui-server-notify",
  "cctui-server-search",
+ "cctui-server-sessions",
  "cctui-server-voice",
  "cctui-telemetry",
  "chrono",

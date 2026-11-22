@@ -24,7 +24,9 @@ use uuid::Uuid;
 
 use crate::child_exec::ChildExecutionContext;
 use crate::child_policy::ChildSlots;
-use cctui_proto::api::soft_limit::{self, Decision, SoftLimits, UsageWindow};
+use cctui_proto::api::soft_limit::{self, UsageWindow};
+#[cfg(test)]
+use cctui_proto::api::soft_limit::{Decision, SoftLimits};
 use cctui_server_kernel::accounts_types::UsageContext;
 use cctui_server_kernel::error::AppError;
 
@@ -36,80 +38,9 @@ pub trait SessionLimitsContext: ChildExecutionContext + UsageContext {
     ) -> impl std::future::Future<Output = Result<Option<ChildSlots>, sqlx::Error>> + Send;
 }
 
-#[derive(Debug, Default, serde::Deserialize)]
-pub struct LimitsQuery {
-    /// Ask about one model instead of the session's current one.
-    pub model: Option<String>,
-}
-
-/// The pinned account, named but never attributed: no owner, no credential.
-#[derive(Debug, serde::Serialize)]
-pub struct AccountView {
-    pub id: Uuid,
-    pub name: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub emoji: Option<String>,
-    pub provider: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub pool: Option<String>,
-}
-
-#[derive(Debug, serde::Serialize)]
-pub struct WindowView {
-    #[serde(flatten)]
-    pub window: UsageWindow,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub pace: Option<cctui_proto::api::pace::Pace>,
-}
-
-#[derive(Debug, PartialEq, Eq, serde::Serialize)]
-pub struct DecisionView {
-    pub allow: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub retry_after_secs: Option<i64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub reason: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub key: Option<String>,
-}
-
-impl From<Decision> for DecisionView {
-    fn from(d: Decision) -> Self {
-        match d {
-            Decision::Allow => {
-                Self { allow: true, retry_after_secs: None, reason: None, key: None }
-            }
-            Decision::Block { retry_after_secs, reason, key } => Self {
-                allow: false,
-                retry_after_secs: Some(retry_after_secs),
-                reason: Some(reason),
-                key: Some(key),
-            },
-        }
-    }
-}
-
-/// A block already written onto the session row by an earlier refusal.
-#[derive(Debug, serde::Serialize)]
-pub struct BlockView {
-    pub reason: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub key: Option<String>,
-}
-
-/// Where a `CctuiAgent` child of one adapter would run: the account it would
-/// land on, or why its spawn would be refused.
-#[derive(Debug, Default, Clone, PartialEq, Eq, serde::Serialize)]
-pub struct ChildLandingView {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub account: Option<String>,
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
-    pub via_pool: bool,
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
-    pub unbound: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub refused: Option<String>,
-}
+pub use cctui_server_kernel::dispatch_types::{
+    AccountView, BlockView, ChildLandingView, DecisionView, LimitsQuery, SessionLimits, WindowView,
+};
 
 /// Dry run of the spawn path's account decision for every adapter the
 /// session may spawn, with no model named.
@@ -172,27 +103,6 @@ fn window_views(windows: Vec<UsageWindow>, now: chrono::DateTime<Utc>) -> Vec<Wi
             WindowView { window: w, pace }
         })
         .collect()
-}
-
-#[derive(Debug, serde::Serialize)]
-pub struct SessionLimits {
-    pub session_id: String,
-    pub account: AccountView,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub model: Option<String>,
-    pub windows: Vec<WindowView>,
-    pub caps: SoftLimits,
-    pub spend: BTreeMap<String, f64>,
-    pub decision: DecisionView,
-    pub per_model: BTreeMap<String, DecisionView>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub block: Option<BlockView>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub children: Option<ChildSlots>,
-    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
-    pub child_accounts: BTreeMap<String, ChildLandingView>,
-    pub age_secs: u64,
-    pub stale: bool,
 }
 
 fn deny(code: StatusCode, msg: impl Into<String>) -> AppError {

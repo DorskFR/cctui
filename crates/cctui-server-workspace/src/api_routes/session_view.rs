@@ -18,7 +18,7 @@ pub(super) fn register(r: Routes) -> Routes {
             &[GET],
             "/sessions/{id}",
             "Get one session's details.",
-            get(routes::sessions::get_session),
+            get(routes::sessions::get_session::<crate::state::AppState>),
             Authn::Bearer,
             sess_read(),
         )
@@ -26,7 +26,7 @@ pub(super) fn register(r: Routes) -> Routes {
             &[Method::PATCH],
             "/sessions/{id}",
             "Rename a session.",
-            patch(routes::sessions::rename_session),
+            patch(routes::sessions::rename_session::<crate::state::AppState>),
             Authn::Bearer,
             sess_write(),
         )
@@ -34,7 +34,7 @@ pub(super) fn register(r: Routes) -> Routes {
             &[GET],
             "/sessions/{id}/conversation",
             "Fetch a session's normalized conversation transcript.",
-            get(routes::sessions::get_conversation),
+            get(routes::sessions::get_conversation::<crate::state::AppState>),
             Authn::Bearer,
             sess_read(),
         )
@@ -42,7 +42,7 @@ pub(super) fn register(r: Routes) -> Routes {
             &[GET],
             "/sessions/{id}/search",
             "Find-in-conversation hit list for one session's transcript.",
-            get(routes::sessions::search_conversation),
+            get(routes::sessions::search_conversation::<crate::state::AppState>),
             Authn::Bearer,
             sess_read(),
         )
@@ -50,7 +50,7 @@ pub(super) fn register(r: Routes) -> Routes {
             &[GET],
             "/sessions/{id}/images/{image_id}",
             "Fetch an agent-posted image blob.",
-            get(routes::images::get_session_image),
+            get(routes::images::get_session_image::<crate::state::AppState>),
             Authn::Bearer,
             sess_read(),
         )
@@ -66,7 +66,7 @@ pub(super) fn register(r: Routes) -> Routes {
             &[GET],
             "/sessions/{id}/attachments",
             "List the files the user uploaded into a session (served via blobs).",
-            get(routes::attachments::get_session_attachments),
+            get(routes::attachments::get_session_attachments::<crate::state::AppState>),
             Authn::Bearer,
             sess_read(),
         )
@@ -74,7 +74,7 @@ pub(super) fn register(r: Routes) -> Routes {
             &[GET],
             "/sessions/{id}/linked-file",
             "Read a path linked in this session or the one that linked it, on its machine.",
-            get(routes::fs::read_linked_file),
+            get(routes::fs::read_linked_file::<crate::state::AppState>),
             Authn::Bearer,
             sess_read(),
         )
@@ -82,7 +82,7 @@ pub(super) fn register(r: Routes) -> Routes {
             &[GET],
             "/sessions/{id}/linked-file-owner",
             "Which session and machine linked a path, when this session did not.",
-            get(routes::fs::linked_file_owner),
+            get(routes::fs::linked_file_owner::<crate::state::AppState>),
             Authn::Bearer,
             sess_read(),
         )
@@ -90,7 +90,7 @@ pub(super) fn register(r: Routes) -> Routes {
             &[GET],
             "/sessions/{id}/diagnose",
             "Snapshot everything the daemon knows about a session, dated.",
-            get(routes::diagnose::diagnose_session),
+            get(routes::diagnose::diagnose_session::<crate::state::AppState>),
             Authn::Bearer,
             sess_read(),
         )
@@ -106,7 +106,7 @@ pub(super) fn register(r: Routes) -> Routes {
             &[GET],
             "/sessions/{id}/events",
             "One session's lifecycle events, newest first.",
-            get(routes::events::session_events),
+            get(routes::events::session_events::<crate::state::AppState>),
             Authn::Bearer,
             sess_read(),
         )
@@ -117,7 +117,7 @@ pub(super) fn register_result(r: Routes) -> Routes {
         &[GET],
         "/sessions/{id}/result",
         "Completion state and final assistant text of a session.",
-        get(routes::sessions::get_result),
+        get(routes::sessions::get_result::<crate::state::AppState>),
         Authn::Bearer,
         sess_read(),
     )

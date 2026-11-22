@@ -342,7 +342,7 @@ async fn a_refused_dispatch_is_listed_and_re_dispatched_with_its_stored_fields()
 /// capability is kept as is.
 #[tokio::test]
 async fn a_policy_bound_dispatch_grants_no_children() {
-    use crate::routes::spawn_child::{Denied, Usage, authorize};
+    use cctui_server_core::child_policy::{Denied, Usage, authorize};
     let Some(url) = crate::routes::gateway::test_db_url("dispatch_policy_no_children") else {
         return;
     };

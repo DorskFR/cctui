@@ -28,7 +28,7 @@ pub(super) fn register(r: Routes) -> Routes {
         &[GET],
         "/models/{harness}",
         "Model and effort options for a harness picker (optional machine_id).",
-        get(routes::harness_models::get_harness_models),
+        get(routes::harness_models::get_harness_models::<crate::state::AppState>),
         Authn::Bearer,
         Authenticated,
     )

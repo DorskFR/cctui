@@ -12,7 +12,7 @@ its feature file, not by a separate binary.
   HTTP, lifecycle events, the session registry and pending commands, the
   token/session/spawn-capability stores, peer delivery and rate limits, the
   `core` schema stream, and the types other domains bind against
-  (`accounts_types`, `sessions_types`, `extras_types`, `dispatch_types`, `blobs_types`, `notify_types`). It depends on no other server crate; domain
+  (`accounts_types`, `sessions_types`, `extras_types`, `dispatch_types`, `blobs_types`, `notify_types`, `search_types`, `search_text`). It depends on no other server crate; domain
   crates reach the host through `KernelContext` and their own context traits.
 - `cctui-server-accounts`: identity, provider accounts and credentials, pools,
   usage, limit resets, passkeys and the provider gateway, with their HTTP
@@ -32,12 +32,18 @@ its feature file, not by a separate binary.
   Web Push channels, producers, expiry, retention), the session user-action
   list, with their HTTP handlers. It depends only on the kernel and reaches the
   host through `NotifyContext` and the `hooks` traits (sessions, dispatch).
-- `cctui-server-core`: the shared host state (`CoreState`), the daemon
-  transport, run lifecycle and the cross-domain contract tests. It does not
+- `cctui-server-sessions`: the session domain: daemon transport, ingest and
+  reconcile, run lifecycle, spawn and child sessions, follow-ups, keep-alive,
+  presets, the inbox and scheduled messages, webhooks, context and the
+  session HTTP/WebSocket handlers. It depends only on the kernel and reaches
+  the host through `SessionsContext` and the `ports` traits (accounts, blobs,
+  dispatch, extras, notify, search, host).
+- `cctui-server-core`: the shared host state (`CoreState`) and the
+  cross-domain contract tests. It does not
   depend on the workspace and compiles and tests on its own, without search,
   image codecs, WebAuthn or plugin startup.
-- `cctui-server-workspace`: interactive HTTP/WebSocket handlers, application
-  state, workspace storage and the full-host assembly, built on core.
+- `cctui-server-workspace`: application state, every domain context
+  implementation, the route tables and the full-host assembly.
 - `cctui-server`: the executable; it starts the workspace host.
 
 Workers, dispatchers, the daemon and the TUI are the same for every

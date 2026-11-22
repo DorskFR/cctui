@@ -246,6 +246,10 @@ jobs:
         if: env.WARM_ONLY != 'true' && contains(format(' {0} ', needs.changes.outputs.crates), ' cctui-server-notify ')
         run: cargo check -p cctui-server-notify --all-targets --locked
 
+      - name: Sessions builds on the kernel alone
+        if: env.WARM_ONLY != 'true' && contains(format(' {0} ', needs.changes.outputs.crates), ' cctui-server-sessions ')
+        run: cargo check -p cctui-server-sessions --all-targets --locked
+
   test:
     name: cargo test
     needs: changes

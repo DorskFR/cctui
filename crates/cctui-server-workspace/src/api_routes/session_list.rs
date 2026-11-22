@@ -14,7 +14,7 @@ pub(super) fn register(r: Routes) -> Routes {
             &[GET],
             "/sessions",
             "List your sessions (admin: all).",
-            get(routes::sessions::list_sessions),
+            get(routes::sessions::list_sessions::<crate::state::AppState>),
             Authn::Bearer,
             Authenticated,
         )
@@ -22,7 +22,7 @@ pub(super) fn register(r: Routes) -> Routes {
             &[GET],
             "/events",
             "Lifecycle event log (sessions, machines, system), keyset-paginated newest first.",
-            get(routes::events::list_events),
+            get(routes::events::list_events::<crate::state::AppState>),
             Authn::Bearer,
             Authenticated,
         )
@@ -30,7 +30,7 @@ pub(super) fn register(r: Routes) -> Routes {
             &[GET],
             "/sessions/stats",
             "Aggregate session counts/status stats.",
-            get(routes::stats::session_stats),
+            get(routes::stats::session_stats::<crate::state::AppState>),
             Authn::Bearer,
             Authenticated,
         )
@@ -38,7 +38,7 @@ pub(super) fn register(r: Routes) -> Routes {
             &[GET],
             "/sessions/stats/tokens",
             "Token-usage stats across sessions.",
-            get(routes::stats::session_token_stats),
+            get(routes::stats::session_token_stats::<crate::state::AppState>),
             Authn::Bearer,
             Authenticated,
         )
@@ -46,7 +46,7 @@ pub(super) fn register(r: Routes) -> Routes {
             &[GET],
             "/sessions/stats/usage",
             "Overview usage analytics: tokens over time, per-model, heatmap.",
-            get(routes::stats::session_usage_analytics),
+            get(routes::stats::session_usage_analytics::<crate::state::AppState>),
             Authn::Bearer,
             Authenticated,
         )
@@ -54,7 +54,7 @@ pub(super) fn register(r: Routes) -> Routes {
             &[GET],
             "/sessions/stats/cache-busts",
             "Dollars lost to prompt-cache busts per day, by reason.",
-            get(routes::cache_loss::cache_loss),
+            get(routes::cache_loss::cache_loss::<crate::state::AppState>),
             Authn::Bearer,
             Authenticated,
         )
@@ -62,7 +62,7 @@ pub(super) fn register(r: Routes) -> Routes {
             &[GET],
             "/sessions/search",
             "Full-text search across your sessions.",
-            get(routes::sessions::search_sessions),
+            get(routes::sessions::search_sessions::<crate::state::AppState>),
             Authn::Bearer,
             Authenticated,
         )
@@ -70,7 +70,7 @@ pub(super) fn register(r: Routes) -> Routes {
             &[GET],
             "/sessions/search/values",
             "Autocomplete values for a search field.",
-            get(routes::sessions::search_field_values),
+            get(routes::sessions::search_field_values::<crate::state::AppState>),
             Authn::Bearer,
             Authenticated,
         )
@@ -78,7 +78,7 @@ pub(super) fn register(r: Routes) -> Routes {
             &[GET],
             "/sessions/recent-dirs",
             "List recently used working directories.",
-            get(routes::stats::recent_dirs),
+            get(routes::stats::recent_dirs::<crate::state::AppState>),
             Authn::Bearer,
             Authenticated,
         )

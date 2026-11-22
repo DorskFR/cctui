@@ -12,11 +12,11 @@ use uuid::Uuid;
 
 use super::outcome_declared;
 use crate::auth::{AuthContext, Scope};
-use crate::inbox::store_tests::seed_session;
 use crate::notify::store::{self, Edge, NotificationRecord, Routing};
 use crate::routes::device_auth::PeerAddr;
 use crate::routes::user_actions::{self, Ticked};
 use crate::state::AppState;
+use cctui_server_kernel::test_support::seed_session;
 
 async fn state(name: &str) -> Option<AppState> {
     let url = crate::routes::gateway::test_db_url(name)?;

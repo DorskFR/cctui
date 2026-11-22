@@ -56,12 +56,7 @@ impl Drop for Seed {
     }
 }
 
-#[must_use]
-pub fn random_bytes<const N: usize>() -> [u8; N] {
-    let mut b = [0u8; N];
-    ring::rand::SystemRandom::new().fill(&mut b).expect("system rng");
-    b
-}
+pub use cctui_server_kernel::extras_types::random_bytes;
 
 #[must_use]
 pub fn random_b64url<const N: usize>() -> String {

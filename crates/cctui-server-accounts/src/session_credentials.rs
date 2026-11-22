@@ -44,10 +44,7 @@ pub async fn revoke_session_tokens(state: &impl SessionCredentialContext, sessio
     }
 }
 
-#[must_use]
-pub fn needs_rebind(spawn_key: &str, session_id: &str) -> bool {
-    !spawn_key.is_empty() && !session_id.is_empty() && spawn_key != session_id
-}
+pub use cctui_server_kernel::accounts_types::needs_rebind;
 
 /// Re-key a session's gateway token, and anything already metered under it, from
 /// the spawn key onto the id the harness registered under.

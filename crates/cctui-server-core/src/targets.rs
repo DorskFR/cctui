@@ -4,4 +4,4 @@ pub use cctui_server_dispatch::targets::{
     dispatcher_management, enrollment, machine_status, manifest,
 };
 
-pub mod daemon;
+pub use cctui_server_sessions::targets::daemon;

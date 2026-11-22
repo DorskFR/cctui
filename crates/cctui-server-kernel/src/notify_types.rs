@@ -54,3 +54,10 @@ impl NewNotification {
         }
     }
 }
+
+/// How a tick landed.
+pub enum Ticked {
+    Applied(cctui_proto::api::UserActionList),
+    AlreadyResolved(cctui_proto::api::UserActionList, cctui_proto::api::UserAction),
+    Missing,
+}

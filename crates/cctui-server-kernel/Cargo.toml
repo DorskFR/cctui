@@ -30,6 +30,8 @@ ring = "0.17"
 rustls.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+regex.workspace = true
+unicode-normalization = "0.1.25"
 sha2.workspace = true
 sqlx = { version = "0.9", features = ["runtime-tokio", "tls-rustls", "postgres", "uuid", "chrono", "json"] }
 thiserror.workspace = true

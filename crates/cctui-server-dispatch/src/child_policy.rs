@@ -288,15 +288,7 @@ impl ChildCount for ExecutionChildCount {
 #[cfg(test)]
 mod tests;
 
-/// Slots and remaining depth visible to the session usage tool.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
-pub struct ChildSlots {
-    pub used: u32,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub max: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub depth_left: Option<u32>,
-}
+pub use cctui_server_kernel::dispatch_types::ChildSlots;
 
 /// Count registered and pending execution children without workspace storage.
 pub async fn child_slots(

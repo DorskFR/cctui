@@ -11,7 +11,7 @@ pub(super) fn register(r: Routes) -> Routes {
         &[Method::POST],
         "/sessions/{id}/message",
         "Send a message to a live session.",
-        post(routes::sessions::send_message),
+        post(routes::sessions::send_message::<crate::state::AppState>),
         Authn::Bearer,
         sess_write(),
     )
@@ -19,7 +19,7 @@ pub(super) fn register(r: Routes) -> Routes {
         &[Method::POST],
         "/sessions/{id}/followup",
         "Continue a session in a new one and swap it in once it registers.",
-        post(crate::followup_op::create),
+        post(crate::followup_op::create::<crate::state::AppState>),
         Authn::Bearer,
         sess_write(),
     )
@@ -27,7 +27,7 @@ pub(super) fn register(r: Routes) -> Routes {
         &[Method::PUT],
         "/sessions/{id}/auto-followup",
         "Set or clear a session's auto follow-up override.",
-        put(crate::auto_followup::put_override),
+        put(crate::auto_followup::put_override::<crate::state::AppState>),
         Authn::Bearer,
         sess_write(),
     )
@@ -35,7 +35,7 @@ pub(super) fn register(r: Routes) -> Routes {
         &[GET],
         "/sessions/{id}/messages/scheduled",
         "List a session's scheduled messages.",
-        get(routes::scheduled_messages::list),
+        get(routes::scheduled_messages::list::<crate::state::AppState>),
         Authn::Bearer,
         sess_read(),
     )
@@ -43,7 +43,8 @@ pub(super) fn register(r: Routes) -> Routes {
         &[Method::PATCH, Method::DELETE],
         "/sessions/{id}/messages/scheduled/{queue_id}",
         "Edit/reschedule or cancel a scheduled message.",
-        patch(routes::scheduled_messages::update).delete(routes::scheduled_messages::cancel),
+        patch(routes::scheduled_messages::update::<crate::state::AppState>)
+            .delete(routes::scheduled_messages::cancel::<crate::state::AppState>),
         Authn::Bearer,
         sess_write(),
     )
@@ -51,7 +52,7 @@ pub(super) fn register(r: Routes) -> Routes {
         &[Method::POST],
         "/sessions/{id}/messages/scheduled/{queue_id}/send-now",
         "Deliver a scheduled message immediately.",
-        post(routes::scheduled_messages::send_now),
+        post(routes::scheduled_messages::send_now::<crate::state::AppState>),
         Authn::Bearer,
         sess_write(),
     )
@@ -59,7 +60,7 @@ pub(super) fn register(r: Routes) -> Routes {
         &[Method::POST],
         "/sessions/{id}/kill",
         "Kill a session's underlying process.",
-        post(routes::sessions::kill_session),
+        post(routes::sessions::kill_session::<crate::state::AppState>),
         Authn::Bearer,
         sess_write(),
     )
@@ -67,7 +68,7 @@ pub(super) fn register(r: Routes) -> Routes {
         &[GET],
         "/sessions/{id}/pins",
         "List the caller's pinned messages in a session.",
-        get(routes::message_pins::list_pins),
+        get(routes::message_pins::list_pins::<crate::state::AppState>),
         Authn::Bearer,
         sess_read(),
     )
@@ -75,7 +76,7 @@ pub(super) fn register(r: Routes) -> Routes {
         &[Method::POST],
         "/sessions/{id}/pins",
         "Pin a message (by stream seq) in a session.",
-        post(routes::message_pins::create_pin),
+        post(routes::message_pins::create_pin::<crate::state::AppState>),
         Authn::Bearer,
         sess_write(),
     )
@@ -83,7 +84,7 @@ pub(super) fn register(r: Routes) -> Routes {
         &[Method::DELETE],
         "/sessions/{id}/pins/{seq}",
         "Unpin a message in a session.",
-        axum::routing::delete(routes::message_pins::delete_pin),
+        axum::routing::delete(routes::message_pins::delete_pin::<crate::state::AppState>),
         Authn::Bearer,
         sess_write(),
     )
@@ -91,7 +92,7 @@ pub(super) fn register(r: Routes) -> Routes {
         &[Method::POST],
         "/sessions/{id}/seen",
         "Mark this session's messages seen for the caller.",
-        post(routes::sessions::mark_seen),
+        post(routes::sessions::mark_seen::<crate::state::AppState>),
         Authn::Bearer,
         sess_write(),
     )

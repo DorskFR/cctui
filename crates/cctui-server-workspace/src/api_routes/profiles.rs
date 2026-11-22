@@ -12,7 +12,8 @@ pub(super) fn register(r: Routes) -> Routes {
         &[GET, Method::POST],
         "/profiles",
         "List the caller's spawn profiles, or create one.",
-        get(routes::profiles::list_profiles).post(routes::profiles::create_profile),
+        get(routes::profiles::list_profiles::<crate::state::AppState>)
+            .post(routes::profiles::create_profile::<crate::state::AppState>),
         Authn::Bearer,
         Human,
     )
@@ -20,7 +21,7 @@ pub(super) fn register(r: Routes) -> Routes {
         &[Method::PUT],
         "/profiles/order",
         "Persist the caller's profile order.",
-        axum::routing::put(routes::profiles::reorder_profiles),
+        axum::routing::put(routes::profiles::reorder_profiles::<crate::state::AppState>),
         Authn::Bearer,
         Human,
     )
@@ -28,7 +29,8 @@ pub(super) fn register(r: Routes) -> Routes {
         &[Method::PATCH, Method::DELETE],
         "/profiles/{id}",
         "Rename, adjust or delete a spawn profile.",
-        patch(routes::profiles::update_profile).delete(routes::profiles::delete_profile),
+        patch(routes::profiles::update_profile::<crate::state::AppState>)
+            .delete(routes::profiles::delete_profile::<crate::state::AppState>),
         Authn::Bearer,
         Human,
     )

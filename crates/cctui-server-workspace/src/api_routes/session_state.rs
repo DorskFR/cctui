@@ -12,7 +12,7 @@ pub(super) fn register(r: Routes) -> Routes {
             &[Method::GET],
             "/sessions/{id}/brief",
             "Render a session's user/assistant transcript as a capped markdown brief.",
-            get(crate::brief::session_brief),
+            get(crate::brief::session_brief::<crate::state::AppState>),
             Authn::Bearer,
             sess_read(),
         )
@@ -20,7 +20,7 @@ pub(super) fn register(r: Routes) -> Routes {
             &[Method::GET],
             "/sessions/{id}/thread",
             "List the follow-up thread a session belongs to, oldest first.",
-            get(crate::followup::session_thread),
+            get(crate::followup::session_thread::<crate::state::AppState>),
             Authn::Bearer,
             sess_read(),
         )
@@ -28,7 +28,7 @@ pub(super) fn register(r: Routes) -> Routes {
             &[Method::POST],
             "/sessions/{id}/fork",
             "Fork a session into a new one.",
-            post(routes::sessions::fork_session),
+            post(routes::sessions::fork_session::<crate::state::AppState>),
             Authn::Bearer,
             sess_write(),
         )
@@ -36,7 +36,7 @@ pub(super) fn register(r: Routes) -> Routes {
             &[Method::POST],
             "/sessions/{id}/auto-approve",
             "Toggle auto-approval of tool-use for a session.",
-            post(routes::sessions::set_auto_approve),
+            post(routes::sessions::set_auto_approve::<crate::state::AppState>),
             Authn::Bearer,
             sess_write(),
         )
@@ -44,7 +44,7 @@ pub(super) fn register(r: Routes) -> Routes {
             &[Method::POST],
             "/sessions/{id}/archive",
             "Archive a single session.",
-            post(routes::sessions::archive_session),
+            post(routes::sessions::archive_session::<crate::state::AppState>),
             Authn::Bearer,
             sess_write(),
         )
@@ -52,7 +52,7 @@ pub(super) fn register(r: Routes) -> Routes {
             &[Method::POST],
             "/sessions/{id}/unarchive",
             "Unarchive a single session.",
-            post(routes::sessions::unarchive_session),
+            post(routes::sessions::unarchive_session::<crate::state::AppState>),
             Authn::Bearer,
             sess_write(),
         )
@@ -60,7 +60,7 @@ pub(super) fn register(r: Routes) -> Routes {
             &[Method::POST],
             "/sessions/{id}/pin",
             "Pin a single session.",
-            post(routes::sessions::pin_session),
+            post(routes::sessions::pin_session::<crate::state::AppState>),
             Authn::Bearer,
             sess_write(),
         )
@@ -68,7 +68,7 @@ pub(super) fn register(r: Routes) -> Routes {
             &[Method::POST],
             "/sessions/{id}/unpin",
             "Unpin a single session.",
-            post(routes::sessions::unpin_session),
+            post(routes::sessions::unpin_session::<crate::state::AppState>),
             Authn::Bearer,
             sess_write(),
         )
@@ -76,7 +76,7 @@ pub(super) fn register(r: Routes) -> Routes {
             &[Method::POST],
             "/sessions/{id}/keepalive",
             "Set or clear the session's prompt-cache keep-alive schedule.",
-            post(routes::sessions::set_keepalive),
+            post(routes::sessions::set_keepalive::<crate::state::AppState>),
             Authn::Bearer,
             sess_write(),
         );

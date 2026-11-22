@@ -15,7 +15,7 @@ pub(super) fn register(r: Routes) -> Routes {
             &[Method::POST],
             "/sessions/archive",
             "Archive a batch of sessions by id.",
-            post(routes::sessions::archive_sessions),
+            post(routes::sessions::archive_sessions::<crate::state::AppState>),
             Authn::Bearer,
             Authenticated,
         )
@@ -23,7 +23,7 @@ pub(super) fn register(r: Routes) -> Routes {
             &[Method::POST],
             "/sessions/unarchive",
             "Unarchive a batch of sessions by id.",
-            post(routes::sessions::unarchive_sessions),
+            post(routes::sessions::unarchive_sessions::<crate::state::AppState>),
             Authn::Bearer,
             Authenticated,
         )
@@ -31,7 +31,7 @@ pub(super) fn register(r: Routes) -> Routes {
             &[Method::POST],
             "/sessions/pin",
             "Pin a batch of sessions by id.",
-            post(routes::sessions::pin_sessions),
+            post(routes::sessions::pin_sessions::<crate::state::AppState>),
             Authn::Bearer,
             Authenticated,
         )
@@ -39,7 +39,7 @@ pub(super) fn register(r: Routes) -> Routes {
             &[Method::POST],
             "/sessions/unpin",
             "Unpin a batch of sessions by id.",
-            post(routes::sessions::unpin_sessions),
+            post(routes::sessions::unpin_sessions::<crate::state::AppState>),
             Authn::Bearer,
             Authenticated,
         )

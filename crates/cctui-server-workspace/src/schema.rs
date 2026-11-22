@@ -654,8 +654,8 @@ mod tests {
     /// Rows as 0025 left them: machine + cron + account, machine + pool, dispatcher.
     async fn seed_legacy_presets(
         pool: &sqlx::PgPool,
-    ) -> (crate::presets::store_tests::Owner, uuid::Uuid, uuid::Uuid) {
-        let owner = crate::presets::store_tests::seed_owner(pool, "tpl-mig").await;
+    ) -> (crate::presets::test_support::Owner, uuid::Uuid, uuid::Uuid) {
+        let owner = crate::presets::test_support::seed_owner(pool, "tpl-mig").await;
         let account: uuid::Uuid = sqlx::query_scalar(
             "INSERT INTO accounts (user_id, name) VALUES ($1, 'personal') RETURNING id",
         )

@@ -3,41 +3,7 @@ use cctui_server_kernel::commands::FailedSpawnRow;
 use sqlx::PgPool;
 use uuid::Uuid;
 
-#[derive(Debug, sqlx::FromRow)]
-pub struct Launch {
-    pub command_id: Uuid,
-    pub session_id: String,
-    pub registered_session_id: Option<String>,
-    pub machine_id: Uuid,
-    pub user_id: Uuid,
-    pub acting_user_id: Uuid,
-    pub adapter_id: String,
-    pub working_dir: String,
-    pub name: Option<String>,
-    pub model: Option<String>,
-    pub effort: Option<String>,
-    pub state: String,
-    pub detail: Option<String>,
-}
-impl Launch {
-    #[must_use]
-    pub fn failed_row(&self) -> FailedSpawnRow {
-        FailedSpawnRow {
-            session_id: self.session_id.clone(),
-            machine_id: self.machine_id,
-            user_id: self.user_id,
-            adapter_id: self.adapter_id.clone(),
-            working_dir: self.working_dir.clone(),
-            name: self.name.clone(),
-            model: self.model.clone(),
-            effort: self.effort.clone(),
-        }
-    }
-    #[must_use]
-    pub fn failed(&self) -> bool {
-        matches!(self.state.as_str(), "refused" | "delivery_failed")
-    }
-}
+pub use cctui_server_kernel::dispatch_types::Launch;
 
 pub async fn prepare(
     pool: &PgPool,

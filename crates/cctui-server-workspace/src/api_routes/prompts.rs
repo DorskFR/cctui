@@ -12,7 +12,8 @@ pub(super) fn register(r: Routes) -> Routes {
         &[GET, Method::POST],
         "/bookmarks",
         "List your saved messages, or save one.",
-        get(routes::bookmarks::list_bookmarks).post(routes::bookmarks::create_bookmark),
+        get(routes::bookmarks::list_bookmarks::<crate::state::AppState>)
+            .post(routes::bookmarks::create_bookmark::<crate::state::AppState>),
         Authn::Bearer,
         Authenticated,
     )
@@ -20,7 +21,8 @@ pub(super) fn register(r: Routes) -> Routes {
         &[Method::PATCH, Method::DELETE],
         "/bookmarks/{id}",
         "Edit a bookmark's title/note, or delete it.",
-        patch(routes::bookmarks::update_bookmark).delete(routes::bookmarks::delete_bookmark),
+        patch(routes::bookmarks::update_bookmark::<crate::state::AppState>)
+            .delete(routes::bookmarks::delete_bookmark::<crate::state::AppState>),
         Authn::Bearer,
         Authenticated,
     )
@@ -29,7 +31,8 @@ pub(super) fn register(r: Routes) -> Routes {
         &[GET, Method::POST],
         "/prompts",
         "List your saved prompts, or create one.",
-        get(routes::prompts::list_prompts).post(routes::prompts::create_prompt),
+        get(routes::prompts::list_prompts::<crate::state::AppState>)
+            .post(routes::prompts::create_prompt::<crate::state::AppState>),
         Authn::Bearer,
         Authenticated,
     )
@@ -37,7 +40,7 @@ pub(super) fn register(r: Routes) -> Routes {
         &[GET],
         "/prompts/resolve",
         "Resolve a prompt by name/reference.",
-        get(routes::prompts::resolve_prompt),
+        get(routes::prompts::resolve_prompt::<crate::state::AppState>),
         Authn::Bearer,
         Authenticated,
     )
@@ -45,7 +48,8 @@ pub(super) fn register(r: Routes) -> Routes {
         &[GET, Method::DELETE],
         "/prompts/{id}",
         "Get or delete a saved prompt.",
-        get(routes::prompts::get_prompt).delete(routes::prompts::delete_prompt),
+        get(routes::prompts::get_prompt::<crate::state::AppState>)
+            .delete(routes::prompts::delete_prompt::<crate::state::AppState>),
         Authn::Bearer,
         Authenticated,
     )

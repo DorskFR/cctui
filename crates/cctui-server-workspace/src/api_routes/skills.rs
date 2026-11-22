@@ -13,7 +13,7 @@ pub(super) fn register(r: Routes) -> Routes {
         &[GET],
         "/permissions/pending",
         "List pending tool-use permission requests.",
-        get(routes::permissions::list_pending),
+        get(routes::permissions::list_pending::<crate::state::AppState>),
         Authn::Bearer,
         // In-handler owner join on session machine_uuid -> machines.user_id.
         Authenticated,

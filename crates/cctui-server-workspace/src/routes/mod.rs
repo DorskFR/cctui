@@ -1,63 +1,35 @@
-pub use cctui_server_accounts::routes::{account_pools, account_redirects, accounts};
-pub mod attachments;
-pub use cctui_server_accounts::routes::auth;
+pub use cctui_server_accounts::routes::{
+    account_pools, account_redirects, accounts, auth, credentials, device_auth,
+};
 pub use cctui_server_blobs::routes as blobs;
-pub mod bookmarks;
-pub mod cache_loss;
-pub mod capabilities;
 pub use cctui_server_extras::routes::cctuiverse;
-pub mod codex_models;
-pub mod context;
-pub mod context_tool;
-pub use cctui_server_accounts::routes::credentials;
-pub mod daemon;
-pub use cctui_server_accounts::routes::device_auth;
-pub mod diagnose;
-pub mod drafts;
-pub mod events;
-pub mod fs;
+pub use cctui_server_sessions::routes::{
+    attachments, bookmarks, cache_loss, capabilities, codex_models, context, context_tool, daemon,
+    diagnose, drafts, events, fs,
+};
 pub mod gateway;
-pub mod harness_catalogs;
-pub mod harness_models;
-pub mod harnesses;
-pub mod hidden_owners;
-pub mod hooks;
-pub mod images;
-pub mod inbox;
+pub use cctui_server_sessions::routes::{
+    harness_models, harnesses, hidden_owners, hooks, images, inbox,
+};
 pub mod instance;
 pub mod internal;
-pub mod labels;
 pub use cctui_server_accounts::routes::limit_reset;
 pub use cctui_server_extras::routes::langfuse;
-pub mod message_pins;
+pub use cctui_server_sessions::routes::{labels, message_pins};
 pub mod metrics;
-pub use cctui_server_accounts::routes::passkeys;
-pub use cctui_server_extras::routes::peer;
+pub use cctui_server_accounts::routes::{passkeys, provider_status};
+pub use cctui_server_extras::routes::{peer, plugins, plugins_admin, rooms};
 pub use cctui_server_notify::routes::{notification_endpoints, notifications};
-pub mod permissions;
-pub use cctui_server_extras::routes::{plugins, plugins_admin};
-pub mod presets;
-pub mod privacy_scan;
-pub mod profiles;
-pub mod prompts;
-pub use cctui_server_accounts::routes::provider_status;
-pub mod redteam;
-pub use cctui_server_extras::routes::rooms;
-pub mod scheduled_messages;
+pub use cctui_server_sessions::routes::{
+    permissions, presets, privacy_scan, profiles, prompts, redteam, scheduled_messages,
+};
 pub mod self_update;
 pub mod server_settings;
-pub use cctui_server_accounts::routes::service_tokens;
-pub mod session_limits;
-pub use cctui_server_extras::routes::session_plugins;
-pub mod sessions;
-pub mod settings;
-pub mod shares;
-pub mod spawn;
-pub mod spawn_child;
-pub mod spawn_memory;
-pub mod stats;
-pub use cctui_server_accounts::routes::{tool_guard, tool_policy};
-pub use cctui_server_extras::routes::storage_admin;
+pub use cctui_server_accounts::routes::{service_tokens, tool_guard, tool_policy};
+pub use cctui_server_extras::routes::{session_plugins, storage_admin};
+pub use cctui_server_sessions::routes::{
+    session_limits, sessions, settings, shares, spawn, spawn_child, spawn_memory, stats,
+};
 pub mod update_hook;
 pub use cctui_server_accounts::routes::{usage_history, usage_ledger, usage_probes};
 pub use cctui_server_notify::routes::user_actions;

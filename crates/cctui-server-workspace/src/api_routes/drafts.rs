@@ -13,7 +13,7 @@ pub(super) fn register(r: Routes) -> Routes {
         &[GET],
         "/drafts",
         "List your unsent drafts.",
-        get(routes::drafts::list_drafts),
+        get(routes::drafts::list_drafts::<crate::state::AppState>),
         Authn::Bearer,
         Authenticated,
     )
@@ -22,9 +22,9 @@ pub(super) fn register(r: Routes) -> Routes {
         &[GET, Method::PUT, Method::DELETE],
         "/drafts/{*key}",
         "Read, save or discard one draft.",
-        get(routes::drafts::get_draft)
-            .put(routes::drafts::put_draft)
-            .delete(routes::drafts::delete_draft),
+        get(routes::drafts::get_draft::<crate::state::AppState>)
+            .put(routes::drafts::put_draft::<crate::state::AppState>)
+            .delete(routes::drafts::delete_draft::<crate::state::AppState>),
         Authn::Bearer,
         Authenticated,
     )
@@ -32,7 +32,8 @@ pub(super) fn register(r: Routes) -> Routes {
         &[GET, Method::PUT],
         "/spawn-memory",
         "Get or replace your remembered spawn configuration per target.",
-        get(routes::spawn_memory::get_spawn_memory).put(routes::spawn_memory::put_spawn_memory),
+        get(routes::spawn_memory::get_spawn_memory::<crate::state::AppState>)
+            .put(routes::spawn_memory::put_spawn_memory::<crate::state::AppState>),
         Authn::Bearer,
         Authenticated,
     )

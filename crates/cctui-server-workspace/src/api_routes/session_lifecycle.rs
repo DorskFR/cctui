@@ -17,7 +17,7 @@ pub(super) fn register(r: Routes) -> Routes {
         &[Method::POST],
         "/sessions/register",
         "Register a session the daemon just launched.",
-        post(routes::sessions::register),
+        post(routes::sessions::register::<crate::state::AppState>),
         Authn::Bearer,
         // In-handler: machine key only; binds to that machine and its owner.
         Authenticated,
@@ -26,7 +26,7 @@ pub(super) fn register(r: Routes) -> Routes {
         &[Method::POST],
         "/sessions/{id}/deregister",
         "Deregister a session (mark it gone).",
-        post(routes::sessions::deregister),
+        post(routes::sessions::deregister::<crate::state::AppState>),
         Authn::Bearer,
         sess_write(),
     )
@@ -37,7 +37,8 @@ pub(super) fn register(r: Routes) -> Routes {
         // Multipart spawn with file uploads: the route enforces the configured
         // total cap itself, which must stay strictly below this ceiling so an
         // over-cap upload yields its 413 rather than a body-limit error.
-        post(routes::spawn::spawn_session).layer(DefaultBodyLimit::max(body_limit())),
+        post(routes::spawn::spawn_session::<crate::state::AppState>)
+            .layer(DefaultBodyLimit::max(body_limit())),
         Authn::Bearer,
         // In-handler: the machine's owner, an admin, or a `spawn` share grantee.
         ScopeAz(auth::Scope::Dispatch),
@@ -48,7 +49,8 @@ pub(super) fn register(r: Routes) -> Routes {
         &[Method::POST],
         "/sessions/{id}/files",
         "Attach files to a live session mid-conversation.",
-        post(routes::spawn::stage_session_files).layer(DefaultBodyLimit::max(body_limit())),
+        post(routes::spawn::stage_session_files::<crate::state::AppState>)
+            .layer(DefaultBodyLimit::max(body_limit())),
         Authn::Bearer,
         sess_write(),
     )

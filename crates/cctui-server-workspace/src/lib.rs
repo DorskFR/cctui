@@ -7,15 +7,12 @@ mod accounts_context;
 mod api_routes;
 mod auth;
 mod authz;
-mod auto_archive;
-mod auto_followup;
 use cctui_server_accounts::auto_redeem;
-mod auto_resume;
-mod bandwidth_watch;
-mod brief;
+use cctui_server_sessions::{auto_archive, auto_followup, auto_resume, bandwidth_watch, brief};
 mod bus;
-mod cache_bust;
+use cctui_server_sessions::cache_bust;
 mod config;
+#[cfg(test)]
 mod cost;
 mod crypto;
 mod db;
@@ -30,15 +27,8 @@ mod events;
 mod extras_context;
 #[cfg(test)]
 mod extras_tests;
-mod followup;
-mod followup_op;
-mod guard_step;
-mod hooks;
-use cctui_server_kernel::http_cache;
-mod inbox;
-mod keepalive;
-mod live_sessions;
 use cctui_server_dispatch::{machine_liveness, machine_resources};
+use cctui_server_sessions::{followup, followup_op, guard_step, inbox, keepalive};
 mod metrics;
 mod normalize;
 use cctui_server_notify::notify;
@@ -47,31 +37,30 @@ mod notify_context;
 mod notify_tests;
 mod openapi;
 mod outbound;
-mod outbox;
-mod outcome;
+use cctui_server_sessions::outcome;
+#[cfg(test)]
+use cctui_server_sessions::{
+    hooks, outbox, presets, scheduled_messages, sealed_env, session_emoji,
+};
 mod pace;
-mod presets;
-mod redteam_runs;
 mod registry;
 mod routes;
-mod scheduled_messages;
-mod scheduled_spawns;
-mod sealed_env;
-mod session_emoji;
-mod session_viewers;
+use cctui_server_sessions::session_viewers;
+mod sessions_context;
+#[cfg(test)]
+mod sessions_tests;
 mod soft_limit;
-mod spawn_labels;
+use cctui_server_sessions::spawn_labels;
 mod state;
 mod store;
-mod transcript_md;
-mod turn_dedupe;
+use cctui_server_sessions::{transcript_md, turn_dedupe};
 mod update_check;
-mod uploads;
 use cctui_server_accounts::usage_history;
+use cctui_server_sessions::uploads;
 mod voice_context;
 use cctui_server_accounts::webauthn;
 use cctui_server_dispatch::webhook;
-mod ws;
+use cctui_server_sessions::ws;
 
 #[cfg(test)]
 mod storage_admin_tests;
@@ -98,8 +87,8 @@ use axum::http::Method;
 use axum::routing::{MethodRouter, any, get, post, put};
 use axum::{Extension, Router, middleware};
 use cctui_proto::features::{Feature, FeatureSet};
+use cctui_server_kernel::live_sessions_predicate;
 use config::Config;
-use live_sessions::live_sessions_predicate;
 use state::AppState;
 use store::sessions::SessionRowStatus;
 
@@ -557,9 +546,9 @@ impl OuterRoutes {
         const PATH: &str = "/api/v1/daemon/sessions/{id}/context";
         self.classified.push((None, PATH));
         self.classified.push((Some(Feature::Context), PATH));
-        let handler = get(routes::daemon::session_launch_context);
+        let handler = get(routes::daemon::session_launch_context::<crate::state::AppState>);
         let handler = if self.features.contains(Feature::Context) {
-            handler.post(routes::context_tool::context_tool)
+            handler.post(routes::context_tool::context_tool::<crate::state::AppState>)
         } else {
             handler
         };
@@ -585,7 +574,7 @@ fn outer_routes(features: FeatureSet) -> OuterRoutes {
         // handed a base URL can discover the surface, then authenticate.
         .route("/llms.txt", get(openapi::llms_txt))
         .route("/api/v1/openapi.json", get(openapi::openapi_json))
-        .route("/api/v1/ws", get(ws::tui_ws))
+        .route("/api/v1/ws", get(ws::tui_ws::<crate::state::AppState>))
         .feature(Feature::Voice, "/api/v1/ws/voice", get(voice_live::voice_ws::<AppState>))
         // Browser auth-cookie endpoints. Self-authenticating: `login`
         // validates the presented token and sets the `HttpOnly` cookie, `logout`
@@ -638,27 +627,39 @@ fn daemon_routes(r: OuterRoutes) -> OuterRoutes {
         // Daemon-facing endpoints. `auth` and `ws` carry their own auth
         // (machine-key Bearer) so they live outside the user-token-only
         // `api_router` group.
-        .route("/api/v1/daemon/auth", post(routes::daemon::auth))
-        .route("/api/v1/daemon/ws", get(routes::daemon::ws))
+        .route("/api/v1/daemon/auth", post(routes::daemon::auth::<crate::state::AppState>))
+        .route("/api/v1/daemon/ws", get(routes::daemon::ws::<crate::state::AppState>))
         // Launch-time gateway-env pull: the daemon resolves a
         // session's account env here on every worker (re)launch. Self-auths via
         // the machine-key Bearer, so it sits beside the other daemon endpoints.
-        .route("/api/v1/daemon/sessions/{id}/gateway-env", get(routes::daemon::session_gateway_env))
+        .route(
+            "/api/v1/daemon/sessions/{id}/gateway-env",
+            get(routes::daemon::session_gateway_env::<crate::state::AppState>),
+        )
         // Token-validity probe: the daemon's low-frequency sweep asks
         // whether the session token it launched a trusted worker with still
         // resolves (by sha256 hash — no token material on the wire). Same
         // machine-key self-auth as gateway-env.
-        .route("/api/v1/daemon/sessions/{id}/token-valid", get(routes::daemon::session_token_valid))
-        .route("/api/v1/daemon/sessions/{id}/limits", get(routes::session_limits::session_limits))
+        .route(
+            "/api/v1/daemon/sessions/{id}/token-valid",
+            get(routes::daemon::session_token_valid::<crate::state::AppState>),
+        )
+        .route(
+            "/api/v1/daemon/sessions/{id}/limits",
+            get(routes::session_limits::session_limits::<crate::state::AppState>),
+        )
         .route(
             "/api/v1/daemon/sessions/{id}/user-actions",
             post(routes::user_actions::daemon_add::<crate::state::AppState>),
         )
-        .route("/api/v1/daemon/sessions/{id}/outcome", post(outcome::daemon_declare))
+        .route(
+            "/api/v1/daemon/sessions/{id}/outcome",
+            post(outcome::daemon_declare::<crate::state::AppState>),
+        )
         .feature(
             Feature::Automation,
             "/api/v1/daemon/sessions/{id}/timer",
-            post(inbox::timer::daemon_timer),
+            post(inbox::timer::daemon_timer::<crate::state::AppState>),
         )
         .launch_context()
         .route(
@@ -668,7 +669,7 @@ fn daemon_routes(r: OuterRoutes) -> OuterRoutes {
         .feature(
             Feature::ChildSessions,
             "/api/v1/daemon/sessions/{id}/spawn-child",
-            post(routes::spawn_child::spawn_child),
+            post(routes::spawn_child::spawn_child::<crate::state::AppState>),
         )
         .feature(
             Feature::Rooms,
@@ -693,17 +694,17 @@ fn daemon_routes(r: OuterRoutes) -> OuterRoutes {
         .feature(
             Feature::ChildSessions,
             "/api/v1/daemon/sessions/{id}/message-child",
-            post(routes::spawn_child::message_child),
+            post(routes::spawn_child::message_child::<crate::state::AppState>),
         )
         .feature(
             Feature::ChildSessions,
             "/api/v1/daemon/sessions/{id}/archive-child",
-            post(routes::spawn_child::archive_child),
+            post(routes::spawn_child::archive_child::<crate::state::AppState>),
         )
         .feature(
             Feature::ChildSessions,
             "/api/v1/daemon/sessions/{id}/child-completion",
-            post(routes::spawn_child::child_completion),
+            post(routes::spawn_child::child_completion::<crate::state::AppState>),
         )
         // Agent-posted image upload: the daemon POSTs raw image bytes
         // it detected as a marker in an assistant message. Self-auths via the
@@ -717,7 +718,7 @@ fn daemon_routes(r: OuterRoutes) -> OuterRoutes {
         )
         .route(
             "/api/v1/daemon/sessions/{id}/images",
-            post(routes::images::upload_session_image)
+            post(routes::images::upload_session_image::<crate::state::AppState>)
                 .layer(DefaultBodyLimit::max(6 * 1024 * 1024)),
         )
         // Content-addressed blob upload: the daemon PUTs oversized
@@ -1358,6 +1359,9 @@ mod tests {
             );
             assert!(
                 tracing::enabled!(target: "cctui_server_notify::notify::dispatcher", tracing::Level::DEBUG)
+            );
+            assert!(
+                tracing::enabled!(target: "cctui_server_sessions::routes::daemon", tracing::Level::DEBUG)
             );
         });
     }

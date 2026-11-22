@@ -472,7 +472,7 @@ async fn resolve_target(
     }
 }
 
-pub type DispatchResult<T> = Result<T, (StatusCode, Json<ApiError>)>;
+pub use cctui_server_kernel::dispatch_types::{DispatchResult, Forwarded};
 
 /// A dispatch that passed every pre-flight check: the dispatcher it targets,
 /// the session identity it will run under, and the payload to forward (with the
@@ -1332,8 +1332,6 @@ pub async fn execute_dispatch(
     .await
     .map(shown_queued)
 }
-
-pub type Forwarded = (StatusCode, Json<DispatchResponse>);
 
 /// A dispatch step implemented outside this module, exported under `name`.
 fn step(name: &'static str) -> tracing::Span {

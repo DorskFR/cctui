@@ -605,3 +605,24 @@ pub fn follow_account_chain(rules: &[AccountRedirect], from: Uuid, family: &str)
     }
     (cur != from).then_some(cur)
 }
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionBinding {
+    pub acting: Option<Uuid>,
+    /// A `None` trust refuses that provider's mint and settings.
+    pub accounts: Vec<(Uuid, Option<Trust>)>,
+}
+
+/// Whether a launch runs under its own user's account or under one merely SHARED to them.
+///
+/// A grantee gets the credential and nothing else: the owner's `settings_json` and `env_json` are authored for the owner's own machines, and several of their keys are shell commands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Trust {
+    Owner,
+    Grantee,
+}
+
+#[must_use]
+pub fn needs_rebind(spawn_key: &str, session_id: &str) -> bool {
+    !spawn_key.is_empty() && !session_id.is_empty() && spawn_key != session_id
+}

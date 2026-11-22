@@ -519,17 +519,7 @@ pub async fn close_session(state: &impl ExtrasContext, session_id: &str) {
     }
 }
 
-#[must_use]
-pub const fn is_preview_frame(frame: &DaemonFrameUp) -> bool {
-    matches!(
-        frame,
-        DaemonFrameUp::PreviewOpen { .. }
-            | DaemonFrameUp::PreviewClose { .. }
-            | DaemonFrameUp::PreviewResponse { .. }
-            | DaemonFrameUp::PreviewChunk(_)
-            | DaemonFrameUp::PreviewError { .. }
-    )
-}
+pub use cctui_server_kernel::extras_types::is_preview_frame;
 
 #[cfg(test)]
 mod tests {

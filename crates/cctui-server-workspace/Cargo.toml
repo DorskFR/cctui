@@ -21,6 +21,7 @@ cctui-server-extras.workspace = true
 cctui-server-kernel.workspace = true
 cctui-server-notify.workspace = true
 cctui-server-search.workspace = true
+cctui-server-sessions.workspace = true
 cctui-server-voice.workspace = true
 cctui-proto = { workspace = true, features = ["sqlx"] }
 cctui-crypto.workspace = true
@@ -67,6 +68,7 @@ cctui-server-extras = { workspace = true, features = ["test-support"] }
 cctui-server-kernel = { workspace = true, features = ["test-support"] }
 cctui-server-blobs = { workspace = true, features = ["test-support"] }
 cctui-server-search = { workspace = true, features = ["test-support"] }
+cctui-server-sessions = { workspace = true, features = ["test-support"] }
 reqwest.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 tempfile.workspace = true
