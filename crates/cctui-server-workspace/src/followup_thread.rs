@@ -9,24 +9,18 @@ use cctui_proto::thread::{
     ThreadGeneration,
 };
 
-use crate::auth::AuthContext;
 use crate::error::AppError;
 use crate::routes::sessions::{
     ConversationOrder, ConversationQuery, client_events, renderable_rows,
 };
 use crate::state::AppState;
 
+pub use cctui_server_kernel::sessions_types::{Reader, parse_cursor};
+
 pub const DEFAULT_PAGE: i64 = 200;
 const MAX_PAGE: i64 = 10_000;
 const FIRST_TURN_SCAN: i64 = 20;
 const USER_PREFIX: &str = "▷ User:";
-
-/// The requested session itself is never checked: the route already did.
-#[derive(Clone, Copy)]
-pub enum Reader<'a> {
-    Caller(&'a AuthContext),
-    Owner(Option<uuid::Uuid>),
-}
 
 pub struct Member {
     pub session_id: String,
@@ -44,18 +38,6 @@ type MemberRow = (String, Option<String>, Option<String>, DateTime<Utc>, Option<
 const LINE_SQL: &str = "SELECT s.id, s.adapter_id, s.session_name, s.registered_at, s.metadata \
      FROM unnest($1::text[]) WITH ORDINALITY AS c(id, n) JOIN sessions s ON s.id = c.id \
      ORDER BY c.n";
-
-/// A `cursor` query value; blank is no cursor.
-pub fn parse_cursor(raw: Option<&str>) -> Result<Option<ThreadCursor>, AppError> {
-    raw.map(str::trim)
-        .filter(|c| !c.is_empty())
-        .map(|c| {
-            ThreadCursor::parse(c).ok_or_else(|| {
-                AppError::new(StatusCode::BAD_REQUEST, "cursor must be <generation>:<seq>")
-            })
-        })
-        .transpose()
-}
 
 async fn readable(reader: Reader<'_>, id: &str, pool: &PgPool) -> Result<bool, AppError> {
     match reader {

@@ -17,7 +17,7 @@ pub(super) fn register(r: Routes) -> Routes {
         &[GET],
         "/rooms",
         "List rooms, for the picker.",
-        get(routes::rooms::list_rooms),
+        get(routes::rooms::list_rooms::<crate::state::AppState>),
         Authn::Bearer,
         Authenticated,
     )
@@ -25,7 +25,8 @@ pub(super) fn register(r: Routes) -> Routes {
         &[Method::PATCH, Method::DELETE],
         "/rooms/{id}",
         "Rename/archive, or delete a room.",
-        axum::routing::patch(routes::rooms::update_room).delete(routes::rooms::delete_room),
+        axum::routing::patch(routes::rooms::update_room::<crate::state::AppState>)
+            .delete(routes::rooms::delete_room::<crate::state::AppState>),
         Authn::Bearer,
         Authenticated,
     )
@@ -33,8 +34,8 @@ pub(super) fn register(r: Routes) -> Routes {
         &[Method::PUT, Method::DELETE],
         "/sessions/{id}/room",
         "Put this session in a room (by id or name), or take it out of one.",
-        axum::routing::put(routes::rooms::set_session_room)
-            .delete(routes::rooms::clear_session_room),
+        axum::routing::put(routes::rooms::set_session_room::<crate::state::AppState>)
+            .delete(routes::rooms::clear_session_room::<crate::state::AppState>),
         Authn::Bearer,
         sess_write(),
     )

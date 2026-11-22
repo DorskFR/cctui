@@ -36,8 +36,10 @@ that you are blocked.
 - `crates/cctui-server-voice` — live voice socket, `/voice/*` routes and the
   speech client; reaches sessions through `VoiceContext`, depends only on the kernel.
 - `crates/cctui-server-extras` — Langfuse tracing, storage stats and lifecycle,
-  the plugin registry, archives, catalog, settings and host tokens; reaches the
-  host through `ExtrasContext`, depends only on the kernel.
+  plugins (registry, archives, catalog, settings, host tokens, store, proxy and
+  routes), skills, previews, WS presence, rooms and the cctuiverse federation
+  with peer messaging; reaches the host through `ExtrasContext` and its `hooks`
+  traits (sessions, blobs), depends only on the kernel.
 - `crates/cctui-daemon` — long-lived per-machine daemon that spawns/observes sessions.
 - `crates/cctui-admin`, `crates/cctui-proto` — share the workspace version.
 - `crates/cctui-tui` — the terminal client (`cctui`). Maintained; see

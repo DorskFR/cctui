@@ -12,7 +12,7 @@ its feature file, not by a separate binary.
   HTTP, lifecycle events, the session registry and pending commands, the
   token/session/spawn-capability stores, peer delivery and rate limits, the
   `core` schema stream, and the types other domains bind against
-  (`accounts_types`, `sessions_types`, `extras_types`, `dispatch_types`). It depends on no other server crate; domain
+  (`accounts_types`, `sessions_types`, `extras_types`, `dispatch_types`, `blobs_types`). It depends on no other server crate; domain
   crates reach the host through `KernelContext` and their own context traits.
 - `cctui-server-accounts`: identity, provider accounts and credentials, pools,
   usage, limit resets, passkeys and the provider gateway, with their HTTP
@@ -23,6 +23,11 @@ its feature file, not by a separate binary.
   limits, and the dispatcher/manifest targets, with their HTTP handlers. It
   depends only on the kernel and reaches the host through `DispatchCore` and
   the `hooks` traits (accounts, sessions, notify, presence).
+- `cctui-server-extras`: Langfuse tracing, storage stats, plugins and their
+  proxy, skills, previews, WS presence, rooms and the cctuiverse federation
+  with peer messaging, with their HTTP handlers. It depends only on the kernel
+  and reaches the host through `ExtrasContext` and the `hooks` traits
+  (sessions, blobs).
 - `cctui-server-core`: the shared host state (`CoreState`), the daemon
   transport, run lifecycle and the cross-domain contract tests. It does not
   depend on the workspace and compiles and tests on its own, without search,

@@ -300,12 +300,7 @@ pub fn key_for(message_key: Option<&str>) -> String {
         .map_or_else(|| format!("auto:{}", Uuid::new_v4()), |k| format!("auto:{k}"))
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Followed {
-    pub followup_id: Uuid,
-    pub command_id: Uuid,
-    pub to: Option<String>,
-}
+pub use cctui_server_kernel::sessions_types::Followed;
 
 /// `None` = send plainly, also when the follow-up could not start, so the
 /// message is never lost to it.

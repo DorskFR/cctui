@@ -22,7 +22,7 @@ pub(super) fn register(r: Routes) -> Routes {
         &[GET],
         "/skills/index",
         "List available skills.",
-        get(routes::skills::index),
+        get(crate::skills::index),
         Authn::Bearer,
         Authenticated,
     )
@@ -30,8 +30,8 @@ pub(super) fn register(r: Routes) -> Routes {
         &[Method::PUT, GET],
         "/skills/{name}",
         "Upload or fetch a skill bundle by name.",
-        put(routes::skills::put)
-            .get(routes::skills::get)
+        put(crate::skills::put)
+            .get(crate::skills::get)
             .layer(DefaultBodyLimit::max(50 * 1024 * 1024)),
         Authn::Bearer,
         Authenticated,

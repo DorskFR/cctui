@@ -12,28 +12,7 @@ use std::fmt::Write as _;
 use cctui_proto::thread::{ThreadConversationPage, ThreadCursor, ThreadEntry};
 use serde_json::Value;
 
-/// A transcript's identity line.
-#[derive(Debug, Clone, Default)]
-pub struct Header {
-    pub session_id: String,
-    pub name: Option<String>,
-    pub adapter: Option<String>,
-    pub machine: Option<String>,
-    pub state: &'static str,
-}
-
-/// A rendered page, with the cursors a caller needs to ask for the next one.
-#[derive(Debug, Clone, serde::Serialize)]
-pub struct Rendered {
-    pub text: String,
-    pub events: usize,
-    /// `seq` of the oldest event in the page; pass it as `before` to page back.
-    pub first_seq: Option<i64>,
-    /// `seq` of the newest event in the page; pass it as `after` for a delta.
-    pub last_seq: Option<i64>,
-    /// The byte budget cut the page short, so older events are missing.
-    pub truncated: bool,
-}
+pub use cctui_server_kernel::sessions_types::{Header, Rendered, RenderedThread};
 
 /// The prefix `normalize` stores a human turn under.
 const USER_PREFIX: &str = "▷ User:";
@@ -143,17 +122,6 @@ pub fn render(
         last_seq: blocks.last().map(|(s, _)| *s),
         truncated,
     }
-}
-
-/// A rendered page of a follow-up line.
-#[derive(Debug, Clone)]
-pub struct RenderedThread {
-    pub text: String,
-    pub events: usize,
-    /// Where to resume for older entries: the page's own cursor, or the oldest
-    /// entry kept when the budget cut the page short.
-    pub next_cursor: Option<ThreadCursor>,
-    pub truncated: bool,
 }
 
 fn thread_line(entry: &ThreadEntry, roles: &[String]) -> Option<String> {

@@ -1,7 +1,7 @@
 //! Full interactive workspace host, assembled above the shared execution core.
 pub use cctui_server_dispatch::execution_failures;
 pub mod schema;
-pub mod skills;
+pub use cctui_server_extras::skills;
 
 mod accounts_context;
 mod api_routes;
@@ -15,7 +15,6 @@ mod bandwidth_watch;
 mod brief;
 mod bus;
 mod cache_bust;
-mod cctuiverse;
 mod config;
 mod cost;
 mod crypto;
@@ -26,10 +25,11 @@ mod dispatch_liveness;
 #[cfg(test)]
 mod dispatch_tests;
 use cctui_server_dispatch::dispatchers;
-mod envelope_guard;
 mod error;
 mod events;
 mod extras_context;
+#[cfg(test)]
+mod extras_tests;
 mod followup;
 mod followup_op;
 mod guard_step;
@@ -47,23 +47,15 @@ mod outbound;
 mod outbox;
 mod outcome;
 mod pace;
-mod peer_policy;
-mod plugin_proxy;
-mod plugin_store;
-mod presence;
 mod presets;
-mod preview;
 mod redteam_runs;
 mod registry;
-mod rooms;
 mod routes;
 mod scheduled_messages;
 mod scheduled_spawns;
 mod sealed_env;
 mod session_emoji;
-mod session_plugins;
 mod session_viewers;
-mod skill_store;
 mod soft_limit;
 mod spawn_labels;
 mod state;
@@ -85,9 +77,11 @@ mod storage_admin_tests;
 mod image_blobs_search_tests;
 
 use cctui_server_blobs::{blob_move, blob_store, image_blobs};
+#[cfg(test)]
+use cctui_server_extras::plugin_settings;
 use cctui_server_extras::{
-    langfuse, plugin_archive, plugin_catalog, plugin_host_token, plugin_settings, plugins,
-    storage_stats,
+    cctuiverse, langfuse, plugin_archive, plugin_host_token, plugin_proxy, plugin_store, plugins,
+    presence, preview, skill_store, storage_stats,
 };
 use cctui_server_search as search_index;
 use cctui_server_voice as voice_live;
@@ -131,7 +125,7 @@ pub async fn run() -> anyhow::Result<()> {
     secrets.spawn_reloader();
     record_boot_events(&state, &migrations);
     if Task::PluginInit.enabled(config.features) {
-        plugin_store::init(&state.pool, &state.plugins).await;
+        plugin_store::init(&state.pool, &state.plugins, &state).await;
         plugin_host_token::reconcile_installed(&state.pool, &state.auth_config, &state.plugins)
             .await;
     }
@@ -499,7 +493,10 @@ fn build_app(state: &AppState, config: &Config, auth_config: &auth::AuthConfig) 
         // webui + dev Vite, extendable via CCTUI_ALLOWED_ORIGINS). A wildcard
         // origin is invalid once credentials are allowed.
         .layer(cors_layer(&config.allowed_origins))
-        .layer(middleware::from_fn_with_state(state.clone(), preview::handler::host_gate))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            preview::handler::host_gate::<crate::state::AppState>,
+        ))
         .layer(cctui_telemetry::http::trace_layer())
         .with_state(state.clone())
 }
@@ -670,22 +667,22 @@ fn daemon_routes(r: OuterRoutes) -> OuterRoutes {
         .feature(
             Feature::Rooms,
             "/api/v1/daemon/sessions/{id}/room",
-            post(routes::rooms::room_tool),
+            post(routes::rooms::room_tool::<crate::state::AppState>),
         )
         .feature(
             Feature::Rooms,
             "/api/v1/daemon/sessions/{id}/peers",
-            get(routes::peer::list_peers),
+            get(routes::peer::list_peers::<crate::state::AppState>),
         )
         .feature(
             Feature::Rooms,
             "/api/v1/daemon/sessions/{id}/message-peer",
-            post(routes::peer::message_peer),
+            post(routes::peer::message_peer::<crate::state::AppState>),
         )
         .feature(
             Feature::Rooms,
             "/api/v1/daemon/sessions/{id}/peer-conversation",
-            get(routes::peer::peer_conversation),
+            get(routes::peer::peer_conversation::<crate::state::AppState>),
         )
         .feature(
             Feature::ChildSessions,
@@ -764,7 +761,11 @@ fn infra_routes(r: OuterRoutes) -> OuterRoutes {
         .route("/api/v1/dispatch/{id}/env", get(dispatch_identity::env::<AppState>))
         .route("/api/v1/dispatch/{id}/hold", post(dispatch_identity::hold::<AppState>))
         // Public like the SPA assets: the webui `import()`s plugin modules.
-        .feature(Feature::Plugins, "/plugins/{id}/{*path}", get(routes::plugins::static_file))
+        .feature(
+            Feature::Plugins,
+            "/plugins/{id}/{*path}",
+            get(routes::plugins::static_file::<crate::state::AppState>),
+        )
         // OAuth passthrough gateway. Auths via the session-scoped
         // token in the request's own Authorization header — NOT the user-token
         // `api_router` middleware — so it lives on the outer app. Matches any
@@ -810,11 +811,23 @@ fn infra_routes(r: OuterRoutes) -> OuterRoutes {
 
 fn cctuiverse_routes() -> Router<AppState> {
     Router::new()
-        .route("/cctuiverse/v1/join", post(cctuiverse::wire::join))
-        .route("/cctuiverse/v1/links/{id}/messages", post(cctuiverse::wire::messages))
-        .route("/cctuiverse/v1/links/{id}/close", post(cctuiverse::wire::close))
-        .route("/cctuiverse/v1/links/{id}/history", post(cctuiverse::wire::history))
-        .route("/cctuiverse/v1/links/{id}/room", post(cctuiverse::wire::room))
+        .route("/cctuiverse/v1/join", post(cctuiverse::wire::join::<crate::state::AppState>))
+        .route(
+            "/cctuiverse/v1/links/{id}/messages",
+            post(cctuiverse::wire::messages::<crate::state::AppState>),
+        )
+        .route(
+            "/cctuiverse/v1/links/{id}/close",
+            post(cctuiverse::wire::close::<crate::state::AppState>),
+        )
+        .route(
+            "/cctuiverse/v1/links/{id}/history",
+            post(cctuiverse::wire::history::<crate::state::AppState>),
+        )
+        .route(
+            "/cctuiverse/v1/links/{id}/room",
+            post(cctuiverse::wire::room::<crate::state::AppState>),
+        )
         .layer(DefaultBodyLimit::max(64 * 1024))
 }
 
@@ -927,7 +940,7 @@ fn spawn_sweeps(state: &AppState) {
             let state = state.clone();
             move || {
                 let state = state.clone();
-                async move { plugin_store::sync_or_warn(&state.pool, &state.plugins).await }
+                async move { plugin_store::sync_or_warn(&state.pool, &state.plugins, &state).await }
             }
         });
     }

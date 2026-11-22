@@ -105,7 +105,7 @@ fn register_policies(r: Routes) -> Routes {
         &[Method::PATCH],
         "/sessions/{id}/plugins/{plugin_id}",
         "Set or clear a session's per-plugin data slot.",
-        patch(routes::session_plugins::set_session_plugin),
+        patch(routes::session_plugins::set_session_plugin::<crate::state::AppState>),
         Authn::Bearer,
         sess_write(),
     )

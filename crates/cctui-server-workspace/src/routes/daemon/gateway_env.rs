@@ -160,7 +160,7 @@ async fn recorded_hook_policy(
 
 #[tracing::instrument(target = "otel", skip_all, fields(code.function.name = "sync_plugins"))]
 async fn sync_plugins(state: &AppState) {
-    crate::plugin_store::sync_or_warn(&state.pool, &state.plugins).await;
+    crate::plugin_store::sync_or_warn(&state.pool, &state.plugins, state).await;
 }
 
 /// Re-mint every bound family (one account each, disjoint env keys) and serve
@@ -753,7 +753,7 @@ mod tests {
         let user_settings = user_settings_of(state, user_id).await;
         let whip_phrases =
             user_settings.as_ref().and_then(crate::routes::settings::whip_stop_phrases_of);
-        crate::plugin_store::sync_or_warn(&state.pool, &state.plugins).await;
+        crate::plugin_store::sync_or_warn(&state.pool, &state.plugins, state).await;
         let plugins = session_plugins(&state.plugins, user_settings.as_ref());
         let accounts = resolve_session_accounts(state, session_id).await;
         let mut env = std::collections::BTreeMap::new();

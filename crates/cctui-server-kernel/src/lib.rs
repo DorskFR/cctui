@@ -5,6 +5,7 @@
 pub mod accounts_types;
 pub mod auth;
 pub mod authz;
+pub mod blobs_types;
 pub mod bus;
 pub mod client;
 pub mod client_addr;

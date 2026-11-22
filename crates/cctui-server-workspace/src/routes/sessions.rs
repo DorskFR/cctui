@@ -15,7 +15,9 @@ use cctui_proto::classifier::{Bucket, ClassifyInput, PrStatus, PrStatusCache, cl
 use cctui_proto::features::Feature;
 use cctui_proto::models::{Attention, Liveness, Session, SessionEndReason, SessionStatus};
 use cctui_server_core::hook_policy;
-pub use cctui_server_kernel::sessions_types::{ArchiveOutcome, bucket_from_signals};
+pub use cctui_server_kernel::sessions_types::{
+    ArchiveOutcome, ConversationOrder, ConversationQuery, RenderableRow, bucket_from_signals,
+};
 
 use crate::auth::AuthContext;
 use crate::error::AppError;
@@ -2498,20 +2500,6 @@ pub async fn get_session(
     Ok(Json(item))
 }
 
-#[derive(Debug, Default, serde::Deserialize)]
-pub struct ConversationQuery {
-    /// Newest `limit` events only; absent = full transcript.
-    pub limit: Option<i64>,
-    /// Exclusive upper `seq` bound for paging back.
-    pub before: Option<i64>,
-    /// Exclusive lower `seq` bound for delta catch-up.
-    pub after: Option<i64>,
-    /// Which end of the range `limit` takes: `desc` (default) keeps the newest
-    /// events, `asc` the oldest. The response is always oldest-first.
-    #[serde(default)]
-    pub order: ConversationOrder,
-}
-
 /// `inline_images=true`: tool result images come back as base64 `source`s
 /// instead of blob references, up to
 /// [`crate::image_blobs::INLINE_IMAGES_MAX_BYTES`] per page.
@@ -2519,14 +2507,6 @@ pub struct ConversationQuery {
 pub struct InlineImagesQuery {
     #[serde(default)]
     pub inline_images: bool,
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum ConversationOrder {
-    #[default]
-    Desc,
-    Asc,
 }
 
 const fn conversation_sql(order: ConversationOrder) -> &'static str {
@@ -2549,10 +2529,6 @@ const fn conversation_sql(order: ConversationOrder) -> &'static str {
 /// `(id, event_type, payload, created_at, turn_id)` — the column list of
 /// [`conversation_sql`], in order.
 type ConversationRow = (i64, String, serde_json::Value, DateTime<Utc>, Option<uuid::Uuid>);
-
-/// `(id, client payload, created_at, turn_id)`: a stored row the client can
-/// render, in the query's own order (newest-first for `Desc`).
-pub type RenderableRow = (i64, serde_json::Value, DateTime<Utc>, Option<uuid::Uuid>);
 
 /// Reads rows until `limit` of them survive [`crate::normalize::for_client`],
 /// or the table is exhausted in the paging direction. Some stored rows carry

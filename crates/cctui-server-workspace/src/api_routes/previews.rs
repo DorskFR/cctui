@@ -10,7 +10,7 @@ pub fn register(r: Routes) -> Routes {
         &[Method::GET],
         "/sessions/{id}/previews",
         "Dev-server previews open on a session (owner only).",
-        get(routes::list),
+        get(routes::list::<crate::state::AppState>),
         Authn::Bearer,
         sess_read(),
     )
@@ -18,7 +18,7 @@ pub fn register(r: Routes) -> Routes {
         &[Method::POST],
         "/sessions/{id}/previews/{pid}/ticket",
         "Mint a 60 s single-use ticket that signs the owner into a preview host.",
-        post(routes::ticket),
+        post(routes::ticket::<crate::state::AppState>),
         Authn::Bearer,
         sess_read(),
     )
