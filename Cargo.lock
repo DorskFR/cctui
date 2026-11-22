@@ -724,7 +724,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-admin"
-version = "0.32.0-beta.21"
+version = "0.32.0-beta.22"
 dependencies = [
  "anyhow",
  "cctui-proto",
@@ -740,7 +740,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-aws"
-version = "0.32.0-beta.21"
+version = "0.32.0-beta.22"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -760,7 +760,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-client"
-version = "0.32.0-beta.21"
+version = "0.32.0-beta.22"
 dependencies = [
  "async-trait",
  "cctui-proto",
@@ -779,7 +779,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-clientcore"
-version = "0.32.0-beta.21"
+version = "0.32.0-beta.22"
 dependencies = [
  "cctui-proto",
  "serde",
@@ -789,7 +789,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-crypto"
-version = "0.32.0-beta.21"
+version = "0.32.0-beta.22"
 dependencies = [
  "anyhow",
  "cctui-secrets",
@@ -805,7 +805,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-daemon"
-version = "0.32.0-beta.21"
+version = "0.32.0-beta.22"
 dependencies = [
  "agent-client-protocol",
  "anyhow",
@@ -840,7 +840,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-dispatcher-apple"
-version = "0.32.0-beta.21"
+version = "0.32.0-beta.22"
 dependencies = [
  "anyhow",
  "cctui-dispatcher-core",
@@ -861,7 +861,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-dispatcher-core"
-version = "0.32.0-beta.21"
+version = "0.32.0-beta.22"
 dependencies = [
  "anyhow",
  "cctui-proto",
@@ -887,7 +887,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-dispatcher-docker"
-version = "0.32.0-beta.21"
+version = "0.32.0-beta.22"
 dependencies = [
  "anyhow",
  "bollard",
@@ -908,7 +908,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-dispatcher-kube"
-version = "0.32.0-beta.21"
+version = "0.32.0-beta.22"
 dependencies = [
  "anyhow",
  "cctui-dispatcher-core",
@@ -931,7 +931,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-guard"
-version = "0.32.0-beta.21"
+version = "0.32.0-beta.22"
 dependencies = [
  "anyhow",
  "axum",
@@ -953,7 +953,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-guard-proxy"
-version = "0.32.0-beta.21"
+version = "0.32.0-beta.22"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -982,7 +982,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-orchestrator"
-version = "0.32.0-beta.21"
+version = "0.32.0-beta.22"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1005,7 +1005,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-proto"
-version = "0.32.0-beta.21"
+version = "0.32.0-beta.22"
 dependencies = [
  "base64 0.23.1",
  "chrono",
@@ -1026,7 +1026,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-query"
-version = "0.32.0-beta.21"
+version = "0.32.0-beta.22"
 dependencies = [
  "cctui-proto",
  "serde",
@@ -1034,7 +1034,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-redteam"
-version = "0.32.0-beta.21"
+version = "0.32.0-beta.22"
 dependencies = [
  "anyhow",
  "base64 0.23.1",
@@ -1049,7 +1049,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-secrets"
-version = "0.32.0-beta.21"
+version = "0.32.0-beta.22"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1068,172 +1068,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-server"
-version = "0.32.0-beta.21"
-dependencies = [
- "anyhow",
- "cctui-server-workspace",
- "reqwest",
- "rustls",
- "serde_json",
- "tokio",
-]
-
-[[package]]
-name = "cctui-server-blobs"
-version = "0.32.0-beta.21"
-dependencies = [
- "anyhow",
- "axum",
- "base64 0.23.1",
- "bytes",
- "cctui-aws",
- "cctui-proto",
- "cctui-server-kernel",
- "futures-util",
- "hex",
- "image",
- "serde_json",
- "sha2 0.10.9",
- "sqlx",
- "tempfile",
- "tokio",
- "tracing",
- "uuid",
-]
-
-[[package]]
-name = "cctui-server-core"
-version = "0.32.0-beta.21"
-dependencies = [
- "async-trait",
- "axum",
- "base64 0.23.1",
- "cctui-crypto",
- "cctui-proto",
- "cctui-server-kernel",
- "cctui-telemetry",
- "chrono",
- "dashmap",
- "futures-util",
- "hex",
- "hmac 0.12.1",
- "http",
- "regex",
- "reqwest",
- "ring",
- "rustls",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "sqlx",
- "tempfile",
- "thiserror 2.0.21",
- "tokio",
- "toml",
- "tower",
- "tracing",
- "tracing-subscriber",
- "uuid",
-]
-
-[[package]]
-name = "cctui-server-extras"
-version = "0.32.0-beta.21"
-dependencies = [
- "anyhow",
- "axum",
- "base64 0.23.1",
- "cctui-proto",
- "cctui-secrets",
- "cctui-server-kernel",
- "chrono",
- "dashmap",
- "flate2",
- "hex",
- "http",
- "reqwest",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "sqlx",
- "tar",
- "tempfile",
- "thiserror 2.0.21",
- "tokio",
- "tracing",
- "uuid",
-]
-
-[[package]]
-name = "cctui-server-kernel"
-version = "0.32.0-beta.21"
-dependencies = [
- "anyhow",
- "async-trait",
- "axum",
- "cctui-crypto",
- "cctui-proto",
- "cctui-secrets",
- "cctui-telemetry",
- "chrono",
- "dashmap",
- "futures-util",
- "http",
- "reqwest",
- "ring",
- "rustls",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "sqlx",
- "tempfile",
- "thiserror 2.0.21",
- "tokio",
- "toml",
- "tower",
- "tracing",
- "uuid",
-]
-
-[[package]]
-name = "cctui-server-search"
-version = "0.32.0-beta.21"
-dependencies = [
- "cctui-server-kernel",
- "regex",
- "serde_json",
- "sqlx",
- "tokio",
- "tracing",
- "unicode-normalization",
- "uuid",
-]
-
-[[package]]
-name = "cctui-server-voice"
-version = "0.32.0-beta.21"
-dependencies = [
- "axum",
- "bytes",
- "cctui-proto",
- "cctui-server-kernel",
- "futures-util",
- "http",
- "reqwest",
- "serde",
- "serde_json",
- "thiserror 2.0.21",
- "tokio",
- "tokio-tungstenite 0.30.0",
- "tokio-util",
- "tower",
- "tracing",
- "uuid",
-]
-
-[[package]]
-name = "cctui-server-workspace"
-version = "0.32.0-beta.21"
+version = "0.32.0-beta.22"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1245,11 +1080,14 @@ dependencies = [
  "cctui-proto",
  "cctui-query",
  "cctui-secrets",
+ "cctui-server-accounts",
  "cctui-server-blobs",
- "cctui-server-core",
+ "cctui-server-dispatch",
  "cctui-server-extras",
  "cctui-server-kernel",
+ "cctui-server-notify",
  "cctui-server-search",
+ "cctui-server-sessions",
  "cctui-server-voice",
  "cctui-telemetry",
  "chrono",
@@ -1288,8 +1126,252 @@ dependencies = [
 ]
 
 [[package]]
+name = "cctui-server-accounts"
+version = "0.32.0-beta.22"
+dependencies = [
+ "axum",
+ "base64 0.23.1",
+ "cctui-crypto",
+ "cctui-proto",
+ "cctui-secrets",
+ "cctui-server-kernel",
+ "cctui-telemetry",
+ "chrono",
+ "dashmap",
+ "futures-util",
+ "hex",
+ "http",
+ "regex",
+ "reqwest",
+ "rustls",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "sqlx",
+ "tokio",
+ "toml",
+ "tracing",
+ "uuid",
+ "webauthn-rs",
+ "webauthn-rs-proto",
+]
+
+[[package]]
+name = "cctui-server-blobs"
+version = "0.32.0-beta.22"
+dependencies = [
+ "anyhow",
+ "axum",
+ "base64 0.23.1",
+ "bytes",
+ "cctui-aws",
+ "cctui-proto",
+ "cctui-server-kernel",
+ "futures-util",
+ "hex",
+ "image",
+ "serde_json",
+ "sha2 0.10.9",
+ "sqlx",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "cctui-server-dispatch"
+version = "0.32.0-beta.22"
+dependencies = [
+ "async-trait",
+ "axum",
+ "base64 0.23.1",
+ "cctui-crypto",
+ "cctui-proto",
+ "cctui-server-kernel",
+ "cctui-telemetry",
+ "chrono",
+ "dashmap",
+ "futures-util",
+ "hex",
+ "hmac 0.12.1",
+ "http",
+ "reqwest",
+ "ring",
+ "rustls",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "sqlx",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "cctui-server-extras"
+version = "0.32.0-beta.22"
+dependencies = [
+ "anyhow",
+ "axum",
+ "base64 0.23.1",
+ "bytes",
+ "cctui-proto",
+ "cctui-secrets",
+ "cctui-server-kernel",
+ "chrono",
+ "dashmap",
+ "flate2",
+ "futures-util",
+ "hex",
+ "hmac 0.12.1",
+ "http",
+ "reqwest",
+ "ring",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "sqlx",
+ "tar",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-tungstenite 0.30.0",
+ "tokio-util",
+ "tower",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "cctui-server-kernel"
+version = "0.32.0-beta.22"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "axum",
+ "cctui-crypto",
+ "cctui-proto",
+ "cctui-secrets",
+ "cctui-telemetry",
+ "chrono",
+ "dashmap",
+ "futures-util",
+ "http",
+ "regex",
+ "reqwest",
+ "ring",
+ "rustls",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "sqlx",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "toml",
+ "tower",
+ "tracing",
+ "unicode-normalization",
+ "uuid",
+]
+
+[[package]]
+name = "cctui-server-notify"
+version = "0.32.0-beta.22"
+dependencies = [
+ "async-trait",
+ "aws-lc-rs",
+ "axum",
+ "base64 0.23.1",
+ "cctui-proto",
+ "cctui-secrets",
+ "cctui-server-kernel",
+ "chrono",
+ "futures-util",
+ "http",
+ "lettre",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "sqlx",
+ "thiserror 2.0.21",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "cctui-server-search"
+version = "0.32.0-beta.22"
+dependencies = [
+ "cctui-server-kernel",
+ "serde_json",
+ "sqlx",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "cctui-server-sessions"
+version = "0.32.0-beta.22"
+dependencies = [
+ "anyhow",
+ "axum",
+ "base64 0.23.1",
+ "cctui-crypto",
+ "cctui-proto",
+ "cctui-query",
+ "cctui-server-kernel",
+ "cctui-telemetry",
+ "chrono",
+ "dashmap",
+ "futures-util",
+ "hex",
+ "hmac 0.12.1",
+ "http",
+ "http-body-util",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "sqlx",
+ "tempfile",
+ "tokio",
+ "tower",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "cctui-server-voice"
+version = "0.32.0-beta.22"
+dependencies = [
+ "axum",
+ "bytes",
+ "cctui-proto",
+ "cctui-server-kernel",
+ "futures-util",
+ "http",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-tungstenite 0.30.0",
+ "tokio-util",
+ "tower",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "cctui-supervisor"
-version = "0.32.0-beta.21"
+version = "0.32.0-beta.22"
 dependencies = [
  "anyhow",
  "caps",
@@ -1305,7 +1387,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-telemetry"
-version = "0.32.0-beta.21"
+version = "0.32.0-beta.22"
 dependencies = [
  "axum",
  "http",
@@ -1322,7 +1404,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-tui"
-version = "0.32.0-beta.21"
+version = "0.32.0-beta.22"
 dependencies = [
  "anyhow",
  "arboard",

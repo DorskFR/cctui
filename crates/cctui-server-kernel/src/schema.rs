@@ -4,6 +4,8 @@ use sqlx::{Connection, PgConnection, PgPool};
 use std::ops::{Deref, DerefMut};
 use std::time::{Duration, Instant};
 
+pub mod core;
+
 /// Last migration in the historical, shared migration stream.
 pub const LEGACY_BASELINE: i64 = 191;
 /// One immutable, numbered package migration. Version one is its baseline.

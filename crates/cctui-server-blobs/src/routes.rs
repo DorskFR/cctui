@@ -79,10 +79,7 @@ pub async fn put_blob<S: KernelContext>(
     }
 }
 
-pub struct StoredBlob {
-    pub hash: String,
-    pub created: bool,
-}
+pub use cctui_server_kernel::blobs_types::StoredBlob;
 
 /// Idempotent: an existing hash is left as is (`created: false`).
 pub async fn store_blob(

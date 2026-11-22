@@ -226,8 +226,8 @@ merges. The probe fails first and passes with the fix.
 1. **Invariant tests (T0)** — *done*. Each Phase-1 finding landed with its
    in-process unit test; the surviving invariants are covered by the existing
    suites in `cctui-guard-proxy`, `cctui-supervisor`, `cctui-proto`
-   (`worker_env`), `cctui-daemon` (`agenttool`, `harden`), `cctui-server-core`
-   (`auth`, dispatch identity) and `cctui-orchestrator` (`validate`).
+   (`worker_env`), `cctui-daemon` (`agenttool`, `harden`), `cctui-server-kernel`
+   (`auth`), `cctui-server-dispatch` (dispatch identity) and `cctui-orchestrator` (`validate`).
 2. **Probe harness and T1** — *done*. The probe contract (`redteam/probes/`),
    the oracle and sink (`crates/cctui-redteam`), and the docker job
    (`.github/workflows/redteam.yml`, driving `redteam/ci/run-t1.sh`). A ratchet

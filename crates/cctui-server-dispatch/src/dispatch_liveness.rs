@@ -1,0 +1,563 @@
+//! Ends dispatched sessions whose dispatcher reports their workload dead.
+//!
+//! For `OOMKilled`, crash loops, un-pullable images or stuck `Pending`, a worker killed
+//! by the kernel never reaches its exit trap, so nothing else reports it.
+//!
+//! A session whose workflow guard already reached its exit, or that its daemon
+//! reported completed, did its work: a failed Job after that is the
+//! container's exit code, and the session ends `completed`, as does a Job that
+//! finished. Without that evidence a failure is a crash.
+
+use std::sync::Arc;
+
+use cctui_proto::api::WorkerExit;
+use cctui_proto::models::SessionEndReason;
+use uuid::Uuid;
+
+use crate::dispatch::{DispatchContext, DispatchEvent, DispatchNotification};
+use crate::dispatchers::{Dispatcher, HandleStatus};
+use crate::store::dispatch_records;
+use cctui_server_kernel::events::{self, Actor, Event, kind};
+use cctui_server_kernel::store::sessions::SessionRowStatus;
+
+/// Execution operations plus the host's durable completion evidence.
+pub trait DispatchLivenessContext: DispatchContext {
+    fn execution_finished(&self, session: &str) -> impl std::future::Future<Output = bool> + Send;
+}
+
+const SWEEP_LIMIT: i64 = 100;
+const PROBE_CONCURRENCY: usize = 8;
+
+/// A finished Job is garbage-collected within an hour, so an older handle only
+/// ever answers `gone`.
+const HANDLE_MAX_AGE_HOURS: i64 = 48;
+
+/// Server guesses at a lost worker, overwritten by a reported cause.
+const TRANSPORT_ENDS: &[&str] = &["daemon_lost", "machine_offline"];
+
+const EXITED_AFTER_COMPLETION: &str = "completed (worker exited non-zero)";
+
+/// A workload completed after an explicit execution completion signal.
+pub const EXITED_CLEANLY: &str = "completed (worker exited)";
+
+/// A running session whose workload the dispatcher no longer knows.
+pub const WORKLOAD_GONE: &str = "dispatched workload no longer exists";
+
+/// Session advisory lock held by the one replica running a sweep.
+pub const SWEEP_LOCK_KEY: i64 = 0x6363_7475_695f_646c;
+
+/// The persisted end reason for a dispatcher's verbatim failure reason.
+///
+/// Whatever kept the worker from starting (image, container config,
+/// unschedulable pod) is a failed start, so its detail shows on the badge.
+#[must_use]
+pub fn end_reason_for(reason: &str) -> SessionEndReason {
+    let reason = reason.trim();
+    let head = reason.split(|c: char| c.is_whitespace() || c == '(').next().unwrap_or(reason);
+    match head {
+        "OOMKilled" => SessionEndReason::OomKilled,
+        "ImagePullBackOff"
+        | "ErrImagePull"
+        | "InvalidImageName"
+        | "CreateContainerError"
+        | "CreateContainerConfigError" => SessionEndReason::SpawnFailed,
+        _ if reason.starts_with("pod pending")
+            || reason.starts_with("preflight:")
+            || reason.starts_with("launch refused:") =>
+        {
+            SessionEndReason::SpawnFailed
+        }
+        _ => SessionEndReason::Crashed,
+    }
+}
+
+#[derive(sqlx::FromRow)]
+struct LiveHandle {
+    session_id: String,
+    user_id: Option<Uuid>,
+    machine_uuid: Option<Uuid>,
+    dispatcher_name: String,
+    handle: String,
+    created_at: chrono::DateTime<chrono::Utc>,
+    running: bool,
+}
+
+async fn live_handles(pool: &sqlx::PgPool) -> sqlx::Result<Vec<LiveHandle>> {
+    sqlx::query_as(
+        "SELECT dh.session_id, s.user_id, s.machine_uuid, dh.dispatcher_name, dh.handle, \
+                dh.created_at, COALESCE(s.status = ANY($2), false) AS running \
+         FROM dispatch_handles dh \
+         JOIN sessions s ON s.id = dh.session_id \
+         WHERE dh.created_at > now() - ($1 || ' hours')::interval \
+           AND dh.gone_at IS NULL \
+           AND (s.status = ANY($2) OR (s.status = 'ended' AND s.end_reason = ANY($3))) \
+         ORDER BY dh.created_at \
+         LIMIT $4",
+    )
+    .bind(HANDLE_MAX_AGE_HOURS.to_string())
+    .bind(SessionRowStatus::names(SessionRowStatus::RUNNING))
+    .bind(TRANSPORT_ENDS)
+    .bind(SWEEP_LIMIT)
+    .fetch_all(pool)
+    .await
+}
+
+/// The sweep on whichever replica takes the lock; the others skip this tick.
+pub async fn sweep(state: &impl DispatchLivenessContext) {
+    sweep_with_lock(state, SWEEP_LOCK_KEY).await;
+}
+
+/// [`sweep`] under advisory lock `key`, which every replica of one deployment
+/// shares.
+///
+/// The lock lives on a connection of its own, outside the pool, so holding it
+/// never takes a pooled connection from the sweep or anything else. Closing
+/// that connection, or dropping it mid-sweep, ends its session and the lock.
+pub async fn sweep_with_lock(state: &impl DispatchLivenessContext, key: i64) {
+    use sqlx::Connection;
+    let pool = state.dispatch_pool();
+    let mut lock = match sqlx::PgConnection::connect_with(&pool.connect_options()).await {
+        Ok(conn) => conn,
+        Err(err) => {
+            tracing::warn!(%err, "dispatch liveness lock connection failed");
+            return;
+        }
+    };
+    let locked = sqlx::query_scalar::<_, bool>("SELECT pg_try_advisory_lock($1)")
+        .bind(key)
+        .fetch_one(&mut lock)
+        .await;
+    match locked {
+        Ok(true) => sweep_unlocked(state).await,
+        Ok(false) => {}
+        Err(err) => tracing::warn!(%err, "dispatch liveness lock failed"),
+    }
+    if let Err(err) = lock.close().await {
+        tracing::debug!(%err, "dispatch liveness lock connection close failed");
+    }
+}
+
+/// [`sweep`] without the cross-replica lock.
+pub async fn sweep_unlocked(state: &impl DispatchLivenessContext) {
+    use futures_util::StreamExt;
+    if let Err(err) = crate::store::dispatch_policies::prune_uses(state.dispatch_pool()).await {
+        tracing::warn!(%err, "dispatch policy use prune failed");
+    }
+    if let Err(err) = dispatch_records::prune(state.dispatch_pool()).await {
+        tracing::warn!(%err, "dispatch record prune failed");
+    }
+    if let Err(err) = dispatch_records::mark_registered(state.dispatch_pool()).await {
+        tracing::warn!(%err, "dispatch record registration sweep failed");
+    }
+    match live_handles(state.dispatch_pool()).await {
+        Ok(rows) => {
+            futures_util::stream::iter(rows)
+                .for_each_concurrent(PROBE_CONCURRENCY, |row| probe(state, row))
+                .await;
+        }
+        Err(err) => tracing::warn!(%err, "dispatch liveness sweep query failed"),
+    }
+    match dispatch_records::unregistered_handles(
+        state.dispatch_pool(),
+        HANDLE_MAX_AGE_HOURS,
+        SWEEP_LIMIT,
+    )
+    .await
+    {
+        Ok(rows) => {
+            futures_util::stream::iter(rows)
+                .for_each_concurrent(PROBE_CONCURRENCY, |row| probe_unregistered(state, row))
+                .await;
+        }
+        Err(err) => tracing::warn!(%err, "unregistered dispatch sweep query failed"),
+    }
+}
+
+/// The dispatcher's view of the workload and how its container ended, kept
+/// on the dispatch record; `None` when the dispatcher cannot be asked.
+async fn status_of(
+    state: &impl DispatchLivenessContext,
+    user_id: Option<Uuid>,
+    dispatcher_name: &str,
+    session_id: &str,
+    handle: &str,
+) -> Option<(HandleStatus, Option<WorkerExit>)> {
+    let dispatcher = dispatcher_for(state, user_id, dispatcher_name).await?;
+    let (status, exit) = dispatcher.status_detail(handle).await.ok()?;
+    let exit = exit.map(|exit| dispatch_records::scrub_worker_exit(&exit));
+    if let Some(exit) = &exit
+        && let Err(err) =
+            dispatch_records::set_worker_exit(state.dispatch_pool(), session_id, exit).await
+    {
+        tracing::warn!(%err, %session_id, "worker exit not stored");
+    }
+    Some((status, exit))
+}
+
+/// The dispatcher a handle was forwarded to. An admin dispatch resolves the
+/// name across owners while its record keeps the caller's own user, so a name
+/// that user does not own resolves the way the dispatch did.
+async fn dispatcher_for(
+    state: &impl DispatchLivenessContext,
+    user_id: Option<Uuid>,
+    name: &str,
+) -> Option<Arc<dyn Dispatcher>> {
+    use crate::dispatch::resolve_dispatcher;
+    match resolve_dispatcher(state, user_id, name).await {
+        Ok(Some(d)) => Some(d),
+        _ if user_id.is_none() => None,
+        _ => resolve_dispatcher(state, None, name).await.ok().flatten(),
+    }
+}
+
+/// The kernel's OOM kill of the worker container, which a Job's failure
+/// condition or a clean entrypoint exit can hide.
+fn oom_kill(exit: Option<&WorkerExit>) -> Option<String> {
+    let reason = exit?.reason.as_deref()?.trim();
+    (end_reason_for(reason) == SessionEndReason::OomKilled).then(|| reason.to_owned())
+}
+
+/// Why the workload failed: the dispatcher's reason, unless it names no
+/// specific cause and the worker container was OOM killed.
+fn failure_text(reason: Option<String>, exit: Option<&WorkerExit>) -> String {
+    match reason {
+        Some(reason) if end_reason_for(&reason) != SessionEndReason::Crashed => reason,
+        reason => oom_kill(exit).or(reason).unwrap_or_else(|| "workload failed".to_owned()),
+    }
+}
+
+/// How the session ends for a failed workload: `completed` when it already
+/// finished its work, else the cause the failure names.
+async fn verdict(
+    state: &impl DispatchLivenessContext,
+    session_id: &str,
+    failure: String,
+) -> (SessionEndReason, String) {
+    if state.execution_finished(session_id).await {
+        (SessionEndReason::Completed, format!("{EXITED_AFTER_COMPLETION}: {failure}"))
+    } else {
+        (end_reason_for(&failure), failure)
+    }
+}
+
+async fn probe(state: &impl DispatchLivenessContext, row: LiveHandle) {
+    let Some((status, exit)) =
+        status_of(state, row.user_id, &row.dispatcher_name, &row.session_id, &row.handle).await
+    else {
+        return;
+    };
+    let (end_reason, detail) = match status {
+        HandleStatus::Failed(reason) => {
+            verdict(state, &row.session_id, failure_text(reason, exit.as_ref())).await
+        }
+        HandleStatus::Complete if state.execution_finished(&row.session_id).await => {
+            (SessionEndReason::Completed, EXITED_CLEANLY.to_owned())
+        }
+        HandleStatus::Complete => match oom_kill(exit.as_ref()) {
+            Some(oom) => (SessionEndReason::OomKilled, oom),
+            None => return,
+        },
+        HandleStatus::Gone => match gone(state, &row).await {
+            Some(end) => end,
+            None => return,
+        },
+        HandleStatus::Running | HandleStatus::Queued => return,
+    };
+    if !end_session(state.dispatch_pool(), &row.session_id, end_reason, &detail).await {
+        return;
+    }
+    if is_failure(end_reason) {
+        let label = dispatch_label(state.dispatch_pool(), &row.session_id).await;
+        let notice = Failure { session_id: &row.session_id, owner: row.user_id, label: &label };
+        state.notify(notice.notification(end_reason, &detail, true));
+    }
+    record_end(state, row, end_reason, &detail);
+}
+
+const fn is_failure(end_reason: SessionEndReason) -> bool {
+    matches!(
+        end_reason,
+        SessionEndReason::OomKilled | SessionEndReason::Crashed | SessionEndReason::SpawnFailed
+    )
+}
+
+/// The dispatch's name, else its session's, else the short session id.
+async fn dispatch_label(pool: &sqlx::PgPool, session_id: &str) -> String {
+    let name: Option<String> = sqlx::query_scalar(
+        "SELECT COALESCE((SELECT name FROM dispatch_records WHERE session_id = $1), \
+                         (SELECT session_name FROM sessions WHERE id = $1))",
+    )
+    .bind(session_id)
+    .fetch_one(pool)
+    .await
+    .unwrap_or_else(|err| {
+        tracing::debug!(%err, %session_id, "dispatch label lookup failed");
+        None
+    });
+    name.filter(|n| !n.trim().is_empty()).unwrap_or_else(|| session_id.chars().take(8).collect())
+}
+
+struct Failure<'a> {
+    session_id: &'a str,
+    owner: Option<Uuid>,
+    label: &'a str,
+}
+
+impl Failure<'_> {
+    fn notification(
+        &self,
+        end_reason: SessionEndReason,
+        detail: &str,
+        registered: bool,
+    ) -> DispatchNotification {
+        let verb = if end_reason == SessionEndReason::SpawnFailed { "failed" } else { "crashed" };
+        DispatchNotification {
+            event: DispatchEvent::Failed,
+            session_id: self.session_id.to_owned(),
+            title: format!("{} {verb}", self.label),
+            message: detail.to_owned(),
+            owner: self.owner,
+            registered,
+        }
+    }
+}
+
+/// A vanished workload never answers again: its handle leaves the sweep, and
+/// a session still running on it ends lost unless it already did its work.
+async fn gone(
+    state: &impl DispatchLivenessContext,
+    row: &LiveHandle,
+) -> Option<(SessionEndReason, String)> {
+    let marked = sqlx::query(
+        "UPDATE dispatch_handles SET gone_at = now() \
+         WHERE session_id = $1 AND created_at = $2 AND gone_at IS NULL",
+    )
+    .bind(&row.session_id)
+    .bind(row.created_at)
+    .execute(state.dispatch_pool())
+    .await;
+    if let Err(err) = marked {
+        tracing::warn!(%err, session_id = %row.session_id, "gone dispatch handle not marked");
+    }
+    if !row.running {
+        return None;
+    }
+    Some(if state.execution_finished(&row.session_id).await {
+        (SessionEndReason::Completed, EXITED_CLEANLY.to_owned())
+    } else {
+        (SessionEndReason::DaemonLost, WORKLOAD_GONE.to_owned())
+    })
+}
+
+fn record_end(
+    state: &impl DispatchLivenessContext,
+    row: LiveHandle,
+    end_reason: SessionEndReason,
+    detail: &str,
+) {
+    let severity = if end_reason == SessionEndReason::Completed {
+        tracing::info!(session_id = %row.session_id, handle = %row.handle, "{detail}");
+        events::Severity::Info
+    } else {
+        tracing::warn!(
+            session_id = %row.session_id,
+            dispatcher = %row.dispatcher_name,
+            handle = %row.handle,
+            end_reason = end_reason.as_str(),
+            "dispatched session ended: {detail}"
+        );
+        events::Severity::Warn
+    };
+    let mut event = Event::new(kind::SESSION_ENDED, Actor::Reaper)
+        .severity(severity)
+        .session(row.session_id)
+        .detail(serde_json::json!({
+            "end_reason": end_reason.as_str(),
+            "end_detail": detail,
+            "dispatcher": row.dispatcher_name,
+            "handle": row.handle,
+        }));
+    if let Some(machine) = row.machine_uuid {
+        event = event.machine(machine);
+    }
+    events::record(state.dispatch_pool(), state.dispatch_bus(), event);
+}
+
+/// A worker that died before registering has no session to end: its
+/// dispatch record carries the cause instead. One still in the dispatcher's
+/// queue is not yet late.
+async fn probe_unregistered(
+    state: &impl DispatchLivenessContext,
+    row: dispatch_records::UnregisteredHandle,
+) {
+    let dispatch_records::UnregisteredHandle { session_id, user_id, dispatcher_name, handle } = row;
+    let Some((status, exit)) =
+        status_of(state, user_id, &dispatcher_name, &session_id, &handle).await
+    else {
+        return;
+    };
+    let queued = match status {
+        HandleStatus::Failed(reason) => {
+            let detail = failure_text(reason, exit.as_ref());
+            let dead = Unregistered {
+                session_id: &session_id,
+                user_id,
+                dispatcher_name: &dispatcher_name,
+                handle: &handle,
+            };
+            mark_failed(state, &dead, &detail).await;
+            return;
+        }
+        HandleStatus::Queued => true,
+        HandleStatus::Running => false,
+        HandleStatus::Complete | HandleStatus::Gone => return,
+    };
+    if let Err(err) = dispatch_records::set_queued(state.dispatch_pool(), &session_id, queued).await
+    {
+        tracing::warn!(%err, %session_id, "dispatch record queue state not stored");
+    }
+}
+
+struct Unregistered<'a> {
+    session_id: &'a str,
+    user_id: Option<Uuid>,
+    dispatcher_name: &'a str,
+    handle: &'a str,
+}
+
+/// One notice per record: only the transition out of `forwarded` raises it.
+async fn mark_failed(state: &impl DispatchLivenessContext, dead: &Unregistered<'_>, detail: &str) {
+    let Unregistered { session_id, user_id, dispatcher_name, handle } = *dead;
+    let end_reason = end_reason_for(detail);
+    let marked = dispatch_records::mark_failed(
+        state.dispatch_pool(),
+        session_id,
+        end_reason.as_str(),
+        detail,
+    )
+    .await;
+    match marked {
+        Ok(true) => {
+            tracing::warn!(
+                %session_id,
+                dispatcher = %dispatcher_name,
+                %handle,
+                end_reason = end_reason.as_str(),
+                "dispatched worker died before registering: {detail}"
+            );
+            let label = dispatch_label(state.dispatch_pool(), session_id).await;
+            let notice = Failure { session_id, owner: user_id, label: &label };
+            state.notify(notice.notification(end_reason, detail, false));
+        }
+        Ok(false) => {}
+        Err(err) => tracing::warn!(%err, %session_id, "dispatch record update failed"),
+    }
+}
+
+async fn end_session(
+    pool: &sqlx::PgPool,
+    session_id: &str,
+    reason: SessionEndReason,
+    detail: &str,
+) -> bool {
+    match sqlx::query(
+        "UPDATE sessions \
+         SET status = 'ended', ended_at = COALESCE(ended_at, now()), end_reason = $2, \
+             end_detail = $3 \
+         WHERE id = $1 \
+           AND ((status = ANY($4) AND end_reason IS NULL) \
+                OR (status = 'ended' AND end_reason = ANY($5)))",
+    )
+    .bind(session_id)
+    .bind(reason.as_str())
+    .bind(detail)
+    .bind(SessionRowStatus::names(SessionRowStatus::RUNNING))
+    .bind(TRANSPORT_ENDS)
+    .execute(pool)
+    .await
+    {
+        Ok(done) => done.rows_affected() > 0,
+        Err(err) => {
+            tracing::warn!(%err, %session_id, "dispatched session end failed");
+            false
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    const BACKOFF: &str = "Job has reached the specified backoff limit";
+    #[test]
+    fn every_dispatcher_failure_reason_maps_to_an_end_reason() {
+        for (reason, want) in [
+            ("OOMKilled", SessionEndReason::OomKilled),
+            ("OOMKilled (memory limit 8Gi)", SessionEndReason::OomKilled),
+            ("CrashLoopBackOff", SessionEndReason::Crashed),
+            ("ImagePullBackOff", SessionEndReason::SpawnFailed),
+            ("ErrImagePull", SessionEndReason::SpawnFailed),
+            ("InvalidImageName", SessionEndReason::SpawnFailed),
+            ("CreateContainerConfigError", SessionEndReason::SpawnFailed),
+            ("pod pending for 300s (unschedulable?)", SessionEndReason::SpawnFailed),
+            (
+                "preflight: k8s API reachable (kubernetes.default.svc:443)",
+                SessionEndReason::SpawnFailed,
+            ),
+            ("launch refused: hook policy unavailable", SessionEndReason::SpawnFailed),
+            (
+                "launch refused: the daemon exited before registering the session",
+                SessionEndReason::SpawnFailed,
+            ),
+            ("pod failed", SessionEndReason::Crashed),
+            ("container restart-looping", SessionEndReason::Crashed),
+            ("container exited with code 137", SessionEndReason::Crashed),
+            ("Job has reached the specified backoff limit", SessionEndReason::Crashed),
+            ("workload failed", SessionEndReason::Crashed),
+            ("", SessionEndReason::Crashed),
+        ] {
+            assert_eq!(end_reason_for(reason), want, "{reason:?}");
+        }
+    }
+
+    #[test]
+    fn a_failure_notice_names_the_dispatch_and_its_target() {
+        let owner = Uuid::new_v4();
+        let failure = Failure { session_id: "s1", owner: Some(owner), label: "triage" };
+        let spawn = failure.notification(SessionEndReason::SpawnFailed, "ImagePullBackOff", false);
+        assert_eq!(spawn.title, "triage failed");
+        assert_eq!(spawn.message, "ImagePullBackOff");
+        assert_eq!((spawn.owner, spawn.registered), (Some(owner), false));
+        assert_eq!(spawn.event, DispatchEvent::Failed);
+        let crash = failure.notification(SessionEndReason::OomKilled, "OOMKilled", true);
+        assert_eq!(crash.title, "triage crashed");
+        assert!(crash.registered);
+        assert!(is_failure(SessionEndReason::Crashed));
+        assert!(!is_failure(SessionEndReason::Completed));
+        assert!(!is_failure(SessionEndReason::DaemonLost));
+    }
+
+    #[test]
+    fn a_refused_launch_keeps_its_detail() {
+        let reason = "launch refused: hook policy unavailable".to_owned();
+        assert_eq!(failure_text(Some(reason.clone()), None), reason);
+    }
+
+    #[test]
+    fn an_oom_killed_worker_names_the_cause_a_generic_failure_hides() {
+        let oom = WorkerExit {
+            exit_code: Some(137),
+            reason: Some("OOMKilled".into()),
+            ..Default::default()
+        };
+        assert_eq!(failure_text(Some(BACKOFF.into()), Some(&oom)), "OOMKilled");
+        assert_eq!(failure_text(None, Some(&oom)), "OOMKilled");
+        let limit = "OOMKilled (memory limit 8Gi)";
+        assert_eq!(failure_text(Some(limit.into()), Some(&oom)), limit);
+        assert_eq!(failure_text(Some("ImagePullBackOff".into()), Some(&oom)), "ImagePullBackOff");
+        let error =
+            WorkerExit { exit_code: Some(1), reason: Some("Error".into()), ..Default::default() };
+        assert_eq!(failure_text(Some(BACKOFF.into()), Some(&error)), BACKOFF);
+        assert_eq!(failure_text(Some(BACKOFF.into()), None), BACKOFF);
+        assert_eq!(failure_text(None, None), "workload failed");
+    }
+}

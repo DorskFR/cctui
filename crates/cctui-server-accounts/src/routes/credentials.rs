@@ -1,0 +1,96 @@
+use axum::extract::{Path, State};
+use axum::http::StatusCode;
+use axum::{Extension, Json};
+use chrono::{DateTime, Utc};
+use uuid::Uuid;
+
+use cctui_server_kernel::auth::AuthContext;
+use cctui_server_kernel::context::KernelContext;
+
+#[derive(Debug, serde::Serialize, sqlx::FromRow)]
+pub struct ApiKeyInfo {
+    pub id: Uuid,
+    pub name: String,
+    pub provider: String,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+pub struct CreateApiKey {
+    pub name: String,
+    pub provider: String,
+    pub key: String,
+}
+
+/// `GET /keys` — provider keys visible to the caller.
+///
+/// Owner-scoped: a non-admin
+/// sees only the keys they own; an admin sees all (including legacy NULL-owner
+/// rows). The `$1::uuid IS NULL` god-view binding collapses both cases.
+pub async fn list_api_keys<S: KernelContext>(
+    State(state): State<S>,
+    Extension(ctx): Extension<AuthContext>,
+) -> Result<Json<Vec<ApiKeyInfo>>, StatusCode> {
+    let rows: Vec<ApiKeyInfo> = sqlx::query_as(
+        "SELECT id, name, provider, created_at FROM api_keys \
+         WHERE $1::uuid IS NULL OR user_id = $1 ORDER BY name",
+    )
+    .bind(ctx.owner_filter())
+    .fetch_all(state.pool())
+    .await
+    .map_err(|e| {
+        tracing::error!("db error: {e}");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+    Ok(Json(rows))
+}
+
+/// `POST /keys` — store a provider key owned by the caller.
+pub async fn create_api_key<S: KernelContext>(
+    State(state): State<S>,
+    Extension(ctx): Extension<AuthContext>,
+    Json(req): Json<CreateApiKey>,
+) -> Result<(StatusCode, Json<ApiKeyInfo>), StatusCode> {
+    let vault_key = cctui_server_kernel::crypto::vault_key();
+    let encrypted = cctui_server_kernel::crypto::encrypt(&req.key, &vault_key);
+
+    let row: ApiKeyInfo = sqlx::query_as(
+        "INSERT INTO api_keys (name, provider, encrypted_key, user_id) VALUES ($1, $2, $3, $4) \
+         RETURNING id, name, provider, created_at",
+    )
+    .bind(&req.name)
+    .bind(&req.provider)
+    .bind(&encrypted)
+    .bind(ctx.user_id)
+    .fetch_one(state.pool())
+    .await
+    .map_err(|e| {
+        tracing::error!("db error: {e}");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+    Ok((StatusCode::CREATED, Json(row)))
+}
+
+/// `DELETE /keys/{id}` — owner-or-admin only. The god-view binding scopes the
+/// `DELETE` so a non-admin can never remove another user's (or a legacy
+/// admin-owned NULL) key; 0 rows affected → 404.
+pub async fn delete_api_key<S: KernelContext>(
+    State(state): State<S>,
+    Extension(ctx): Extension<AuthContext>,
+    Path(id): Path<Uuid>,
+) -> Result<StatusCode, StatusCode> {
+    let res =
+        sqlx::query("DELETE FROM api_keys WHERE id = $1 AND ($2::uuid IS NULL OR user_id = $2)")
+            .bind(id)
+            .bind(ctx.owner_filter())
+            .execute(state.pool())
+            .await
+            .map_err(|e| {
+                tracing::error!("db error: {e}");
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
+    if res.rows_affected() == 0 {
+        return Err(StatusCode::NOT_FOUND);
+    }
+    Ok(StatusCode::NO_CONTENT)
+}

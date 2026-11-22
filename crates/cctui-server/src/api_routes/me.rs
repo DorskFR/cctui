@@ -1,0 +1,137 @@
+//! Caller identity, settings, capabilities and enrolment routes.
+
+use super::GET;
+use crate::authz::Routes;
+use axum::http::Method;
+use axum::routing::{delete, get, post, put};
+use cctui_server_kernel::auth;
+use cctui_server_kernel::authz::Authz::{self, Authenticated, Scope as ScopeAz};
+use cctui_server_kernel::authz::{Action, Authn, IdFrom, ResourceKind};
+
+pub(super) fn register(r: Routes) -> Routes {
+    let r = register_hidden_owners(r);
+    r.add(
+        &[GET],
+        "/me",
+        "Get the current principal (user, scopes, machine).",
+        get(cctui_server_accounts::identity::me::me::<crate::state::AppState>),
+        Authn::Bearer,
+        Authenticated,
+    )
+    .add(
+        &[Method::DELETE],
+        "/me/key",
+        "Revoke the credential this request authenticated with.",
+        delete(cctui_server_accounts::identity::me::revoke_current_key::<crate::state::AppState>),
+        Authn::Bearer,
+        Authenticated,
+    )
+    .add(
+        &[GET],
+        "/settings",
+        "Get your user settings.",
+        get(cctui_server_sessions::routes::settings::get_settings::<crate::state::AppState>),
+        Authn::Bearer,
+        Authenticated,
+    )
+    .add(
+        &[Method::PUT],
+        "/settings",
+        "Replace your user settings.",
+        put(cctui_server_sessions::routes::settings::put_settings::<crate::state::AppState>),
+        Authn::Bearer,
+        Authenticated,
+    )
+    .add(
+        &[Method::POST],
+        "/settings/rescrub",
+        "Start a privacy scan over your stored events; returns its job.",
+        post(cctui_server_sessions::routes::privacy_scan::start::<crate::state::AppState>),
+        Authn::Bearer,
+        Authenticated,
+    )
+    .add(
+        &[GET],
+        "/settings/rescrub",
+        "Your most recent privacy scan job, running or finished.",
+        get(cctui_server_sessions::routes::privacy_scan::latest::<crate::state::AppState>),
+        Authn::Bearer,
+        Authenticated,
+    )
+    .add(
+        &[Method::POST],
+        "/settings/rescrub/cancel",
+        "Cancel your running privacy scan.",
+        post(cctui_server_sessions::routes::privacy_scan::cancel::<crate::state::AppState>),
+        Authn::Bearer,
+        Authenticated,
+    )
+    .add(
+        &[GET],
+        "/capabilities",
+        "List server capabilities/feature flags.",
+        get(cctui_server_sessions::routes::capabilities::capabilities::<crate::state::AppState>),
+        Authn::Bearer,
+        Authenticated,
+    )
+    .add(
+        &[Method::POST],
+        "/enroll",
+        "Enroll this machine and mint its machine key.",
+        post(cctui_server_dispatch::targets::enrollment::enroll::<crate::state::AppState>),
+        Authn::Bearer,
+        ScopeAz(auth::Scope::Enroll),
+    )
+    .add(
+        &[GET],
+        "/machines/resources",
+        "The caller's daemon machines with their last host CPU/memory/disk snapshot.",
+        get(cctui_server_dispatch::machine_resources::list::<crate::state::AppState>),
+        Authn::Bearer,
+        Authenticated,
+    )
+    .add(
+        &[GET],
+        "/machines/{machine_id}/status",
+        "Machine connectivity/liveness snapshot (remote-enroll verification).",
+        get(cctui_server_dispatch::routes::enroll::machine_status::<crate::state::AppState>),
+        Authn::Bearer,
+        Authz::Resource(ResourceKind::Machine, Action::Read, IdFrom::Path("machine_id")),
+    )
+    .add(
+        &[Method::POST],
+        "/deenroll",
+        "Deenroll the current machine.",
+        post(cctui_server_dispatch::targets::enrollment::deenroll::<crate::state::AppState>),
+        Authn::Bearer,
+        // In-handler: requires a machine token (machine_id present).
+        Authenticated,
+    )
+}
+
+fn register_hidden_owners(r: Routes) -> Routes {
+    r.add(
+        &[GET],
+        "/me/hidden-owners",
+        "Your hidden users and machines: their sessions stay out of your lists (admin).",
+        get(cctui_server_sessions::routes::hidden_owners::list::<crate::state::AppState>),
+        Authn::Bearer,
+        ScopeAz(auth::Scope::Admin),
+    )
+    .add(
+        &[Method::PUT],
+        "/me/hidden-owners/{kind}/{target_id}",
+        "Hide a user's or machine's sessions from your own lists (admin).",
+        put(cctui_server_sessions::routes::hidden_owners::hide::<crate::state::AppState>),
+        Authn::Bearer,
+        ScopeAz(auth::Scope::Admin),
+    )
+    .add(
+        &[Method::DELETE],
+        "/me/hidden-owners/{kind}/{target_id}",
+        "Show a hidden user's or machine's sessions in your lists again (admin).",
+        delete(cctui_server_sessions::routes::hidden_owners::unhide::<crate::state::AppState>),
+        Authn::Bearer,
+        ScopeAz(auth::Scope::Admin),
+    )
+}

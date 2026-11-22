@@ -2,7 +2,7 @@
 //! reached by the backfill, which `CCTUI_SEARCH_BACKFILL=0` pauses in place.
 
 pub mod schema;
-pub mod text;
+pub use cctui_server_kernel::search_text as text;
 
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -29,12 +29,7 @@ const ERROR_BACKOFF: Duration = Duration::from_secs(30);
 /// far as the highest id seen this long ago.
 const COMMIT_LAG: Duration = Duration::from_secs(30);
 
-/// One event's chunks, ready to insert.
-pub struct Chunked {
-    pub event_id: i64,
-    pub session_id: String,
-    pub bodies: Vec<String>,
-}
+pub use cctui_server_kernel::search_types::Chunked;
 
 /// The chunks of one stored event, from the canonical shape the webui renders.
 /// Only user and assistant messages and thinking are indexed.
