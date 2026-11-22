@@ -8,11 +8,10 @@ pub mod account_providers;
 pub mod account_redirects;
 pub use cctui_server_kernel::store::acls;
 pub mod dispatch_records;
-pub mod spawn_capabilities;
-pub mod tokens;
+pub use cctui_server_kernel::store::{spawn_capabilities, tokens};
 
 pub use cctui_server_kernel::store::shares;
 
-pub mod sessions;
+pub use cctui_server_kernel::store::sessions;
 
 pub mod dispatch_policies;

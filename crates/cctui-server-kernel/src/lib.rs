@@ -7,18 +7,26 @@ pub mod authz;
 pub mod bus;
 pub mod client;
 pub mod client_addr;
+pub mod commands;
 pub mod config;
 pub mod context;
+pub mod cost;
 pub mod crypto;
 pub mod envelope_guard;
 pub mod error;
+pub mod events;
 pub mod gateway_trace;
 pub mod headers;
+pub mod http_cache;
 pub mod normalize;
 pub mod outbound;
+pub mod peer_limits;
+pub mod peer_session;
 pub mod preview_host;
+pub mod registry;
 pub mod resource_owners;
 pub mod schema;
+pub mod state_events;
 pub mod store;
 
 #[cfg(any(test, feature = "test-support"))]

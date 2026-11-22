@@ -6,9 +6,7 @@
 
 pub mod account_pick;
 pub mod account_resolve;
-pub use cctui_server_kernel::auth;
-pub mod commands;
-pub mod cost;
+pub use cctui_server_kernel::{auth, commands, cost};
 pub mod fireworks_billing;
 pub mod gateway;
 pub mod store;
@@ -19,7 +17,7 @@ pub use cctui_server_kernel::test_support;
 
 pub use cctui_server_kernel::bus;
 pub mod dispatchers;
-pub mod registry;
+pub use cctui_server_kernel::registry;
 
 pub use cctui_server_kernel::{client, outbound};
 
@@ -28,7 +26,7 @@ pub mod launch;
 
 pub mod launch_settings;
 
-pub mod events;
+pub use cctui_server_kernel::events;
 pub mod lifecycle;
 mod live_sessions;
 
@@ -82,5 +80,4 @@ pub mod child_exec;
 
 pub mod session_limits;
 
-pub use cctui_server_kernel::envelope_guard;
-pub mod peer_session;
+pub use cctui_server_kernel::{envelope_guard, peer_session};

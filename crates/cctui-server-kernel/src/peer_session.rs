@@ -139,7 +139,8 @@ impl Delivery {
 }
 
 pub async fn deliver(
-    state: &crate::state::CoreState,
+    pool: &sqlx::PgPool,
+    bus: &crate::bus::Bus,
     target_id: &str,
     target_state: &str,
     text: String,
@@ -150,8 +151,8 @@ pub async fn deliver(
         _ => {}
     }
     match crate::bus::dispatch_session(
-        &state.pool,
-        &state.bus,
+        pool,
+        bus,
         target_id,
         AdapterCommand::SendMessage { local_id: target_id.to_owned(), text },
     )

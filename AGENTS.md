@@ -17,7 +17,9 @@ that you are blocked.
   application state, workspace storage and full-host assembly.
 - `crates/cctui-server-core` — shared execution services and persistence.
 - `crates/cctui-server-kernel` — foundations every server crate shares (bus,
-  auth/authz, config, errors, schema runner); depends on no other server crate.
+  auth/authz, config, errors, schema runner, lifecycle events, session registry,
+  pending commands, shared stores, peer delivery and rate limits); depends on no
+  other server crate.
 - `crates/cctui-server-search` — transcript search index, backfill and its
   `workspace_search` schema stream; depends only on the kernel.
 - `crates/cctui-server-blobs` — content-addressed blob store, its HTTP routes,

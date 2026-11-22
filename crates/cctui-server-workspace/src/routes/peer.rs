@@ -7,13 +7,11 @@
 //! which resolves the TARGET's machine — so a peer on another machine or another
 //! replica is reached by the same call as one next door.
 
-use std::collections::VecDeque;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
-use dashmap::DashMap;
 use serde_json::{Value, json};
 
 use cctui_proto::api::PeerMessageRequest;
@@ -23,85 +21,14 @@ use crate::peer_policy::{self, Refusal, Relation, SessionNode};
 use crate::state::AppState;
 use crate::transcript_md;
 
-/// Per-sender ceilings. A peer message is a turn in somebody else's session:
-/// cheap to send, expensive to receive.
-pub const SEND_PER_MIN: usize = 10;
-const HISTORY_PER_MIN: usize = 30;
-const WINDOW: Duration = Duration::from_mins(1);
-
-/// A peer message becomes a prompt, so it is capped like one. A room broadcast
-/// is the same message to several targets, so it is capped and counted the same:
-/// one broadcast spends one send from the caller's window.
-pub const MAX_MESSAGE_BYTES: usize = 32 * 1024;
+pub use cctui_server_kernel::peer_limits::{
+    HISTORY_PER_MIN, Limiter, MAX_MESSAGE_BYTES, SEND_PER_MIN, limiter,
+};
 
 /// Default and maximum page of a history read.
 const DEFAULT_HISTORY_EVENTS: i64 = 200;
 const MAX_HISTORY_EVENTS: i64 = 1_000;
 const HISTORY_BUDGET_BYTES: usize = 64 * 1024;
-
-/// Sliding-window counter, one window per key. The second field counts admits
-/// so sweeps can be amortised over them.
-#[derive(Default)]
-pub struct Limiter(DashMap<String, VecDeque<Instant>>, std::sync::atomic::AtomicU64);
-
-/// Keys this map may hold before a sweep is forced. Device-login keys come from
-/// unauthenticated callers, so the key space is attacker-influenced and the map
-/// has to be bounded by something other than good behaviour.
-const MAX_KEYS: usize = 10_000;
-
-/// How many admits pass between opportunistic sweeps. There is no timer thread:
-/// the map only grows when it is used, so cleaning on use is enough.
-const SWEEP_EVERY: u64 = 256;
-
-impl Limiter {
-    /// Record a call and report whether it is within `max` per [`WINDOW`].
-    pub fn admit(&self, key: &str, max: usize, now: Instant) -> bool {
-        let admitted = {
-            let mut hits = self.0.entry(key.to_owned()).or_default();
-            while hits.front().is_some_and(|t| now.duration_since(*t) >= WINDOW) {
-                hits.pop_front();
-            }
-            if hits.len() >= max {
-                false
-            } else {
-                hits.push_back(now);
-                true
-            }
-        };
-        self.maybe_sweep(now);
-        admitted
-    }
-
-    /// Drop every key whose window has fully elapsed: an idle key carries no
-    /// information, so keeping it only leaks memory.
-    pub fn sweep(&self, now: Instant) {
-        self.0.retain(|_, hits| hits.back().is_some_and(|t| now.duration_since(*t) < WINDOW));
-    }
-
-    #[cfg(test)]
-    pub fn len(&self) -> usize {
-        self.0.len()
-    }
-
-    fn maybe_sweep(&self, now: Instant) {
-        let due =
-            self.1.fetch_add(1, std::sync::atomic::Ordering::Relaxed).is_multiple_of(SWEEP_EVERY);
-        if !due && self.0.len() <= MAX_KEYS {
-            return;
-        }
-        self.sweep(now);
-        // A flood inside one window can outrun the sweep; the counters are a
-        // throttle, not an audit, so dropping them beats unbounded growth.
-        if self.0.len() > MAX_KEYS {
-            self.0.clear();
-        }
-    }
-}
-
-pub fn limiter() -> &'static Limiter {
-    static LIMITER: std::sync::LazyLock<Limiter> = std::sync::LazyLock::new(Limiter::default);
-    &LIMITER
-}
 
 fn refuse(r: Refusal) -> AppError {
     AppError::new(r.status(), r.reason())
@@ -174,7 +101,14 @@ pub async fn deliver(
     target_state: &str,
     text: String,
 ) -> Delivery {
-    cctui_server_core::peer_session::deliver(&state.core, target_id, target_state, text).await
+    cctui_server_kernel::peer_session::deliver(
+        &state.pool,
+        &state.bus,
+        target_id,
+        target_state,
+        text,
+    )
+    .await
 }
 
 /// The caller's own session, owned by the machine key's user. Anything else is
@@ -746,32 +680,6 @@ mod tests {
     #[test]
     fn the_remote_relation_is_reported_as_remote() {
         assert_eq!(Relation::Remote.as_str(), "remote");
-    }
-
-    #[test]
-    fn the_window_admits_up_to_the_cap_then_refuses_until_it_slides() {
-        let limiter = Limiter::default();
-        let t0 = Instant::now();
-        for i in 0..SEND_PER_MIN {
-            assert!(limiter.admit("send:a", SEND_PER_MIN, t0), "call {i} must be admitted");
-        }
-        assert!(!limiter.admit("send:a", SEND_PER_MIN, t0), "the cap must hold");
-        assert!(limiter.admit("send:b", SEND_PER_MIN, t0), "the window is per sender");
-        assert!(
-            limiter.admit("send:a", SEND_PER_MIN, t0 + WINDOW + Duration::from_secs(1)),
-            "the window must slide"
-        );
-    }
-
-    #[test]
-    fn send_and_history_windows_are_counted_separately() {
-        let limiter = Limiter::default();
-        let t0 = Instant::now();
-        for _ in 0..SEND_PER_MIN {
-            assert!(limiter.admit("send:a", SEND_PER_MIN, t0));
-        }
-        assert!(!limiter.admit("send:a", SEND_PER_MIN, t0));
-        assert!(limiter.admit("history:a", HISTORY_PER_MIN, t0));
     }
 
     #[test]

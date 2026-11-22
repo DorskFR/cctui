@@ -1,20 +1,11 @@
 //! Lifecycle audit services shared with the automation host.
-use crate::state::AppState;
-pub use cctui_server_core::events::{
-    Actor, Event, EventRecord, Severity, is_system_kind, kind, prune,
-};
 #[cfg(test)]
-use cctui_server_core::events::{
+use crate::state::AppState;
+#[cfg(test)]
+use cctui_server_kernel::events::{
     DEFAULT_RETENTION_DAYS, RETENTION_KEY, render_summary, retention_days,
 };
-
-pub fn record(state: &AppState, event: Event) {
-    cctui_server_core::events::record(&state.pool, &state.bus, event);
-}
-
-pub async fn record_now(state: &AppState, event: Event) -> Result<EventRecord, sqlx::Error> {
-    cctui_server_core::events::record_now(&state.pool, &state.bus, event).await
-}
+pub use cctui_server_kernel::state_events::*;
 
 #[cfg(test)]
 use serde_json::{Value, json};

@@ -57,7 +57,7 @@ pub struct AppState {
 
 pub use cctui_server_core::gateway::usage::CachedUsage;
 
-pub use cctui_server_core::commands::{
+pub use cctui_server_kernel::commands::{
     CommandVerdict, FailedSpawnRow, resolve_verdict, track_command,
 };
 
@@ -97,7 +97,7 @@ impl AppState {
 }
 
 #[cfg(test)]
-pub use cctui_server_core::commands::wait_for_verdict;
+pub use cctui_server_kernel::commands::wait_for_verdict;
 
 impl std::ops::Deref for AppState {
     type Target = cctui_server_core::state::CoreState;
@@ -138,5 +138,20 @@ impl cctui_server_kernel::context::KernelContext for AppState {
     }
     fn http_client(&self) -> &reqwest::Client {
         &self.core.http_client
+    }
+    fn registry(&self) -> &crate::registry::SharedRegistry {
+        &self.core.registry
+    }
+    fn pending_commands(&self) -> &DashMap<Uuid, cctui_server_kernel::commands::PendingCommand> {
+        &self.core.pending_commands
+    }
+    fn command_waiters(&self) -> &cctui_server_kernel::commands::CommandWaiters {
+        &self.core.command_waiters
+    }
+    fn spawn_capabilities(&self) -> &DashMap<String, cctui_proto::api::SpawnCapability> {
+        &self.core.spawn_capabilities
+    }
+    fn session_usd_budgets(&self) -> &DashMap<String, f64> {
+        &self.core.session_usd_budgets
     }
 }

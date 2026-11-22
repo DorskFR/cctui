@@ -8,9 +8,11 @@ its feature file, not by a separate binary.
 ## Crates
 
 - `cctui-server-kernel`: the delivery bus, auth and route authorization,
-  configuration, errors, the schema runner, adapter normalization and outbound
-  HTTP. It depends on no other server crate; domain crates reach the host
-  through `KernelContext` and their own context traits.
+  configuration, errors, the schema runner, adapter normalization, outbound
+  HTTP, lifecycle events, the session registry and pending commands, the
+  token/session/spawn-capability stores, peer delivery and rate limits. It
+  depends on no other server crate; domain crates reach the host through
+  `KernelContext` and their own context traits.
 - `cctui-server-core`: identity, provider accounts, gateway, targets, launch,
   policy, run lifecycle and their persistence. It does not depend on the
   workspace and compiles and tests on its own, without search, image codecs,

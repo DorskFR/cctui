@@ -31,7 +31,7 @@ mod followup;
 mod followup_op;
 mod guard_step;
 mod hooks;
-mod http_cache;
+use cctui_server_kernel::http_cache;
 mod inbox;
 mod keepalive;
 mod live_sessions;

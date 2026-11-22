@@ -23,6 +23,9 @@ use tokio::sync::{broadcast, mpsc, oneshot};
 use tracing::Instrument;
 use uuid::Uuid;
 
+mod host;
+pub use host::{diagnose, dispatch, git_info, list_dirs, read_file, stage_files};
+
 /// Owns a parked reply while its caller is sending or waiting.
 struct PendingReply<'a, T> {
     map: &'a DashMap<Uuid, oneshot::Sender<T>>,

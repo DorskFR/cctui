@@ -585,7 +585,15 @@ pub async fn deliver_completion(
         ));
     }
     let turn = envelope(&child, &crate::envelope_guard::neutralize(body));
-    match deliver(state.child_state(), &parent.id, parent.state(), turn).await {
+    match deliver(
+        &state.child_state().pool,
+        &state.child_state().bus,
+        &parent.id,
+        parent.state(),
+        turn,
+    )
+    .await
+    {
         Delivery::Delivered => {}
         outcome => {
             return Err(deny(

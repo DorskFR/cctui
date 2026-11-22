@@ -5,6 +5,7 @@ use sha2::{Digest, Sha256};
 
 /// Serialize `value` with a content-hash `ETag`; a matching `If-None-Match`
 /// yields an empty 304 so unchanged polls cost ~0 bytes on the wire.
+///
 /// `Cache-Control: private, no-cache` makes browsers store the body but
 /// revalidate every time (the fetch layer then sends `If-None-Match` itself).
 pub fn json_with_etag<T: serde::Serialize>(req_headers: &HeaderMap, value: &T) -> Response {
