@@ -52,7 +52,7 @@
 			aria-pressed={pinned}
 			aria-label={pinned ? m.conversation_unpin_label() : m.conversation_pin_label()}
 			title={pinned ? m.conversation_unpin_title() : m.conversation_pin_title()}
-			style="--btn-on: var(--warn)"
+			style={pinned ? '--accent: var(--warn)' : undefined}
 			onclick={() => onpin?.(ln)}
 		>
 			<Icon name="pin" size={16} filled={pinned} />
@@ -99,7 +99,7 @@
 			glyphSize={16}
 			icon={speaking ? 'stop' : 'play'}
 			pressed={speaking}
-			style="--btn-on: var(--role-assistant)"
+			style={speaking ? '--accent: var(--role-assistant)' : undefined}
 			label={speaking ? m.voice_line_speaking() : m.voice_line_speak()}
 			title={speaking ? m.voice_line_speaking() : m.voice_line_speak()}
 			onclick={() => onspeak?.(ln)}
@@ -112,7 +112,7 @@
 			icon="bookmark"
 			filled={bookmarked}
 			pressed={bookmarked}
-			style="--btn-on: var(--role-assistant)"
+			style={bookmarked ? '--accent: var(--role-assistant)' : undefined}
 			label={m.bookmarks_line_label()}
 			title={bookmarked ? m.bookmarks_line_saved_title() : m.bookmarks_line_title()}
 			onclick={() => onbookmark?.(ln)}

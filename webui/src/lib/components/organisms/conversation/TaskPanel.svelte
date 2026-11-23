@@ -18,8 +18,6 @@
 		expanded = next;
 	};
 
-	const ROW_DISCLOSURE =
-		'flex:1;min-width:0;--disclosure-pad:0;--disclosure-panel-pad:0 0 var(--sp-1) calc(1em + var(--sp-2))';
 
 	const GLYPH: Record<TodoStatus, string> = { completed: '✔', in_progress: '▸', pending: '·' };
 	const label: Record<TodoStatus, () => string> = {
@@ -72,7 +70,8 @@
 								<Disclosure
 									size="compact"
 									chevron="end"
-									style={ROW_DISCLOSURE}
+									flush
+									style="flex: 1; min-width: 0"
 									open={expanded.has(key)}
 									onchange={(v) => setExpanded(key, v)}
 								>
@@ -80,7 +79,9 @@
 										<span class="row">{@render row(t)}</span>
 									{/snippet}
 									{#if expanded.has(key)}
-										<Text as="p" tone="faint" size="xs" wrap="anywhere">{t.description}</Text>
+										<div class="desc">
+											<Text as="p" tone="faint" size="xs" wrap="anywhere">{t.description}</Text>
+										</div>
 									{/if}
 								</Disclosure>
 							{:else}
@@ -169,6 +170,9 @@
 		gap: var(--sp-2);
 		min-width: 0;
 		text-align: start;
+	}
+	.desc {
+		padding: 0 0 var(--sp-1) calc(1em + var(--sp-2));
 	}
 	.status,
 	.blocked {

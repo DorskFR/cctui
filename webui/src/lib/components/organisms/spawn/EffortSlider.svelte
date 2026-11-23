@@ -30,7 +30,7 @@
 		step={1}
 		ticks
 		{marks}
-		style="--slider-accent: var(--c-blue)"
+		style="--accent: var(--c-blue)"
 		bind:value={() => idx, (v) => onset(levels[Number(v)] ?? '')}
 		aria-valuetext={levels[idx] || m.spawn_effort_default()}
 	/>

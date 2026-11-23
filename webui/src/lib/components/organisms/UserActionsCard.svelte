@@ -57,10 +57,7 @@
 		{/if}
 		<div class="ua-body">
 			{#if a.detail}
-				<Disclosure
-					chevron="end"
-					style="--disclosure-pad: 0; --disclosure-panel-pad: var(--sp-1) 0 0; --disclosure-fs: var(--fs-sm)"
-				>
+				<Disclosure chevron="end" flush>
 					{#snippet header()}{@render title(a)}{/snippet}
 					<div class="ua-detail">{@html renderMarkdown(a.detail ?? '')}</div>
 				</Disclosure>
@@ -102,9 +99,9 @@
 			</div>
 		{/if}
 		{#if groups.resolved.length > 0}
-			<Disclosure size="compact" chevron="start" style="--disclosure-pad: var(--sp-1) 0; --disclosure-panel-pad: 0">
+			<Disclosure size="compact" chevron="start" flush>
 				{#snippet header()}
-					<Text tone="faint" size="xs">{resolvedSummary}</Text>
+					<span class="ua-resolved-head"><Text tone="faint" size="xs">{resolvedSummary}</Text></span>
 				{/snippet}
 				<ul class="ua-list ua-resolved">
 					{#each groups.resolved as a (a.id)}
@@ -177,6 +174,7 @@
 		overflow-wrap: anywhere;
 	}
 	.ua-detail {
+		padding-top: var(--sp-1);
 		font-size: var(--fs-xs);
 		color: var(--text-muted);
 		text-align: start;
@@ -190,6 +188,9 @@
 	}
 	.ua-resolved {
 		padding-top: var(--sp-1);
+	}
+	.ua-resolved-head {
+		padding-block: var(--sp-1);
 	}
 	.ua-resolved-row {
 		align-items: baseline;

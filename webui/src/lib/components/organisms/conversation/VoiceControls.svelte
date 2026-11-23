@@ -42,7 +42,7 @@
 
 	/** A long press must reach the gesture, not pan the page or open a menu. */
 	const micStyle = $derived(
-		`touch-action: none; user-select: none; -webkit-touch-callout: none;${recording ? ' --btn-on: var(--danger);' : ''}`
+		`touch-action: none; user-select: none; -webkit-touch-callout: none;${recording ? ' --accent: var(--danger);' : ''}`
 	);
 
 	const timer = $derived.by(() => {

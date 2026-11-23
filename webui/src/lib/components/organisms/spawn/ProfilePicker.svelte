@@ -263,7 +263,6 @@
 
 <style>
 	.card {
-		--card-pad: var(--sp-2);
 		--tools-w: calc(24px + var(--sp-2) * 2 + 1px);
 		position: relative;
 		min-width: 0;
@@ -276,7 +275,7 @@
 		justify-content: space-between;
 		gap: var(--sp-2);
 		box-sizing: border-box;
-		padding: var(--card-pad);
+		padding: var(--sp-2);
 		border: var(--edge-width) solid var(--accent);
 		border-radius: var(--r-md);
 		background: color-mix(in srgb, var(--accent) 14%, var(--bg));
@@ -306,7 +305,7 @@
 		flex: none;
 		margin-inline-start: var(--tools-w);
 		color: color-mix(in srgb, var(--accent) 70%, var(--text-muted));
-		--icon-size: var(--control-icon-md);
+		font-size: var(--control-icon-md);
 		transition: rotate var(--dur-fast) var(--ease-out);
 	}
 	.chevron.open {
@@ -315,7 +314,7 @@
 	.tools {
 		position: absolute;
 		inset-block: 0;
-		inset-inline-end: calc(var(--card-pad) + var(--control-icon-md) + var(--sp-2));
+		inset-inline-end: calc(var(--sp-2) + var(--control-icon-md) + var(--sp-2));
 		width: var(--tools-w);
 		display: flex;
 		align-items: center;
