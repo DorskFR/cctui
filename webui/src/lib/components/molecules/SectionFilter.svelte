@@ -40,7 +40,6 @@
 		{items}
 		placement="bottom-end"
 		title={m.sessions_filter_sections_count({ count, total: options.length })}
-		style="min-width: var(--control-height); min-height: var(--control-height)"
 	>
 		{#snippet trigger()}
 			<Icon name="filter" size={18} />
