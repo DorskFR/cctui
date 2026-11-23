@@ -21,8 +21,7 @@ const render = (props: Props) => {
 	return bar;
 };
 
-const col = (bar: HTMLElement, name: 'label-w' | 'readout-w') =>
-	new RegExp(`--${name}: ([^;]+);`).exec(bar.getAttribute('style') ?? '')?.[1];
+const columns = (bar: HTMLElement) => /grid-template-columns: ([^;]+);/.exec(bar.getAttribute('style') ?? '')?.[1];
 
 describe('SoftLimit column widths', () => {
 	it('gives every window the same label and readout columns', () => {
@@ -34,8 +33,7 @@ describe('SoftLimit column widths', () => {
 			render({ usd: true, amountUsd: null })
 		];
 		for (const bar of bars) {
-			expect(col(bar, 'label-w')).toBe(USAGE_LABEL_W);
-			expect(col(bar, 'readout-w')).toBe(USAGE_READOUT_W);
+			expect(columns(bar)).toBe(`${USAGE_LABEL_W} 1fr ${USAGE_READOUT_W}`);
 		}
 	});
 
@@ -43,7 +41,7 @@ describe('SoftLimit column widths', () => {
 		const dense = render({ utilization: 42, dense: true });
 		expect(dense.classList.contains('stacked')).toBe(true);
 		expect(dense.querySelector('.label')?.textContent).toBe('Weekly');
-		expect(col(dense, 'readout-w')).toBe('auto');
+		expect(columns(dense)).toBeUndefined();
 
 		const wide = render({ utilization: 42, dense: false });
 		expect(wide.classList.contains('stacked')).toBe(false);

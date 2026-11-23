@@ -138,7 +138,7 @@
 					selected={draft.harness === h.id}
 					role="radio"
 					aria-checked={draft.harness === h.id}
-					style="--opt-accent: {familyAccent(h.family)}"
+					style="--accent: {familyAccent(h.family)}"
 					onclick={() => pickHarness(h.id)}
 				>
 					<BrandLogo adapter={h.id} size={18} />

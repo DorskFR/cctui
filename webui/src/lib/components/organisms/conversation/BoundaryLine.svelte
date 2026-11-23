@@ -13,7 +13,7 @@
 		<Badge
 			uppercase
 			color="var(--role-boundary)"
-			style="--badge-bg: color-mix(in srgb, var(--role-boundary) 12%, var(--bg-elevated))"
+			style="background: color-mix(in srgb, var(--role-boundary) 12%, var(--bg-elevated))"
 			>⟳ {ln.text}</Badge
 		>
 	</div>

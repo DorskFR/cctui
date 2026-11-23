@@ -31,12 +31,12 @@
 	const ariaLabel = $derived(`${open ? m.sessions_collapse() : m.sessions_expand()} ${title}`);
 
 	const chip =
-		'--badge-fs: var(--fs-sm); --badge-fw: var(--fw-semibold); --badge-min-size: 1.85em; position: relative;';
-	// `.active` fills from `--badge-tone` and ignores these, so the open state still wins.
+		'font-size: var(--fs-sm); font-weight: var(--fw-semibold); min-width: 1.85em; min-height: 1.85em; position: relative;';
+	// Inline colours would beat the `.active` fill, so the open state carries none.
 	const runningTint =
-		' --badge-border: color-mix(in srgb, var(--info) 68%, transparent);' +
-		' --badge-bg: color-mix(in srgb, var(--info) 24%, transparent);';
-	const badgeStyle = $derived(running > 0 ? chip + runningTint : chip);
+		' border-color: color-mix(in srgb, var(--info) 68%, transparent);' +
+		' background: color-mix(in srgb, var(--info) 24%, transparent);';
+	const badgeStyle = $derived(running > 0 && !open ? chip + runningTint : chip);
 </script>
 
 <span class="subagent-badge">

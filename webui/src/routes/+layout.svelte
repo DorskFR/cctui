@@ -254,7 +254,7 @@
 			<Login />
 		{/if}
 	{/key}
-	<div class="toaster-host" data-toast-pos={settings.toastPosition}><Toaster /></div>
+	<div class="toaster-host"><Toaster position={settings.toastPosition} /></div>
 </PersistQueryClientProvider>
 
 <style>

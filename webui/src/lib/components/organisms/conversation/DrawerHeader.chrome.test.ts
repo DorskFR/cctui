@@ -30,7 +30,8 @@ describe('drawer header control chrome', () => {
 		for (const label of ['<FontScalePicker', 'm.drawer_more_actions()']) {
 			expect(named(label)).toContain('style={CHIP_CHROME}');
 		}
-		expect(header).toContain('--pop-trigger-border: var(--border-strong)');
+		expect(header).toContain("const CHIP_CHROME = 'border-color: var(--border-strong); background: var(--surface)'");
+		expect(header).not.toContain('--pop-trigger-');
 	});
 
 	it('keeps the back chevron the one quiet affordance', () => {

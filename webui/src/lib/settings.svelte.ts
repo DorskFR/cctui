@@ -186,9 +186,8 @@ export function clampSpawnDockSide(v: unknown): SpawnDockSide {
 
 // Horizontal placement of the toast stack (the "Archived" confirmation and
 // friends). Centered by default, which is where the stack has always been;
-// `left`/`right` pin it to that edge with the same gutter the centered stack
-// keeps on a narrow viewport. Purely presentational, so it lives entirely in
-// the webui: the value drives the `data-toast-pos` attribute on the Toaster host.
+// `left`/`right` pin it to that edge. Purely presentational, so it lives
+// entirely in the webui: the value is the Toaster's `position`.
 export const DISPATCH_ARCHIVE_GRACE_DEFAULT = 180;
 export const DISPATCH_ARCHIVE_GRACE_MAX = 3600;
 
@@ -1309,8 +1308,7 @@ class Settings {
   }
 
   // Horizontal placement of the toast stack. Clamped on read so a blob written
-  // by another build can never feed an unknown value to the `data-toast-pos`
-  // attribute (which would leave the stack with no placement rule at all).
+  // by another build can never feed the Toaster an unknown `position`.
   setToastPosition(pos: ToastPosition) {
     this.state.toastPosition = pos;
     this.persist();

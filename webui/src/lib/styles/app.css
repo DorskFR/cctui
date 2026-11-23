@@ -70,22 +70,6 @@ code {
   background: var(--dot-hibernated);
 }
 
-/* ---------- toast ----------
- * The kit Toaster owns the stack; only the horizontal placement from the
- * `toastPosition` user setting is applied here, via the host's `data-toast-pos`.
- * `left`/`right` keep the same gutter the centered stack has on a narrow
- * viewport, so below ~32rem all three render identically. */
-[data-toast-pos='left'] [data-tsu='Toaster'] {
-  left: var(--sp-4);
-  right: auto;
-  transform: none;
-}
-[data-toast-pos='right'] [data-tsu='Toaster'] {
-  left: auto;
-  right: var(--sp-4);
-  transform: none;
-}
-
 /* ---------- misc ---------- */
 .placeholder {
   text-align: center;

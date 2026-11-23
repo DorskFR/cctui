@@ -58,7 +58,7 @@
 			block={menu}
 			tone={menu && selected.size > 0 ? 'accent' : 'none'}
 			count={menu ? undefined : selected.size}
-			style={menu ? MENU_ROW : '--pop-box: var(--control-height)'}
+			style={menu ? MENU_ROW : 'min-width: var(--control-height); min-height: var(--control-height)'}
 			onopen={() => panel?.focusSearch()}
 		>
 			{#snippet trigger()}

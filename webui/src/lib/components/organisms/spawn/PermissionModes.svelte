@@ -1,6 +1,6 @@
 <script lang="ts">
 	import type { PermissionMode } from '@bindings/PermissionMode';
-	import { AutoGrid, OptionButton, Text } from '@dorsk/tsumikit';
+	import { AutoGrid, OptionButton, Text, type Tone } from '@dorsk/tsumikit';
 	import { modesFor } from '#lib/components/organisms/spawn/options.ts';
 	import { m } from '#lib/paraglide/messages.js';
 
@@ -19,12 +19,7 @@
 
 	// Per-mode accent: ask = green (safe), auto = blue (sandboxed),
 	// yolo = red (no prompts, full access), whip = violet (yolo and never stalls).
-	const modeAccent: Record<string, string> = {
-		ask: 'var(--c-green)',
-		auto: 'var(--c-blue)',
-		yolo: 'var(--c-red)',
-		whip: 'var(--c-violet)'
-	};
+	const modeTone: Record<string, Tone> = { ask: 'ok', auto: 'info', yolo: 'danger', whip: 'accent' };
 </script>
 
 <div class="modes">
@@ -38,7 +33,8 @@
 				role="radio"
 				aria-checked={value === md.v}
 				data-mode={md.v}
-				style={`--opt-accent: ${modeAccent[md.v]}`}
+				tone={modeTone[md.v]}
+				style={md.v === 'whip' ? '--accent: var(--c-violet)' : undefined}
 				title={md.hint}
 				onclick={() => onpick(md.v)}
 			>
