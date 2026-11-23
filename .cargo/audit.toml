@@ -2,6 +2,5 @@
 # Lockfile-only: optional deps of sqlx drivers (mysql, sqlite) behind features
 # we never enable. CI re-checks they stay out of the build graph.
 ignore = [
-  "RUSTSEC-2023-0071", # rsa
   "RUSTSEC-2026-0459", # libsqlite3-sys
 ]
