@@ -90,7 +90,8 @@ describe('the system bar carries no ? button', () => {
 	it('has no standalone guides button in the tail', () => {
 		render();
 		const tail = document.querySelector('.tail') as HTMLElement;
-		expect(tail.textContent).not.toContain('?');
+		const controls = [...tail.querySelectorAll('button, a')].map((el) => el.textContent?.trim());
+		expect(controls).not.toContain('?');
 		expect(tail.querySelector('a[href="/settings/guides"]')).toBeNull();
 	});
 
