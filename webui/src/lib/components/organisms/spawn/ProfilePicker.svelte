@@ -60,6 +60,8 @@
 	let active = $state(-1);
 	let typed = '';
 	let typedAt = 0;
+	let placement = $state<'bottom-start' | 'top-start'>('bottom-start');
+	let sheetMax = $state<number | null>(null);
 
 	const selectedIndex = $derived(profiles.findIndex((p) => p.id === selectedId));
 	const current = $derived(selectedIndex >= 0 ? profiles[selectedIndex] : undefined);
@@ -139,7 +141,24 @@
 		} else onselect(profiles[hit].id);
 	}
 
+	// The kit places the panel against the viewport; keep it inside the form's
+	// scroll area so it never spills over the dialog or dock footer.
+	function fitToScrollArea() {
+		const card = cardEl;
+		if (!card || open) return;
+		const area = scrollArea(card);
+		const box = card.getBoundingClientRect();
+		const top = area ? area.getBoundingClientRect().top : 0;
+		const bottom = area ? area.getBoundingClientRect().bottom : innerHeight;
+		const below = bottom - box.bottom - 8;
+		const above = box.top - top - 8;
+		const down = below >= 256 || below >= above;
+		placement = down ? 'bottom-start' : 'top-start';
+		sheetMax = Math.max(Math.round(down ? below : above), 160);
+	}
+
 	function onkeydowncapture(e: KeyboardEvent) {
+		if (e.target === triggerEl() && !open) fitToScrollArea();
 		if (e.target !== triggerEl()) return;
 		const action = pickerKeyAction(e, {
 			open,
@@ -175,17 +194,32 @@
 				break;
 		}
 	}
+
+	function scrollArea(el: HTMLElement): HTMLElement | null {
+		for (let p = el.parentElement; p; p = p.parentElement) {
+			const y = getComputedStyle(p).overflowY;
+			if (y === 'auto' || y === 'scroll') return p;
+		}
+		return null;
+	}
 </script>
 
 <!-- svelte-ignore a11y_no_static_element_interactions -->
-<div class="card" bind:this={cardEl} {onkeydowncapture}>
+<div
+	class="card"
+	bind:this={cardEl}
+	data-placement={placement}
+	style:--sheet-max={sheetMax === null ? undefined : `${sheetMax}px`}
+	{onkeydowncapture}
+	onpointerdowncapture={fitToScrollArea}
+>
 	<Popover
 		bind:open
 		bare
 		hitArea="compact"
 		gap={0}
 		label={m.spawn_profiles_aria()}
-		placement="bottom-start"
+		{placement}
 		role="group"
 		haspopup="listbox"
 		style={TRIGGER_STYLE}
@@ -359,7 +393,7 @@
 		flex-direction: column;
 		gap: var(--sp-1);
 		box-sizing: border-box;
-		max-height: min(70vh, 28rem);
+		max-height: min(70vh, 28rem, var(--sheet-max, 28rem));
 		padding: var(--sp-1);
 		border: var(--edge-width) solid var(--accent);
 		border-top: none;

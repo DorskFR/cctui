@@ -73,9 +73,9 @@ afterEach(async () => {
 	document.body.replaceChildren();
 });
 
-function render(manageHref?: string) {
+function render(manageHref?: string, target: Element = document.body) {
 	component = mount(Host, {
-		target: document.body,
+		target,
 		props: {
 			profiles: [orchestrator, codexQuick],
 			accounts,
@@ -136,6 +136,36 @@ describe('ProfileList as a picker (the spawn form)', () => {
 		flushSync();
 		expect(onmanage).toHaveBeenCalledTimes(1);
 		expect(profileForm()).toBeNull();
+	});
+});
+
+describe('ProfileList picker placement', () => {
+	const rect = (top: number, bottom: number) =>
+		({ top, bottom, left: 0, right: 400, x: 0, y: top, width: 400, height: bottom - top }) as DOMRect;
+	function inArea(cardTop: number) {
+		const area = document.createElement('div');
+		area.style.overflowY = 'auto';
+		area.getBoundingClientRect = () => rect(100, 700);
+		document.body.append(area);
+		render('/settings/sessions#launch', area);
+		const card = document.querySelector<HTMLElement>('.card');
+		if (!card) throw new Error('picker card not found');
+		card.getBoundingClientRect = () => rect(cardTop, cardTop + 60);
+		trigger().dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+		flushSync();
+		return card;
+	}
+
+	it('opens upward, capped to the room above, when the card sits low in the scroll area', () => {
+		const card = inArea(600);
+		expect(card.dataset.placement).toBe('top-start');
+		expect(card.style.getPropertyValue('--sheet-max')).toBe('492px');
+	});
+
+	it('opens downward, capped to the room below, when there is space under the card', () => {
+		const card = inArea(150);
+		expect(card.dataset.placement).toBe('bottom-start');
+		expect(card.style.getPropertyValue('--sheet-max')).toBe('482px');
 	});
 });
 
