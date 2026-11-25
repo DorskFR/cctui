@@ -6,7 +6,7 @@
 	import CctuiverseInviteModal from '#lib/components/molecules/CctuiverseInviteModal.svelte';
 	import CctuiverseJoinModal from '#lib/components/molecules/CctuiverseJoinModal.svelte';
 	import { cctuiverseConfig, loadCctuiverseConfig } from '#lib/cctuiverseConfig.svelte.ts';
-	import { Button, Icon, Menu, Modal, type MenuItem } from '@dorsk/tsumikit';
+	import { Button, Icon, Menu, Modal, Text, type MenuItem } from '@dorsk/tsumikit';
 	import { nameOf } from '#lib/sessionName.ts';
 	import { m } from '#lib/paraglide/messages.js';
 	import { hasFeature } from '#lib/features.svelte.ts';
@@ -71,96 +71,113 @@
 		onfollowup ? { label: m.drawer_followup_label(), icon: 'arrow-right', onselect: onfollowup } : null
 	);
 
+	// Each group opens with a non-focusable heading row; an empty group drops out.
+	function group(label: string, items: MenuItem[]): MenuItem[] {
+		return items.length ? [{ id: `group:${label}`, label, control: groupHeading }, ...items] : [];
+	}
+
 	const overflowItems = $derived<MenuItem[]>([
-		...(collapsed && onsearch
-			? [
-					{
-						label: m.conversation_search_label(),
-						icon: 'search' as const,
-						attrs: { title: m.conversation_search_title() },
-						onselect: onsearch
-					}
-				]
-			: []),
-		...(compact && working && !archived
-			? [
-					{
-						label: m.drawer_interrupt_label(),
-						icon: 'stop' as const,
-						attrs: { title: m.drawer_interrupt_title() },
-						onselect: oninterrupt
-					}
-				]
-			: []),
-		{ label: m.drawer_rename(), icon: 'edit' as const, onselect: onrename },
-		...(archived ? [] : [{ label: m.drawer_archive(), icon: 'archive' as const, onselect: onarchive }]),
-		{
-			label: m.drawer_copy_link_label(),
-			icon: 'link' as const,
-			attrs: { title: m.drawer_copy_link_title() },
-			onselect: oncopylink
-		},
-		{
-			label: m.drawer_copy_markdown_label(),
-			icon: 'markdown' as const,
-			attrs: { title: m.drawer_copy_markdown_title() },
-			onselect: oncopymarkdown
-		},
-		{
-			label: m.drawer_export_label(),
-			icon: 'download' as const,
-			attrs: { title: m.drawer_export_title() },
-			onselect: onexport
-		},
-		...(followupItem && settings.preferFollowupOverFork ? [followupItem] : []),
-		...(forkAction
-			? [
-					{
-						label: m.drawer_fork_label(),
-						icon: 'fork' as const,
-						pressed: onforkselect ? forkSelectActive : undefined,
-						attrs: { title: onforkselect ? m.drawer_fork_select_title() : m.drawer_fork_title() },
-						onselect: forkAction
-					}
-				]
-			: []),
-		...(hasFeature('automation')
-			? [
-					{
-						label: m.drawer_keepalive_label(),
-						icon: 'recycle' as const,
-						pressed: !!session.keepalive,
-						onselect: () => (keepaliveOpen = true)
-					}
-				]
-			: []),
-		...(onsetroom && hasFeature('rooms')
-			? [
-					{
-						label: m.rooms_menu_action(),
-						icon: 'grid' as const,
-						attrs: { title: session.room_name ?? m.rooms_menu_label() },
-						onselect: () => (roomOpen = true)
-					}
-				]
-			: []),
-		...(cctuiverseConfig.enabled && !archived
-			? [
-					{
-						label: m.cctuiverse_menu_invite(),
-						icon: 'link' as const,
-						onselect: () => (inviteOpen = true)
-					},
-					{
-						label: m.cctuiverse_menu_join(),
-						icon: 'link' as const,
-						onselect: () => (joinOpen = true)
-					}
-				]
-			: []),
-		...(followupItem && !settings.preferFollowupOverFork ? [followupItem] : [])
+		...group(m.drawer_menu_group_share(), [
+			{
+				label: m.drawer_copy_link_label(),
+				icon: 'link' as const,
+				attrs: { title: m.drawer_copy_link_title() },
+				onselect: oncopylink
+			},
+			{
+				label: m.drawer_copy_markdown_label(),
+				icon: 'markdown' as const,
+				attrs: { title: m.drawer_copy_markdown_title() },
+				onselect: oncopymarkdown
+			},
+			{
+				label: m.drawer_export_label(),
+				icon: 'download' as const,
+				attrs: { title: m.drawer_export_title() },
+				onselect: onexport
+			}
+		]),
+		...group(m.drawer_menu_group_branch(), [
+			...(followupItem && settings.preferFollowupOverFork ? [followupItem] : []),
+			...(forkAction
+				? [
+						{
+							label: m.drawer_fork_label(),
+							icon: 'fork' as const,
+							pressed: onforkselect ? forkSelectActive : undefined,
+							attrs: { title: onforkselect ? m.drawer_fork_select_title() : m.drawer_fork_title() },
+							onselect: forkAction
+						}
+					]
+				: []),
+			...(followupItem && !settings.preferFollowupOverFork ? [followupItem] : [])
+		]),
+		...group(m.drawer_menu_group_collaborate(), [
+			...(onsetroom && hasFeature('rooms')
+				? [
+						{
+							label: m.rooms_menu_action(),
+							icon: 'grid' as const,
+							attrs: { title: session.room_name ?? m.rooms_menu_label() },
+							onselect: () => (roomOpen = true)
+						}
+					]
+				: []),
+			...(cctuiverseConfig.enabled && !archived
+				? [
+						{
+							label: m.cctuiverse_menu_invite(),
+							icon: 'link' as const,
+							onselect: () => (inviteOpen = true)
+						},
+						{
+							label: m.cctuiverse_menu_join(),
+							icon: 'link' as const,
+							onselect: () => (joinOpen = true)
+						}
+					]
+				: [])
+		]),
+		...group(m.drawer_menu_group_session(), [
+			...(collapsed && onsearch
+				? [
+						{
+							label: m.conversation_search_label(),
+							icon: 'search' as const,
+							attrs: { title: m.conversation_search_title() },
+							onselect: onsearch
+						}
+					]
+				: []),
+			...(compact && working && !archived
+				? [
+						{
+							label: m.drawer_interrupt_label(),
+							icon: 'stop' as const,
+							attrs: { title: m.drawer_interrupt_title() },
+							onselect: oninterrupt
+						}
+					]
+				: []),
+			{ label: m.drawer_rename(), icon: 'edit' as const, onselect: onrename },
+			...(hasFeature('automation')
+				? [
+						{
+							label: m.drawer_keepalive_label(),
+							icon: 'recycle' as const,
+							pressed: !!session.keepalive,
+							onselect: () => (keepaliveOpen = true)
+						}
+					]
+				: []),
+			...(archived ? [] : [{ label: m.drawer_archive(), icon: 'archive' as const, onselect: onarchive }])
+		])
 	]);
 </script>
+
+{#snippet groupHeading(item: MenuItem)}
+	<Text size="xs" tone="faint" weight="medium">{item.label}</Text>
+{/snippet}
 
 <Menu label={m.drawer_more_actions()} items={overflowItems} placement="bottom-end" variant="ghost" {box}>
 	{#snippet trigger()}

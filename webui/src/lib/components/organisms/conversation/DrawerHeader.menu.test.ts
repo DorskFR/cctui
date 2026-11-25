@@ -74,9 +74,9 @@ describe('drawer header ⋯ menu', () => {
 
 	it('offers find-in-conversation inline and in the collapsed menu, never both', () => {
 		expect(markup()).toMatch(/<IconButton\s+data-overflow[\s\S]{0,200}icon="search"/);
-		const collapsedOnly = items().slice(0, items().indexOf('m.drawer_copy_link_label'));
-		expect(collapsedOnly).toContain('m.conversation_search_label()');
-		expect(items().slice(collapsedOnly.length)).not.toContain('m.conversation_search_label()');
+		expect(items().split('m.conversation_search_label()')).toHaveLength(2);
+		const gate = items().lastIndexOf('...(', items().indexOf('m.conversation_search_label()'));
+		expect(items().slice(gate)).toMatch(/^\.\.\.\(collapsed && onsearch/);
 	});
 
 	it('binds ⌘F / Ctrl+F to the find bar and gives it first refusal on Escape', () => {
