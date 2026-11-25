@@ -50,6 +50,7 @@ vi.mock('#lib/toast.svelte.ts', () => ({
 vi.stubGlobal('__CLIENT_VERSION__', '0.11.0');
 
 import { notify } from '#lib/notify.svelte.ts';
+import { setCapabilitiesForTest } from '#lib/features.svelte.ts';
 import Header from './Header.svelte';
 
 let comp: ReturnType<typeof mount> | null = null;
@@ -58,7 +59,10 @@ function cleanup() {
 	comp = null;
 	document.body.innerHTML = '';
 }
-afterEach(cleanup);
+afterEach(() => {
+	cleanup();
+	setCapabilitiesForTest(null);
+});
 
 beforeEach(() => {
 	goto.mockClear();
@@ -178,6 +182,26 @@ describe('versions stay out of the bar', () => {
 		versionData.latest_version = '0.12.0';
 		render();
 		expect(document.querySelector('.pill [data-tsu="Avatar"] [data-tsu="Dot"]')).not.toBeNull();
+	});
+
+	it('offers the update from the account menu when self-update is on', async () => {
+		versionData.latest_version = '0.12.0';
+		render();
+		await openUserMenu();
+		const row = rowByText('Newer version available: v0.12.0') as HTMLButtonElement;
+		expect(row).not.toBeNull();
+		expect(row.disabled).toBe(false);
+	});
+
+	it('still announces an update when self-update is off, as a plain row', async () => {
+		setCapabilitiesForTest({ features: [], switchable: ['self_update'] });
+		versionData.latest_version = '0.12.0';
+		render();
+		expect(document.querySelector('.pill [data-tsu="Avatar"] [data-tsu="Dot"]')).not.toBeNull();
+		await openUserMenu();
+		const row = rowByText('Newer version available: v0.12.0') as HTMLButtonElement;
+		expect(row).not.toBeNull();
+		expect(row.disabled).toBe(true);
 	});
 
 	it('drops the alert dot when there is no update', () => {

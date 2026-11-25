@@ -37,7 +37,8 @@
 	const roleSuffix = $derived(
 		userRole && userRole.toLowerCase() !== userName.toLowerCase() ? userRole : ''
 	);
-	const latest = $derived(hasFeature('self_update') ? (version.data?.latest_version ?? null) : null);
+	const latest = $derived(version.data?.latest_version ?? null);
+	const canUpdate = $derived(hasFeature('self_update'));
 	const notifyLabel = $derived(
 		settings.notifyEnabled ? m.nav_notify_on_label() : m.nav_notify_off_label()
 	);
@@ -53,7 +54,7 @@
 					? m.release_channel_beta()
 					: undefined
 		},
-		...(latest
+		...(latest && canUpdate
 			? [
 					{
 						label: m.nav_update_available({ version: latest }),
@@ -63,7 +64,9 @@
 						onselect: () => (updateOpen = true)
 					}
 				]
-			: []),
+			: latest
+				? [{ label: m.nav_update_available({ version: latest }), icon: 'arrow-up' as const, disabled: true }]
+				: []),
 		{
 			label: m.nav_appearance(),
 			icon: 'palette' as const,
@@ -102,7 +105,7 @@
 	{/snippet}
 </Menu>
 
-{#if updateOpen && version.data?.latest_version}
+{#if updateOpen && canUpdate && version.data?.latest_version}
 	<UpdateModal
 		latestVersion={version.data.latest_version}
 		latestUrl={version.data.latest_url ?? version.data.repo_url}
