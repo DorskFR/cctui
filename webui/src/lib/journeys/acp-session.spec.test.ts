@@ -21,6 +21,6 @@ describe('acp-session spec', () => {
 	});
 
 	it('captures every step it shows', () => {
-		expect(book.steps.map((s) => s.capture)).toEqual(['drawer', 'header', 'tools']);
+		expect(book.steps.map((s) => s.capture?.name)).toEqual(['drawer', 'header', 'tools']);
 	});
 });
