@@ -3,11 +3,14 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
 use cctui_crypto::redact::{self, CompiledPatterns};
+use cctui_proto::api::privacy_scan::TranscriptAuditReport;
+use cctui_proto::ws::{DaemonFrameUp, ScrubPattern, SecretScrubConfig};
 use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
 
 use super::audit::{fingerprint, masked_spans};
-use super::rewrite::rewrite;
+use super::rewrite::{clear_stale_tmp, rewrite, tmp_owner};
+use super::sweep::{AUDIT_BUSY, AuditGate, audit_mode, detector_key, serve_through, sweeps};
 use super::{Harness, IDLE, Ledger, Liveness, Mode, Options, Report, Stamp, Target, run};
 
 const TOKEN: &str = "ghp_ABCDEFGHIJKLMNOPQRSTUVWX0123";
@@ -44,14 +47,18 @@ struct Fixture {
 }
 
 fn fixture() -> Fixture {
+    fixture_with(&lines())
+}
+
+fn fixture_with(lines: &[Value]) -> Fixture {
     let dir = tempfile::tempdir().unwrap();
     let projects = dir.path().join("projects");
     let project = projects.join("-home-me-proj");
     std::fs::create_dir_all(&project).unwrap();
     let path = project.join(format!("{SESSION}.jsonl"));
     let mut body = String::new();
-    for line in lines() {
-        body.push_str(&serde_json::to_string(&line).unwrap());
+    for line in lines {
+        body.push_str(&serde_json::to_string(line).unwrap());
         body.push('\n');
     }
     std::fs::write(&path, &body).unwrap();
@@ -71,8 +78,18 @@ impl Fixture {
     }
 
     fn pass(&self, mode: Mode, liveness: &Liveness, ledger: Option<&mut Ledger>) -> Report {
+        self.pass_with(&patterns(), mode, liveness, ledger)
+    }
+
+    fn pass_with(
+        &self,
+        patterns: &CompiledPatterns,
+        mode: Mode,
+        liveness: &Liveness,
+        ledger: Option<&mut Ledger>,
+    ) -> Report {
         let opts = Options { mode, scan_live: true, collect: true, idle: IDLE };
-        run(&[self.target()], liveness, &patterns(), opts, &CancellationToken::new(), ledger)
+        run(&[self.target()], liveness, patterns, opts, &CancellationToken::new(), ledger)
     }
 
     fn bytes(&self) -> Vec<u8> {
@@ -154,6 +171,8 @@ fn a_live_session_file_is_never_touched() {
         let report = fx.pass(Mode::Apply, &liveness, None);
         assert_eq!(report.files_live, 1, "{report:?}");
         assert_eq!(report.files_changed, 0);
+        assert_eq!((report.substitutions, report.values_left), (0, 1), "{report:?}");
+        assert!(report.by_category.is_empty(), "{report:?}");
         assert_eq!(fx.bytes(), fx.original);
     }
 
@@ -219,6 +238,7 @@ fn codex_rollouts_are_audited_but_never_rewritten() {
     let report = run(&[target], &fx.idle(), &patterns(), opts, &CancellationToken::new(), None);
     assert_eq!(report.files_read_only, 1, "{report:?}");
     assert_eq!(report.files_changed, 0);
+    assert_eq!((report.substitutions, report.values_left), (0, 1), "{report:?}");
     assert_eq!(fx.bytes(), fx.original);
 }
 
@@ -252,4 +272,222 @@ fn the_server_report_carries_counts_and_masked_samples_only() {
     assert!(!applied.dry_run);
     assert_eq!(applied.files_changed, 1);
     assert!(!fx.bytes().windows(TOKEN.len()).any(|w| w == TOKEN.as_bytes()));
+}
+
+const SIGNATURE: &str = "ErUBCkYIBRgCIkDq3kZ8vXw9Lm2NpQa7Tb5Rc1YdW4eFg6HhJj0KkLl8MmNn2Oo4Pp6QqRr8SsTt0UuVv2WwXx4YyZz6AaBbCc8DdEeFfGg0HhIiJjKk2LlMmNnOo4PpQqRrSs6TtUuVvWw8XxYyZzAa0BbCcDdEe";
+const REDACTED_DATA: &str = "EmwKAhgBEgy3va3pzix/LafPsn4aDFIT2Xlxh0L5L8rLVyIwxtE3rAFBa8cr3qpPkNRj2YsvXwC7ZrHjqPuz5JqZ/pbrjs5RVe2YbJ9t";
+
+fn thinking_lines() -> Vec<Value> {
+    let mut lines = lines();
+    lines.insert(
+        2,
+        json!({"type": "assistant", "uuid": "u-2b", "parentUuid": "u-2", "sessionId": SESSION,
+               "cwd": CWD, "timestamp": "2026-11-20T10:00:05.500Z",
+               "message": {"id": "msg_01", "type": "message", "role": "assistant",
+                   "model": "claude-opus-5-5", "content": [
+                       {"type": "thinking",
+                        "thinking": format!("The user exported GH_TOKEN={TOKEN}, deploy with it."),
+                        "signature": SIGNATURE},
+                       {"type": "redacted_thinking", "data": REDACTED_DATA},
+                       {"type": "tool_use", "id": "toolu_2", "name": "Bash",
+                        "input": {"command": format!("GH_TOKEN={TOKEN} ./deploy.sh")}}],
+                   "stop_reason": "tool_use",
+                   "usage": {"input_tokens": 12, "output_tokens": 40}}}),
+    );
+    lines
+}
+
+fn compact(value: &Value) -> String {
+    serde_json::to_string(value).unwrap()
+}
+
+#[test]
+fn thinking_blocks_stay_byte_identical_while_tokens_around_them_are_masked() {
+    let lines = thinking_lines();
+    let blocks = lines[2]["message"]["content"].as_array().unwrap();
+    let (thinking, redacted) = (compact(&blocks[0]), compact(&blocks[1]));
+    let mut alone = blocks[0].clone();
+    redact::redact_json_stats(&mut alone, &patterns());
+    assert_ne!(alone["signature"], SIGNATURE, "the redactor alone would mask this signature");
+
+    let fx = fixture_with(&lines);
+    let report = fx.pass(Mode::Apply, &fx.idle(), None);
+    assert_eq!(report.files_changed, 1, "{report:?}");
+    assert_eq!(report.lines_changed, 2, "tool_use and tool_result lines: {report:?}");
+
+    let after = String::from_utf8(fx.bytes()).unwrap();
+    let rows: Vec<&str> = after.lines().collect();
+    assert!(rows[2].contains(&thinking), "thinking block changed: {}", rows[2]);
+    assert!(rows[2].contains(&redacted), "redacted_thinking block changed: {}", rows[2]);
+    let row: Value = serde_json::from_str(rows[2]).unwrap();
+    let input = row["message"]["content"][2]["input"]["command"].as_str().unwrap();
+    assert!(!input.contains(TOKEN) && input.contains("[REDACTED:"), "{input}");
+    assert!(!rows[3].contains(TOKEN), "tool_result token left: {}", rows[3]);
+    assert_eq!(uuids(after.as_bytes()), uuids(&fx.original));
+}
+
+#[test]
+fn hits_on_a_line_that_would_grow_are_left_not_counted_as_masked() {
+    let fx = fixture_with(&[json!({"type": "user", "uuid": "u-1", "parentUuid": null,
+        "timestamp": "2026-11-20T10:00:00.000Z",
+        "message": {"role": "user", "content": "ticket ACME-1234"}})]);
+    let patterns =
+        redact::compile(true, &[("acme".to_owned(), r"ACME-\d{4}".to_owned())], b"test-key");
+    for mode in [Mode::DryRun, Mode::Apply] {
+        let report = fx.pass_with(&patterns, mode, &fx.idle(), None);
+        assert_eq!(report.lines_unfit, 1, "{report:?}");
+        assert_eq!((report.substitutions, report.values_left), (0, 1), "{report:?}");
+        assert_eq!((report.files_changed, report.lines_changed), (0, 0), "{report:?}");
+        assert!(report.by_category.is_empty(), "{report:?}");
+        let audit = report.to_audit();
+        assert_eq!((audit.lines_unfit, audit.values_left, audit.substitutions), (1, 1, 0));
+        assert_eq!(fx.bytes(), fx.original);
+    }
+}
+
+#[test]
+fn without_a_way_to_list_open_files_every_file_is_audit_only() {
+    let fx = fixture();
+    let unknown = fx.idle().without_open_files();
+    let report = fx.pass(Mode::Apply, &unknown, None);
+    assert!(report.open_files_unknown, "{report:?}");
+    assert_eq!((report.files_live, report.files_changed), (1, 0), "{report:?}");
+    assert_eq!((report.substitutions, report.values_left), (0, 1), "{report:?}");
+    assert!(report.to_audit().open_files_unknown);
+    assert_eq!(fx.bytes(), fx.original);
+    assert!(!fx.pass(Mode::DryRun, &fx.idle(), None).open_files_unknown);
+}
+
+#[test]
+fn stale_tmp_copies_are_removed_and_nothing_else() {
+    let fx = fixture();
+    let dir = fx.path.parent().unwrap();
+    let own = std::process::id();
+    let name = format!("{SESSION}.jsonl");
+    let dead = format!(".{name}.999999999.cctui-scrub");
+    let mine = format!(".{name}.{own}.cctui-scrub");
+    let other_live = format!(".{name}.1.cctui-scrub");
+    let not_ours = [".notes.cctui-scrub".to_owned(), format!(".{name}.12x.cctui-scrub")];
+    for file in [&dead, &mine, &other_live].into_iter().chain(&not_ours) {
+        std::fs::write(dir.join(file), b"copy").unwrap();
+    }
+    let linked = format!(".{name}.999999998.cctui-scrub");
+    std::os::unix::fs::symlink(&fx.path, dir.join(&linked)).unwrap();
+
+    assert_eq!(tmp_owner(&dead), Some(999_999_999));
+    assert_eq!(clear_stale_tmp(&fx.projects), 2);
+    let mut left = leftovers(dir);
+    left.sort();
+    let mut expected = vec![other_live, linked];
+    expected.extend(not_ours);
+    expected.sort();
+    assert_eq!(left, expected);
+    assert_eq!(fx.bytes(), fx.original);
+}
+
+#[test]
+fn a_tmp_left_under_this_pid_does_not_block_the_rewrite() {
+    let fx = fixture();
+    let dir = fx.path.parent().unwrap();
+    let stale = dir.join(format!(".{SESSION}.jsonl.{}.cctui-scrub", std::process::id()));
+    std::fs::write(&stale, b"left by a killed daemon").unwrap();
+    let report = fx.pass(Mode::Apply, &fx.idle(), None);
+    assert_eq!((report.files_changed, report.files_failed), (1, 0), "{report:?}");
+    assert!(leftovers(dir).is_empty());
+    assert!(!fx.bytes().windows(TOKEN.len()).any(|w| w == TOKEN.as_bytes()));
+}
+
+#[test]
+fn the_ledger_key_moves_with_the_detector_set() {
+    let cfg = SecretScrubConfig { enabled: true, local_transcripts: true, ..Default::default() };
+    let base = detector_key("1.0.0", &["github_token"], &cfg);
+    assert_eq!(base, detector_key("1.0.0", &["github_token"], &cfg));
+    assert_ne!(base, detector_key("1.0.1", &["github_token"], &cfg), "a daemon upgrade");
+    assert_ne!(base, detector_key("1.0.0", &["github_token", "new_one"], &cfg), "a new detector");
+    let user = SecretScrubConfig {
+        enabled: true,
+        local_transcripts: true,
+        patterns: vec![ScrubPattern { name: "acme".into(), regex: "ACME".into() }],
+    };
+    assert_ne!(base, detector_key("1.0.0", &["github_token"], &user), "a user pattern");
+
+    let fx = fixture();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("ledger.json");
+    let mut ledger = Ledger::open(Some(path.clone()), &base);
+    fx.pass(Mode::Apply, &fx.idle(), Some(&mut ledger));
+    ledger.flush();
+    let stamp = Stamp::of(&fx.path).unwrap();
+    assert!(Ledger::open(Some(path.clone()), &base).settled(&fx.path, stamp));
+    let upgraded = detector_key("1.0.1", &["github_token"], &cfg);
+    assert!(!Ledger::open(Some(path), &upgraded).settled(&fx.path, stamp), "rescanned");
+}
+
+#[test]
+fn the_local_sweep_needs_the_main_scrub_switch() {
+    let cfg = |enabled, local_transcripts| SecretScrubConfig {
+        enabled,
+        local_transcripts,
+        ..Default::default()
+    };
+    assert!(sweeps(&cfg(true, true)));
+    assert!(!sweeps(&cfg(false, true)), "opt-in without the main scrub");
+    assert!(!sweeps(&cfg(true, false)));
+    assert_eq!(audit_mode(false, &cfg(true, true)), Mode::Apply);
+    assert_eq!(audit_mode(false, &cfg(false, true)), Mode::DryRun, "an apply stays a dry run");
+    assert_eq!(audit_mode(true, &cfg(true, true)), Mode::DryRun);
+    assert_eq!(audit_mode(true, &cfg(false, false)), Mode::DryRun, "a dry run still scans");
+}
+
+#[tokio::test]
+async fn one_audit_runs_at_a_time_and_a_same_mode_request_joins_it() {
+    static GATE: AuditGate = AuditGate::new();
+    let (up, mut frames) = tokio::sync::mpsc::channel(8);
+    let (release, wait) = std::sync::mpsc::channel::<()>();
+    let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let audit = |calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+                 wait: Option<std::sync::mpsc::Receiver<()>>| {
+        move |dry_run: bool| {
+            calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if let Some(wait) = wait {
+                wait.recv().unwrap();
+            }
+            TranscriptAuditReport { dry_run, files_scanned: 7, ..Default::default() }
+        }
+    };
+    let (first, second, third) = (uuid::Uuid::new_v4(), uuid::Uuid::new_v4(), uuid::Uuid::new_v4());
+    serve_through(&GATE, first, true, up.clone(), audit(calls.clone(), Some(wait)));
+    serve_through(&GATE, second, true, up.clone(), audit(calls.clone(), None));
+    serve_through(&GATE, third, false, up.clone(), audit(calls.clone(), None));
+
+    let busy = frames.recv().await.unwrap();
+    let DaemonFrameUp::TranscriptAuditResult { request_id, report, error } = busy else {
+        panic!("{busy:?}")
+    };
+    assert_eq!((request_id, report, error.as_deref()), (third, None, Some(AUDIT_BUSY)));
+
+    release.send(()).unwrap();
+    let mut answered = Vec::new();
+    for _ in 0..2 {
+        let frame = frames.recv().await.unwrap();
+        let DaemonFrameUp::TranscriptAuditResult { request_id, report, error } = frame else {
+            panic!("{frame:?}")
+        };
+        assert_eq!(error, None);
+        assert_eq!(report.map(|r| r.files_scanned), Some(7));
+        answered.push(request_id);
+    }
+    answered.sort();
+    let mut expected = vec![first, second];
+    expected.sort();
+    assert_eq!(answered, expected, "the joined request gets the running result");
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1, "a single pass ran");
+
+    serve_through(&GATE, uuid::Uuid::new_v4(), false, up, audit(calls.clone(), None));
+    let frame = frames.recv().await.unwrap();
+    assert!(
+        matches!(frame, DaemonFrameUp::TranscriptAuditResult { report: Some(_), .. }),
+        "the gate opens again once the pass ends: {frame:?}"
+    );
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2);
 }

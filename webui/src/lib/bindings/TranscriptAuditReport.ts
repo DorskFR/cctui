@@ -13,4 +13,21 @@ files_read_only: number,
 /**
  * Files a harness may still be writing: read, never rewritten.
  */
-files_live: number, files_busy: number, files_failed: number, lines_changed: number, substitutions: number, by_category: { [key in string]: number }, samples: { [key in string]: Array<ScanSample> }, };
+files_live: number, files_busy: number, files_failed: number, lines_changed: number, 
+/**
+ * Lines with findings left as is: masking would change their length.
+ */
+lines_unfit: number, 
+/**
+ * Values masked, or that an apply would mask.
+ */
+substitutions: number, 
+/**
+ * Values found that stay on disk: unfit lines, read-only, live and busy
+ * files.
+ */
+values_left: number, 
+/**
+ * The machine cannot tell which files are open, so none was rewritten.
+ */
+open_files_unknown: boolean, by_category: { [key in string]: number }, samples: { [key in string]: Array<ScanSample> }, };

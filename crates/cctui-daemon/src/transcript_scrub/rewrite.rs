@@ -10,6 +10,9 @@ use serde_json::Value;
 
 use super::Target;
 use super::audit::{Audit, FileCtx};
+use super::liveness::alive;
+
+const TMP_SUFFIX: &str = ".cctui-scrub";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
@@ -39,15 +42,25 @@ pub struct FileOutcome {
     pub stamp: Stamp,
     pub lines_changed: usize,
     pub lines_unfit: usize,
+    /// Hits on the lines that fit, the only ones a rewrite masks.
     pub stats: BTreeMap<String, usize>,
+    pub values_unfit: usize,
     pub written: bool,
     pub busy: bool,
 }
 
+impl FileOutcome {
+    #[must_use]
+    pub fn values_found(&self) -> usize {
+        self.stats.values().sum::<usize>() + self.values_unfit
+    }
+}
+
 enum Line {
     Clean,
-    Fit(Vec<u8>),
-    Unfit,
+    Fit(Vec<u8>, BTreeMap<String, usize>),
+    /// Left as is: it would grow, or a thinking block would not survive.
+    Unfit(usize),
 }
 
 pub fn process_file(
@@ -62,15 +75,24 @@ pub fn process_file(
         lines_changed: 0,
         lines_unfit: 0,
         stats: BTreeMap::new(),
+        values_unfit: 0,
         written: false,
         busy: false,
     };
     let mut ctx = FileCtx::new(target);
     let read = for_each_line(&target.path, |raw| {
-        match scrub_line(raw, patterns, &mut out.stats, &mut ctx, audit.as_deref_mut()) {
+        match scrub_line(raw, patterns, &mut ctx, audit.as_deref_mut()) {
             Line::Clean => {}
-            Line::Fit(_) => out.lines_changed += 1,
-            Line::Unfit => out.lines_unfit += 1,
+            Line::Fit(_, hits) => {
+                out.lines_changed += 1;
+                for (cat, n) in hits {
+                    *out.stats.entry(cat).or_insert(0) += n;
+                }
+            }
+            Line::Unfit(n) => {
+                out.lines_unfit += 1;
+                out.values_unfit += n;
+            }
         }
         Ok(())
     })?;
@@ -107,7 +129,6 @@ fn for_each_line(path: &Path, mut f: impl FnMut(&[u8]) -> io::Result<()>) -> io:
 fn scrub_line(
     raw: &[u8],
     patterns: &CompiledPatterns,
-    stats: &mut BTreeMap<String, usize>,
     ctx: &mut FileCtx,
     audit: Option<&mut Audit>,
 ) -> Line {
@@ -117,31 +138,41 @@ fn scrub_line(
     let trailer = &body[json.len()..];
     let Ok(mut value) = serde_json::from_str::<Value>(json) else { return Line::Clean };
     ctx.observe(&value);
-    let hits = scrub_value(&mut value, patterns, audit, ctx, json);
+    let Scrubbed { hits, thinking_intact } = scrub_value(&mut value, patterns, audit, ctx, json);
     if hits.is_empty() {
         return Line::Clean;
     }
-    for (cat, n) in hits {
-        *stats.entry(cat).or_insert(0) += n;
+    let found = hits.values().sum();
+    if !thinking_intact {
+        return Line::Unfit(found);
     }
-    let Ok(scrubbed) = serde_json::to_string(&value) else { return Line::Unfit };
-    let Some(pad) = json.len().checked_sub(scrubbed.len()) else { return Line::Unfit };
+    let Ok(scrubbed) = serde_json::to_string(&value) else { return Line::Unfit(found) };
+    let Some(pad) = json.len().checked_sub(scrubbed.len()) else { return Line::Unfit(found) };
     let mut line = Vec::with_capacity(raw.len());
     line.extend_from_slice(scrubbed.as_bytes());
     line.resize(line.len() + pad, b' ');
     line.extend_from_slice(trailer.as_bytes());
     line.push(b'\n');
-    Line::Fit(line)
+    Line::Fit(line, hits)
 }
 
-/// The same passes the server's re-scrub runs over a stored payload.
+struct Scrubbed {
+    hits: BTreeMap<String, usize>,
+    /// Every thinking block re-serializes to the bytes it was read from.
+    thinking_intact: bool,
+}
+
+/// The same passes the server's re-scrub runs over a stored payload, minus
+/// thinking blocks: the harness replays them on resume and the provider
+/// rejects one whose signature or data changed.
 fn scrub_value(
     value: &mut Value,
     patterns: &CompiledPatterns,
     mut audit: Option<&mut Audit>,
     ctx: &FileCtx,
     original: &str,
-) -> BTreeMap<String, usize> {
+) -> Scrubbed {
+    let held = Held::detach(value);
     let user = redact::mask_user_json(value, &UserLiterals::new());
     if let Some(audit) = audit.as_deref_mut() {
         audit.sample(value, patterns);
@@ -150,23 +181,129 @@ fn scrub_value(
     if user > 0 {
         *hits.entry(redact::USER_CATEGORY.to_owned()).or_insert(0) += user;
     }
+    let thinking_intact = held.restore(value, original);
     if let Some(audit) = audit
         && !hits.is_empty()
         && let Ok(before) = serde_json::from_str::<Value>(original)
     {
         audit.record(&before, value, ctx);
     }
-    hits
+    Scrubbed { hits, thinking_intact }
+}
+
+#[derive(Clone)]
+enum Step {
+    Key(String),
+    Index(usize),
+}
+
+/// Thinking blocks lifted out of a line while the rest is redacted.
+struct Held(Vec<(Vec<Step>, Value)>);
+
+impl Held {
+    fn detach(value: &mut Value) -> Self {
+        let mut held = Vec::new();
+        take_thinking(value, &mut Vec::new(), &mut held);
+        Self(held)
+    }
+
+    fn restore(self, value: &mut Value, original: &str) -> bool {
+        let mut intact = true;
+        for (path, block) in self.0 {
+            let slot = path.iter().try_fold(&mut *value, |cur, step| match step {
+                Step::Key(k) => cur.get_mut(k.as_str()),
+                Step::Index(i) => cur.get_mut(*i),
+            });
+            intact &= serde_json::to_string(&block).is_ok_and(|s| original.contains(&s));
+            match slot {
+                Some(slot) => *slot = block,
+                None => intact = false,
+            }
+        }
+        intact
+    }
+}
+
+fn is_thinking(value: &Value) -> bool {
+    value
+        .get("type")
+        .and_then(Value::as_str)
+        .is_some_and(|t| t == "thinking" || t == "redacted_thinking")
+}
+
+fn take_thinking(value: &mut Value, path: &mut Vec<Step>, out: &mut Vec<(Vec<Step>, Value)>) {
+    if is_thinking(value) {
+        out.push((path.clone(), value.take()));
+        return;
+    }
+    match value {
+        Value::Object(map) => {
+            for (key, child) in map.iter_mut() {
+                path.push(Step::Key(key.clone()));
+                take_thinking(child, path, out);
+                path.pop();
+            }
+        }
+        Value::Array(items) => {
+            for (i, child) in items.iter_mut().enumerate() {
+                path.push(Step::Index(i));
+                take_thinking(child, path, out);
+                path.pop();
+            }
+        }
+        _ => {}
+    }
 }
 
 fn tmp_path(path: &Path) -> Option<PathBuf> {
     let name = path.file_name()?.to_string_lossy();
-    Some(path.with_file_name(format!(".{name}.{}.cctui-scrub", std::process::id())))
+    Some(path.with_file_name(format!(".{name}.{}{TMP_SUFFIX}", std::process::id())))
+}
+
+/// The writer's pid, for a name `tmp_path` produces.
+pub(super) fn tmp_owner(name: &str) -> Option<u32> {
+    let inner = name.strip_prefix('.')?.strip_suffix(TMP_SUFFIX)?;
+    let (original, pid) = inner.rsplit_once('.')?;
+    let jsonl = Path::new(original).extension().is_some_and(|e| e == "jsonl");
+    if !jsonl || pid.is_empty() || !pid.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    pid.parse().ok()
+}
+
+/// Remove the tmp copies a killed rewrite left behind: regular files named
+/// like `tmp_path`'s whose writer is this process or gone, under `dir`.
+pub(super) fn clear_stale_tmp(dir: &Path) -> usize {
+    clear_in(dir, std::process::id())
+}
+
+fn clear_in(dir: &Path, own: u32) -> usize {
+    let Ok(entries) = fs::read_dir(dir) else { return 0 };
+    let mut removed = 0;
+    for entry in entries.flatten() {
+        let Ok(kind) = entry.file_type() else { continue };
+        let path = entry.path();
+        if kind.is_dir() {
+            removed += clear_in(&path, own);
+            continue;
+        }
+        if !kind.is_file() {
+            continue;
+        }
+        let Some(pid) = entry.file_name().to_str().and_then(tmp_owner) else { continue };
+        if (pid == own || !alive(i64::from(pid))) && fs::remove_file(&path).is_ok() {
+            removed += 1;
+        }
+    }
+    removed
 }
 
 /// `Ok(false)` when the original changed since `stamp` was taken.
 pub(super) fn rewrite(path: &Path, patterns: &CompiledPatterns, stamp: Stamp) -> io::Result<bool> {
     let tmp = tmp_path(path).ok_or_else(|| io::Error::other("no file name"))?;
+    if fs::symlink_metadata(&tmp).is_ok_and(|m| m.is_file()) {
+        fs::remove_file(&tmp)?;
+    }
     let result = write_and_swap(path, &tmp, patterns, stamp);
     if !matches!(result, Ok(true)) {
         let _ = fs::remove_file(&tmp);
@@ -183,13 +320,11 @@ fn write_and_swap(
     let perms = fs::metadata(path)?.permissions();
     let file = fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(tmp)?;
     let mut writer = BufWriter::new(file);
-    let mut stats = BTreeMap::new();
     let mut ctx = FileCtx::detached();
-    let read =
-        for_each_line(path, |raw| match scrub_line(raw, patterns, &mut stats, &mut ctx, None) {
-            Line::Fit(line) => writer.write_all(&line),
-            Line::Clean | Line::Unfit => writer.write_all(raw),
-        })?;
+    let read = for_each_line(path, |raw| match scrub_line(raw, patterns, &mut ctx, None) {
+        Line::Fit(line, _) => writer.write_all(&line),
+        Line::Clean | Line::Unfit(_) => writer.write_all(raw),
+    })?;
     let file = writer.into_inner().map_err(io::IntoInnerError::into_error)?;
     if read != stamp.len || file.metadata()?.len() != stamp.len {
         return Ok(false);

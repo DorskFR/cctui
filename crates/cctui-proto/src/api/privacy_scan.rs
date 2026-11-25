@@ -74,7 +74,18 @@ pub struct TranscriptAuditReport {
     pub files_busy: i64,
     pub files_failed: i64,
     pub lines_changed: i64,
+    /// Lines with findings left as is: masking would change their length.
+    #[serde(default)]
+    pub lines_unfit: i64,
+    /// Values masked, or that an apply would mask.
     pub substitutions: i64,
+    /// Values found that stay on disk: unfit lines, read-only, live and busy
+    /// files.
+    #[serde(default)]
+    pub values_left: i64,
+    /// The machine cannot tell which files are open, so none was rewritten.
+    #[serde(default)]
+    pub open_files_unknown: bool,
     pub by_category: BTreeMap<String, i64>,
     pub samples: BTreeMap<String, Vec<ScanSample>>,
 }

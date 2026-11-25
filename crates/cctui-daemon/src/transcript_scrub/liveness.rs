@@ -11,6 +11,8 @@ use super::{Roots, Stamp};
 pub struct Liveness {
     sessions: HashSet<String>,
     project_dirs: HashSet<String>,
+    /// `None` where open files cannot be listed (no `/proc`): every file may
+    /// be open, so none is rewritten.
     open: Option<HashSet<PathBuf>>,
     projects_root: PathBuf,
     now: Option<SystemTime>,
@@ -31,7 +33,18 @@ impl Liveness {
 
     #[must_use]
     pub fn new(projects_root: PathBuf, now: SystemTime) -> Self {
-        Self { projects_root, now: Some(now), ..Self::default() }
+        Self { projects_root, now: Some(now), open: Some(HashSet::new()), ..Self::default() }
+    }
+
+    #[must_use]
+    pub fn without_open_files(mut self) -> Self {
+        self.open = None;
+        self
+    }
+
+    #[must_use]
+    pub const fn knows_open_files(&self) -> bool {
+        self.open.is_some()
     }
 
     pub fn add_session(&mut self, session: &str, cwd: Option<&str>) {
@@ -42,7 +55,9 @@ impl Liveness {
     }
 
     pub fn add_open(&mut self, path: PathBuf) {
-        self.open.get_or_insert_with(HashSet::new).insert(path);
+        if let Some(open) = &mut self.open {
+            open.insert(path);
+        }
     }
 
     fn read_registry(&mut self, dir: &Path) {
@@ -92,7 +107,7 @@ impl Liveness {
     }
 
     fn held_open(&self, path: &Path) -> bool {
-        let Some(open) = &self.open else { return false };
+        let Some(open) = &self.open else { return true };
         open.contains(path) || std::fs::canonicalize(path).is_ok_and(|p| open.contains(&p))
     }
 
@@ -119,7 +134,7 @@ fn normalize(name: &str) -> String {
 }
 
 /// A pid this user may not signal is still a live process.
-fn alive(pid: i64) -> bool {
+pub(super) fn alive(pid: i64) -> bool {
     let Some(pid) = i32::try_from(pid).ok().and_then(rustix::process::Pid::from_raw) else {
         return false;
     };

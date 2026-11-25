@@ -3,6 +3,7 @@ import type { MachineTranscriptScan } from "@bindings/MachineTranscriptScan";
 import type { NotScannedReason } from "@bindings/NotScannedReason";
 import type { PrivacyScanJob } from "@bindings/PrivacyScanJob";
 import type { ScanCategory } from "@bindings/ScanCategory";
+import type { TranscriptAuditReport } from "@bindings/TranscriptAuditReport";
 
 export type RescrubScope = "all" | "30d" | "7d";
 
@@ -69,10 +70,38 @@ export function rescrubHasFindings(job: PrivacyScanJob): boolean {
   return job.substitutions > 0 || (job.local_transcripts?.substitutions ?? 0) > 0;
 }
 
+export type RescrubMachineNote =
+  | { kind: "open_unknown" }
+  | { kind: "left" | "unfit" | "read_only" | "live" | "busy"; count: number };
+
 export type RescrubMachineLine =
   | { kind: "pending" }
-  | { kind: "scanned"; files: number; values: number; changed: number; live: number; dryRun: boolean }
+  | {
+      kind: "scanned";
+      files: number;
+      values: number;
+      changed: number;
+      dryRun: boolean;
+      notes: RescrubMachineNote[];
+    }
   | { kind: "not_scanned"; reason: NotScannedReason; detail: string | null };
+
+/** What stays on disk after the pass, so `values` never claims more than was
+ *  masked. */
+function machineNotes(r: TranscriptAuditReport): RescrubMachineNote[] {
+  const notes: RescrubMachineNote[] = r.open_files_unknown ? [{ kind: "open_unknown" }] : [];
+  const counts = [
+    ["left", r.values_left],
+    ["unfit", r.lines_unfit],
+    ["read_only", r.files_read_only],
+    ["live", r.files_live],
+    ["busy", r.files_busy],
+  ] as const;
+  for (const [kind, count] of counts) {
+    if (count > 0) notes.push({ kind, count });
+  }
+  return notes;
+}
 
 /** A machine without a report is never shown as clean: it is pending or
  *  carries the reason it was not scanned. */
@@ -84,8 +113,8 @@ export function rescrubMachineLine(machine: MachineTranscriptScan): RescrubMachi
       files: r.files_scanned,
       values: r.substitutions,
       changed: r.files_changed,
-      live: r.files_live,
       dryRun: r.dry_run,
+      notes: machineNotes(r),
     };
   }
   if (machine.state === "pending") return { kind: "pending" };
