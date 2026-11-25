@@ -11,6 +11,11 @@ describe('resolveParams', () => {
 			machine_id: 'm1'
 		});
 	});
+	it('previews a dispatch without a machine', () => {
+		expect(
+			resolveParams({ machine_id: 'm1', dispatch: true, dispatcher: ' kube ', profile: '', adapter: 'codex' })
+		).toEqual({ dispatch: 'true', dispatcher: 'kube', adapter: 'codex' });
+	});
 });
 
 describe('response coercion', () => {

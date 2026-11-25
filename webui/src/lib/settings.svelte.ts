@@ -584,6 +584,10 @@ export interface SettingsState {
   // clamps and syncs to the daemon via Reconcile.
   secretScrubEnabled: boolean;
   secretScrubPatterns: SecretScrubPattern[];
+  // Opt-ins on top of the base scrub: the gateway masks secrets in outbound
+  // API requests; the daemon masks the harness's own local transcripts.
+  secretScrubOutbound: boolean;
+  secretScrubLocalTranscripts: boolean;
   // Prefix auto-generated session names with an emoji. Top-level so it
   // serializes as `data.sessionEmojiPrefix`, which the server reads while it
   // persists the name the agent reported (cctui does not generate the name
@@ -652,6 +656,8 @@ const DEFAULTS: SettingsState = {
   whipStopPhrases: { mode: DEFAULT_WHIP_MODE, phrases: [], guidance: "" },
   secretScrubEnabled: true,
   secretScrubPatterns: [],
+  secretScrubOutbound: false,
+  secretScrubLocalTranscripts: false,
   sessionEmojiPrefix: false,
   autoResumeOnConnectionLoss: false,
   autoFollowup: DEFAULT_AUTO_FOLLOWUP,
@@ -744,6 +750,8 @@ export function mergeDefaults(
     whipStopPhrases: mergeWhipStopPhrases(p.whipStopPhrases),
     secretScrubEnabled: p.secretScrubEnabled !== false,
     secretScrubPatterns: mergeSecretScrubPatterns(p.secretScrubPatterns),
+    secretScrubOutbound: p.secretScrubOutbound === true,
+    secretScrubLocalTranscripts: p.secretScrubLocalTranscripts === true,
     sessionEmojiPrefix: p.sessionEmojiPrefix === true,
     autoResumeOnConnectionLoss: p.autoResumeOnConnectionLoss === true,
     autoFollowup: clampAutoFollowup(p.autoFollowup),
@@ -1213,6 +1221,24 @@ class Settings {
 
   get secretScrubPatterns(): SecretScrubPattern[] {
     return this.state.secretScrubPatterns;
+  }
+
+  setSecretScrubOutbound(on: boolean) {
+    this.state.secretScrubOutbound = on;
+    this.persist();
+  }
+
+  get secretScrubOutbound(): boolean {
+    return this.state.secretScrubOutbound;
+  }
+
+  setSecretScrubLocalTranscripts(on: boolean) {
+    this.state.secretScrubLocalTranscripts = on;
+    this.persist();
+  }
+
+  get secretScrubLocalTranscripts(): boolean {
+    return this.state.secretScrubLocalTranscripts;
   }
 
   // Emoji prefix on agent-generated session names. Applied server-side when

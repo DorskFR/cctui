@@ -76,7 +76,7 @@ async fn a_dispatch_only_overwrites_its_own_users_context_set() {
             .expect("seed user");
     }
     let key = uuid::Uuid::new_v4().to_string();
-    let scope = dispatch_context_scope(owner, &serde_json::json!({}));
+    let scope = dispatch_context_scope(owner, "worker", &serde_json::json!({}));
     cctui_server_sessions::routes::context::remember_intent(&pool, &key, &[], &scope).await;
     let registered = uuid::Uuid::new_v4().to_string();
     sqlx::query(
@@ -171,15 +171,22 @@ fn a_dispatched_worker_resolves_rules_by_adapter_and_cwd_and_saves_for_approval(
     let uid = uuid::Uuid::new_v4();
     let scope = dispatch_context_scope(
         uid,
-        &serde_json::json!({"adapter_id": "codex", "working_dir": " /w/repo "}),
+        " kube ",
+        &serde_json::json!({"adapter_id": "codex", "working_dir": " /w/repo ", "profile": "rev"}),
     );
     assert!(scope.dispatched);
     assert_eq!(scope.user_id, uid);
     assert_eq!(scope.coords.adapter.as_deref(), Some("codex"));
     assert_eq!(scope.coords.working_dir.as_deref(), Some("/w/repo"));
     assert!(scope.coords.machine_id.is_none(), "a worker pod is no enrolled machine");
+    let dispatch = scope.coords.dispatch.expect("a dispatch scope");
+    assert_eq!(dispatch.owner, uid);
+    assert_eq!(
+        (dispatch.dispatcher.as_deref(), dispatch.profile.as_deref()),
+        (Some("kube"), Some("rev"))
+    );
 
-    let bare = dispatch_context_scope(uid, &serde_json::json!({"cwd": "/srv"}));
+    let bare = dispatch_context_scope(uid, "kube", &serde_json::json!({"cwd": "/srv"}));
     assert_eq!(bare.coords.adapter.as_deref(), Some("claude-code"));
     assert_eq!(bare.coords.working_dir.as_deref(), Some("/srv"));
 }
@@ -565,8 +572,11 @@ fn the_payload_adapter_prefers_adapter_over_adapter_id() {
     for (payload, want) in cases {
         assert_eq!(payload_adapter(&payload), want, "payload {payload}");
     }
-    let scope =
-        dispatch_context_scope(uuid::Uuid::new_v4(), &serde_json::json!({"adapter": "codex"}));
+    let scope = dispatch_context_scope(
+        uuid::Uuid::new_v4(),
+        "kube",
+        &serde_json::json!({"adapter": "codex"}),
+    );
     assert_eq!(scope.coords.adapter.as_deref(), Some("codex"));
 }
 

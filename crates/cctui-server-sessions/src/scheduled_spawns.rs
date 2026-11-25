@@ -51,6 +51,16 @@ fn announce(
 }
 
 /// `(status, machine owner)` of the draft row, `None` once it is gone.
+/// A scheduled draft launches as its machine's owner.
+pub(crate) fn scheduled_ctx(owner: Uuid) -> AuthContext {
+    AuthContext {
+        user_id: owner,
+        key_id: Uuid::nil(),
+        machine_id: None,
+        scopes: [Scope::Read, Scope::Dispatch].into_iter().collect(),
+    }
+}
+
 async fn draft_facts(
     pool: &sqlx::PgPool,
     draft_id: &str,
@@ -173,12 +183,7 @@ pub async fn launch<S: SessionsContext>(
     let Some(owner) = owner else {
         return Outcome::Dead("draft's machine no longer exists".to_owned());
     };
-    let ctx = AuthContext {
-        user_id: owner,
-        key_id: Uuid::nil(),
-        machine_id: None,
-        scopes: [Scope::Read, Scope::Dispatch].into_iter().collect(),
-    };
+    let ctx = scheduled_ctx(owner);
     match crate::routes::spawn::launch_stored_draft(
         state,
         &ctx,

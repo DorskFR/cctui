@@ -18,11 +18,14 @@ use sqlx::types::Json as Jsonb;
 use uuid::Uuid;
 
 pub use cctui_proto::api::context::{
-    AttachContextRequest, AttachContextResponse, AttachedContextRef, ContextItem, ContextItemSpec,
-    ContextMatch, ResolvedContextResponse, SessionContextResponse, UpdateContextItemRequest,
+    AttachContextRequest, AttachContextResponse, AttachedContextRef, BulkContextOutcome,
+    BulkContextResponse, BulkContextUpdate, ContextItem, ContextItemSpec, ContextMatch,
+    ContextMatchLists, ContextMatchSet, ContextReach, ResolvedContextResponse,
+    SessionContextResponse, UpdateContextItemRequest,
 };
 
 pub mod ownership;
+pub mod reach;
 pub mod targets;
 pub use ownership::StoredScope;
 
@@ -140,6 +143,10 @@ fn clean_match(m: ContextMatch) -> Result<ContextMatch, AppError> {
         paths: clean_list(paths),
         labels: clean_list(m.labels),
         adapters: clean_list(m.adapters.into_iter().map(|a| a.to_ascii_lowercase()).collect()),
+        reach: m.reach,
+        dispatch: m.dispatch,
+        dispatchers: clean_list(m.dispatchers),
+        profiles: clean_list(m.profiles),
     })
 }
 
@@ -257,6 +264,22 @@ pub struct SpawnScope {
     pub label_ids: Vec<String>,
     #[serde(default)]
     pub adapter: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub machine_owner: Option<Uuid>,
+    /// Set on a dispatched worker and its children, which run on no machine
+    /// of their owner's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dispatch: Option<DispatchCoords>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct DispatchCoords {
+    /// The user who dispatched the work.
+    pub owner: Uuid,
+    #[serde(default)]
+    pub dispatcher: Option<String>,
+    #[serde(default)]
+    pub profile: Option<String>,
 }
 
 /// Whether `dir` is at or under `prefix`, comparing whole path components so
@@ -270,14 +293,32 @@ pub fn path_matches(prefix: &str, dir: &str) -> bool {
     prefix.len() <= dir.len() && prefix.iter().zip(&dir).all(|(a, b)| a == b)
 }
 
-/// AND across keys, OR within one key, an empty key matches anything. A
-/// non-empty key never matches a launch that lacks that coordinate.
+/// Whether an item owned by `owner` reaches this launch. AND across keys, OR
+/// within one key, an empty key matches anything. A non-empty key never
+/// matches a launch that lacks that coordinate.
+///
+/// A machine launch is reached on the owner's own machines, or on any machine
+/// with [`ContextReach::AllUsers`]. A dispatched worker is reached only with
+/// `dispatch`, only when the owner dispatched it, and the `machines` key does
+/// not apply to it.
 #[must_use]
-pub fn filter_matches(m: &ContextMatch, scope: &SpawnScope) -> bool {
+pub fn filter_matches(m: &ContextMatch, owner: Uuid, scope: &SpawnScope) -> bool {
     let any = |list: &[String], hit: &dyn Fn(&str) -> bool| {
         list.is_empty() || list.iter().any(|v| hit(v.as_str()))
     };
-    any(&m.machines, &|v| scope.machine_id.as_deref() == Some(v))
+    let reached = scope.dispatch.as_ref().map_or_else(
+        || {
+            scope.machine_owner.is_some_and(|o| o == owner || m.reach == ContextReach::AllUsers)
+                && any(&m.machines, &|v| scope.machine_id.as_deref() == Some(v))
+        },
+        |d| {
+            m.dispatch
+                && d.owner == owner
+                && any(&m.dispatchers, &|v| d.dispatcher.as_deref() == Some(v))
+                && any(&m.profiles, &|v| d.profile.as_deref() == Some(v))
+        },
+    );
+    reached
         && any(&m.paths, &|p| scope.working_dir.as_deref().is_some_and(|d| path_matches(p, d)))
         && any(&m.labels, &|l| scope.label_ids.iter().any(|id| id == l))
         && any(&m.adapters, &|a| scope.adapter.as_deref() == Some(a))
@@ -286,7 +327,7 @@ pub fn filter_matches(m: &ContextMatch, scope: &SpawnScope) -> bool {
 /// Whether an enabled item's filter matches this launch.
 #[must_use]
 pub fn scope_matches(item: &ContextItem, scope: &SpawnScope) -> bool {
-    item.enabled && filter_matches(&item.match_, scope)
+    item.enabled && filter_matches(&item.match_, item.user_id, scope)
 }
 
 /// The memories a spawn suggests: every enabled `memory` whose filter
@@ -347,11 +388,15 @@ fn sort_for_delivery(items: &mut [ContextItem]) {
 }
 
 /// The matching rules, then the explicit picks (by name; memories and
-/// prompts). Enabling a rule is the consent; a memory attaches only when
-/// picked, whatever its filter matches. Picks are capped.
+/// prompts).
+///
+/// Enabling a rule is the consent; a memory attaches only when picked,
+/// whatever its filter matches. Picks are capped and come from `items` alone;
+/// `shared` adds other users' rules.
 #[must_use]
 pub fn resolve_for_spawn(
     items: &[ContextItem],
+    shared: &[ContextItem],
     picks: &[String],
     scope: &SpawnScope,
 ) -> Vec<ContextItem> {
@@ -365,9 +410,13 @@ pub fn resolve_for_spawn(
     }
     sort_for_delivery(&mut chosen);
     chosen.truncate(MAX_ITEMS_PER_SPAWN);
-    let mut out = resolve_rules(items, scope);
+    let mut out = resolve_rules(&with_shared(items, shared), scope);
     out.extend(chosen);
     out
+}
+
+fn with_shared(items: &[ContextItem], shared: &[ContextItem]) -> Vec<ContextItem> {
+    items.iter().chain(shared).cloned().collect()
 }
 
 /// Expand a prompt template: `{{cwd}}`, `{{name}}`, `{{topic}}`. An unknown
@@ -409,6 +458,65 @@ pub async fn list_for_user(pool: &PgPool, user_id: Uuid) -> Result<Vec<ContextIt
     .fetch_all(pool)
     .await?;
     Ok(rows.into_iter().map(ContextItem::from).collect())
+}
+
+/// Other users' rules set to reach every user's machines, from owners who are
+/// still admins.
+pub async fn list_shared_rules(
+    pool: &PgPool,
+    user_id: Uuid,
+) -> Result<Vec<ContextItem>, sqlx::Error> {
+    let rows: Vec<Row> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "SELECT {COLS} FROM context_items c \
+          WHERE c.user_id <> $1 AND c.kind = 'rule' AND c.enabled \
+            AND c.filters->>'reach' = 'all_users' \
+            AND EXISTS (SELECT 1 FROM user_acls a WHERE a.user_id = c.user_id AND a.scope = 'admin') \
+          ORDER BY lower(c.title), c.name"
+    )))
+    .bind(user_id)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows.into_iter().map(ContextItem::from).collect())
+}
+
+/// The owner of a machine, by its id.
+pub async fn machine_owner(pool: &PgPool, machine_id: &str) -> Option<Uuid> {
+    let id = Uuid::parse_str(machine_id).ok()?;
+    let owner = sqlx::query_scalar("SELECT user_id FROM machines WHERE id = $1")
+        .bind(id)
+        .fetch_optional(pool)
+        .await;
+    match owner {
+        Ok(owner) => owner,
+        Err(e) => {
+            tracing::warn!(%machine_id, error = %e, "machine owner lookup failed");
+            None
+        }
+    }
+}
+
+/// Fill what a scope recorded before reach existed: the machine's owner, and
+/// the dispatch a dispatched session ran as.
+pub async fn complete_scope(pool: &PgPool, mut scope: StoredScope) -> StoredScope {
+    if scope.dispatched && scope.coords.dispatch.is_none() {
+        scope.coords.dispatch =
+            Some(DispatchCoords { owner: scope.user_id, dispatcher: None, profile: None });
+    }
+    if scope.coords.machine_owner.is_none()
+        && let Some(machine) = scope.coords.machine_id.as_deref()
+    {
+        scope.coords.machine_owner = machine_owner(pool, machine).await;
+    }
+    scope
+}
+
+/// The rules a launch at `scope` carries.
+async fn launch_rules(pool: &PgPool, scope: &StoredScope) -> Result<Vec<ContextItem>, sqlx::Error> {
+    let (own, shared) = tokio::try_join!(
+        list_for_user(pool, scope.user_id),
+        list_shared_rules(pool, scope.user_id)
+    )?;
+    Ok(resolve_rules(&with_shared(&own, &shared), &scope.coords))
 }
 
 pub async fn get_many(pool: &PgPool, ids: &[Uuid]) -> Result<Vec<ContextItem>, sqlx::Error> {
@@ -733,6 +841,15 @@ async fn scope_of_session(
     .fetch_all(pool)
     .await?;
     let text = |s: Option<String>| s.map(|v| v.trim().to_owned()).filter(|v| !v.is_empty());
+    let machine_owner: Option<Uuid> = match machine {
+        Some(m) => {
+            sqlx::query_scalar("SELECT user_id FROM machines WHERE id = $1")
+                .bind(m)
+                .fetch_optional(pool)
+                .await?
+        }
+        None => None,
+    };
     Ok(Some(StoredScope {
         user_id,
         coords: SpawnScope {
@@ -740,6 +857,8 @@ async fn scope_of_session(
             working_dir: text(working_dir),
             label_ids: label_ids.iter().map(ToString::to_string).collect(),
             adapter: text(adapter),
+            machine_owner,
+            dispatch: None,
         },
         dispatched: false,
     }))
@@ -792,8 +911,9 @@ pub async fn for_launch(pool: &PgPool, session_id: &str, with_rules: bool) -> Ve
     };
     let mut rules = Vec::new();
     if let Some(scope) = scope.filter(|_| with_rules) {
-        match list_for_user(pool, scope.user_id).await {
-            Ok(items) => rules = resolve_rules(&items, &scope.coords),
+        let scope = complete_scope(pool, scope).await;
+        match launch_rules(pool, &scope).await {
+            Ok(found) => rules = found,
             Err(e) => tracing::warn!(%session_id, error = %e, "rule lookup failed"),
         }
     }
@@ -913,13 +1033,14 @@ pub async fn resolve_for_child(
     profile_name: Option<&str>,
     scope: &SpawnScope,
 ) -> Vec<ContextItem> {
-    let items = match list_for_user(pool, user_id).await {
-        Ok(items) => items,
-        Err(e) => {
-            tracing::warn!(error = %e, "child context lookup failed; spawning without it");
-            return Vec::new();
-        }
-    };
+    let (items, shared) =
+        match tokio::try_join!(list_for_user(pool, user_id), list_shared_rules(pool, user_id)) {
+            Ok(found) => found,
+            Err(e) => {
+                tracing::warn!(error = %e, "child context lookup failed; spawning without it");
+                return Vec::new();
+            }
+        };
     let mut picks = Vec::new();
     if let Some(name) = profile_name.map(str::trim).filter(|n| !n.is_empty()) {
         let pinned: Option<Vec<Uuid>> = sqlx::query_scalar(
@@ -940,7 +1061,7 @@ pub async fn resolve_for_child(
     }
     // A child inherits what its profile pins, never what its cwd happens to
     // match; its rules still apply, as on every launch.
-    resolve_for_spawn(&items, &picks, scope)
+    resolve_for_spawn(&items, &shared, &picks, scope)
 }
 
 /// Stage `names` (memories of `owner`) into a live session as one file and
@@ -1041,7 +1162,7 @@ pub async fn create_item<S: SessionsContext>(
     Extension(ctx): Extension<AuthContext>,
     Json(spec): Json<ContextItemSpec>,
 ) -> Result<(StatusCode, Json<ContextItem>), AppError> {
-    let spec = targets::resolve_spec(state.pool(), ctx.user_id, clean_spec(spec)?, &[]).await?;
+    let spec = reach::resolve_owned_spec(state.pool(), &ctx, clean_spec(spec)?, &[]).await?;
     let row = insert(state.pool(), ctx.user_id, &spec, None, None).await.map_err(db_err)?;
     Ok((StatusCode::CREATED, Json(row)))
 }
@@ -1059,7 +1180,7 @@ pub async fn update_item<S: SessionsContext>(
         .and_then(clean_spec)?;
     let before = get_one(state.pool(), ctx.user_id, id).await?;
     let keep = before.as_ref().map(targets::kept).unwrap_or_default();
-    let spec = targets::resolve_spec(state.pool(), ctx.user_id, spec, &keep).await?;
+    let spec = reach::resolve_owned_spec(state.pool(), &ctx, spec, &keep).await?;
     let row = update(state.pool(), ctx.user_id, id, &spec, None).await.map_err(db_err)?;
     row.map(Json).ok_or_else(|| AppError::new(StatusCode::NOT_FOUND, "context item not found"))
 }
@@ -1118,7 +1239,7 @@ pub async fn reject_pending<S: SessionsContext>(
 
 /// Query for `GET /context/resolve`: what a launch into these coordinates
 /// would carry. Backs the spawn modal's rule row and pre-checked memories.
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, Default, serde::Deserialize)]
 pub struct ResolveQuery {
     #[serde(default)]
     pub machine_id: Option<String>,
@@ -1129,18 +1250,28 @@ pub struct ResolveQuery {
     pub labels: Option<String>,
     #[serde(default)]
     pub adapter: Option<String>,
+    /// Resolve as a worker the caller dispatches, on no machine.
+    #[serde(default)]
+    pub dispatch: bool,
+    #[serde(default)]
+    pub dispatcher: Option<String>,
+    #[serde(default)]
+    pub profile: Option<String>,
 }
 
-/// `GET /context/resolve`.
-pub async fn resolve_items<S: SessionsContext>(
-    State(state): State<S>,
-    Extension(ctx): Extension<AuthContext>,
-    Query(q): Query<ResolveQuery>,
-) -> Result<Json<ResolvedContextResponse>, AppError> {
-    let items = list_for_user(state.pool(), ctx.user_id).await?;
+/// The user and coordinates a launch at `q` resolves against.
+///
+/// As the spawn and dispatch paths record them: an admin's spawn on another
+/// user's machine belongs to that user. With no machine, a machine of the
+/// caller's.
+pub async fn preview_scope(
+    pool: &PgPool,
+    ctx: &AuthContext,
+    q: ResolveQuery,
+) -> Result<StoredScope, AppError> {
     let blank = |s: Option<String>| s.map(|v| v.trim().to_owned()).filter(|v| !v.is_empty());
-    let scope = SpawnScope {
-        machine_id: blank(q.machine_id),
+    let mut coords = SpawnScope {
+        machine_id: None,
         working_dir: blank(q.working_dir),
         label_ids: q
             .labels
@@ -1150,10 +1281,40 @@ pub async fn resolve_items<S: SessionsContext>(
             .filter(|s| !s.is_empty())
             .collect(),
         adapter: blank(q.adapter),
+        machine_owner: None,
+        dispatch: None,
     };
+    if q.dispatch {
+        coords.dispatch = Some(DispatchCoords {
+            owner: ctx.user_id,
+            dispatcher: blank(q.dispatcher),
+            profile: blank(q.profile),
+        });
+        return Ok(StoredScope { user_id: ctx.user_id, coords, dispatched: true });
+    }
+    let Some(machine) = blank(q.machine_id) else {
+        coords.machine_owner = Some(ctx.user_id);
+        return Ok(StoredScope { user_id: ctx.user_id, coords, dispatched: false });
+    };
+    let owner = machine_owner(pool, &machine)
+        .await
+        .ok_or_else(|| AppError::new(StatusCode::NOT_FOUND, "no such machine"))?;
+    coords.machine_id = Some(machine);
+    coords.machine_owner = Some(owner);
+    Ok(StoredScope { user_id: ctx.owner_filter().unwrap_or(owner), coords, dispatched: false })
+}
+
+/// `GET /context/resolve`.
+pub async fn resolve_items<S: SessionsContext>(
+    State(state): State<S>,
+    Extension(ctx): Extension<AuthContext>,
+    Query(q): Query<ResolveQuery>,
+) -> Result<Json<ResolvedContextResponse>, AppError> {
+    let scope = preview_scope(state.pool(), &ctx, q).await?;
+    let own = list_for_user(state.pool(), scope.user_id).await?;
     Ok(Json(ResolvedContextResponse {
-        rules: resolve_rules(&items, &scope),
-        memories: matching_memories(&items, &scope),
+        rules: launch_rules(state.pool(), &scope).await?,
+        memories: matching_memories(&own, &scope.coords),
     }))
 }
 
@@ -1243,6 +1404,39 @@ async fn announce_attached<S: SessionsContext>(
 }
 
 #[cfg(test)]
+pub mod test_items {
+    use super::{ContextItem, ContextMatch, Uuid};
+
+    #[must_use]
+    pub fn rule(owner: Uuid, name: &str, m: ContextMatch) -> ContextItem {
+        ContextItem {
+            id: Uuid::new_v4(),
+            user_id: owner,
+            kind: "rule".to_owned(),
+            name: name.to_owned(),
+            title: name.to_owned(),
+            body: format!("body of {name}"),
+            scope: "user".to_owned(),
+            scope_ref: None,
+            match_: m,
+            tags: Vec::new(),
+            enabled: true,
+            version: 1,
+            pending: None,
+            created_by_session: None,
+            updated_by_session: None,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        }
+    }
+
+    #[must_use]
+    pub fn names(items: &[ContextItem]) -> Vec<&str> {
+        items.iter().map(|i| i.name.as_str()).collect()
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use chrono::Utc;
 
@@ -1280,13 +1474,33 @@ mod tests {
         items.iter().map(|i| i.name.as_str()).collect()
     }
 
+    /// Admins' all-users rules from tests running beside this one on the same
+    /// database reach every launch; an assertion counts only its own users'.
+    fn only(items: Vec<ContextItem>, users: &[Uuid]) -> Vec<ContextItem> {
+        items.into_iter().filter(|i| users.contains(&i.user_id)).collect()
+    }
+
+    fn own_refs(refs: Vec<AttachedContextRef>, ids: &[Uuid]) -> Vec<AttachedContextRef> {
+        refs.into_iter().filter(|r| ids.iter().any(|id| id.to_string() == r.id)).collect()
+    }
+
     fn at(adapter: &str, dir: &str) -> SpawnScope {
         SpawnScope {
             machine_id: Some("m-1".into()),
             working_dir: Some(dir.into()),
             label_ids: Vec::new(),
             adapter: Some(adapter.into()),
+            machine_owner: Some(Uuid::nil()),
+            dispatch: None,
         }
+    }
+
+    fn owned_at(owner: Uuid, adapter: &str, dir: &str) -> SpawnScope {
+        SpawnScope { machine_owner: Some(owner), ..at(adapter, dir) }
+    }
+
+    fn home() -> SpawnScope {
+        SpawnScope { machine_owner: Some(Uuid::nil()), ..SpawnScope::default() }
     }
 
     #[test]
@@ -1316,6 +1530,8 @@ mod tests {
             working_dir: Some("/w/repo/crates".into()),
             label_ids: vec!["lab-1".into()],
             adapter: None,
+            machine_owner: Some(Uuid::nil()),
+            dispatch: None,
         };
         assert_eq!(
             names(&matching_memories(&items, &scope)),
@@ -1326,24 +1542,24 @@ mod tests {
 
     #[test]
     fn filter_keys_are_anded_values_ored_and_empty_means_any() {
+        let nil = Uuid::nil();
         let m = ContextMatch {
             machines: vec!["m-1".into(), "m-2".into()],
             paths: vec!["/w/repo".into()],
-            labels: Vec::new(),
-            adapters: Vec::new(),
+            ..ContextMatch::default()
         };
-        assert!(filter_matches(&m, &at("codex", "/w/repo")));
+        assert!(filter_matches(&m, nil, &at("codex", "/w/repo")));
         let other_box = SpawnScope { machine_id: Some("m-2".into()), ..at("codex", "/w/repo/x") };
-        assert!(filter_matches(&m, &other_box), "either machine");
+        assert!(filter_matches(&m, nil, &other_box), "either machine");
         let third_box = SpawnScope { machine_id: Some("m-3".into()), ..at("codex", "/w/repo") };
-        assert!(!filter_matches(&m, &third_box), "machine AND path");
-        assert!(!filter_matches(&m, &at("codex", "/w/elsewhere")));
-        assert!(filter_matches(&ContextMatch::default(), &SpawnScope::default()));
+        assert!(!filter_matches(&m, nil, &third_box), "machine AND path");
+        assert!(!filter_matches(&m, nil, &at("codex", "/w/elsewhere")));
+        assert!(filter_matches(&ContextMatch::default(), nil, &home()));
 
         let labelled = ContextMatch { labels: vec!["lab-1".into()], ..ContextMatch::default() };
-        assert!(!filter_matches(&labelled, &SpawnScope::default()), "a missing coordinate");
-        let with_label = SpawnScope { label_ids: vec!["lab-1".into()], ..SpawnScope::default() };
-        assert!(filter_matches(&labelled, &with_label));
+        assert!(!filter_matches(&labelled, nil, &home()), "a missing coordinate");
+        let with_label = SpawnScope { label_ids: vec!["lab-1".into()], ..home() };
+        assert!(filter_matches(&labelled, nil, &with_label));
     }
 
     #[test]
@@ -1376,7 +1592,8 @@ mod tests {
         off_rule.enabled = false;
         assert!(resolve_rules(std::slice::from_ref(&off_rule), &at("codex", "/w")).is_empty());
         assert!(
-            resolve_for_spawn(&[off_rule], &["off-rule".to_owned()], &at("codex", "/w")).is_empty(),
+            resolve_for_spawn(&[off_rule], &[], &["off-rule".to_owned()], &at("codex", "/w"))
+                .is_empty(),
             "a pick never brings back a disabled rule"
         );
     }
@@ -1413,15 +1630,15 @@ mod tests {
             item("prompt", "reviewer", "user", None),
         ];
         let scope = at("claude-code", "/w");
-        assert_eq!(names(&resolve_for_spawn(&items, &[], &scope)), ["alpha", "zeta"]);
+        assert_eq!(names(&resolve_for_spawn(&items, &[], &[], &scope)), ["alpha", "zeta"]);
         let picks = ["reviewer".to_owned(), "note".to_owned()];
         assert_eq!(
-            names(&resolve_for_spawn(&items, &picks, &scope)),
+            names(&resolve_for_spawn(&items, &[], &picks, &scope)),
             ["alpha", "zeta", "note", "reviewer"],
             "rules, then memories, then the prompt"
         );
         assert_eq!(
-            names(&resolve_for_spawn(&items, &["alpha".to_owned()], &scope)),
+            names(&resolve_for_spawn(&items, &[], &["alpha".to_owned()], &scope)),
             ["alpha", "zeta"],
             "naming a rule never duplicates it"
         );
@@ -1462,7 +1679,8 @@ mod tests {
     fn prompt_templates_are_never_auto_resolved() {
         let items = vec![item("prompt", "reviewer", "user", None)];
         assert!(matching_memories(&items, &SpawnScope::default()).is_empty());
-        let picked = resolve_for_spawn(&items, &["reviewer".to_owned()], &SpawnScope::default());
+        let picked =
+            resolve_for_spawn(&items, &[], &["reviewer".to_owned()], &SpawnScope::default());
         assert_eq!(names(&picked), ["reviewer"]);
     }
 
@@ -1474,12 +1692,12 @@ mod tests {
             item("prompt", "reviewer", "user", None),
         ];
         let picks = ["reviewer".to_owned(), "hand-picked".to_owned(), "hand-picked".to_owned()];
-        let got = resolve_for_spawn(&items, &picks, &SpawnScope::default());
+        let got = resolve_for_spawn(&items, &[], &picks, &home());
         assert_eq!(names(&got), ["hand-picked", "reviewer"], "memories first, prompt last");
 
-        let manual = resolve_for_spawn(&items, &["hand-picked".to_owned()], &SpawnScope::default());
+        let manual = resolve_for_spawn(&items, &[], &["hand-picked".to_owned()], &home());
         assert_eq!(names(&manual), ["hand-picked"], "a matching memory is only a suggestion");
-        assert!(resolve_for_spawn(&items, &[], &SpawnScope::default()).is_empty());
+        assert!(resolve_for_spawn(&items, &[], &[], &home()).is_empty());
     }
 
     /// Profile parity: both spawn paths funnel into `resolve_for_spawn` with
@@ -1516,10 +1734,12 @@ mod tests {
             working_dir: Some("/w/repo/crates".into()),
             label_ids: Vec::new(),
             adapter: Some("codex".into()),
+            machine_owner: Some(Uuid::nil()),
+            dispatch: None,
         };
 
-        let from_webui = resolve_for_spawn(&items, &pinned, &scope);
-        let from_tool = resolve_for_spawn(&items, &pinned, &scope);
+        let from_webui = resolve_for_spawn(&items, &[], &pinned, &scope);
+        let from_tool = resolve_for_spawn(&items, &[], &pinned, &scope);
         assert_eq!(names(&from_webui), names(&from_tool));
         assert_eq!(
             names(&from_webui),
@@ -1528,7 +1748,7 @@ mod tests {
         );
 
         let elsewhere = SpawnScope { machine_id: Some(Uuid::new_v4().to_string()), ..scope };
-        let got = resolve_for_spawn(&items, &pinned, &elsewhere);
+        let got = resolve_for_spawn(&items, &[], &pinned, &elsewhere);
         assert_eq!(names(&got), ["everywhere", "pinned", "reviewer"], "pins attach anywhere");
     }
 
@@ -1547,24 +1767,27 @@ mod tests {
         ];
         let scope = at("claude-code", "/w/repo");
         assert_eq!(
-            names(&resolve_for_spawn(&items, &asked.items, &scope)),
+            names(&resolve_for_spawn(&items, &[], &asked.items, &scope)),
             ["house"],
             "a matching memory is not consent; a rule is"
         );
         let decoded: cctui_proto::api::SpawnContext =
             serde_json::from_str(r#"{"items":["always"]}"#).expect("decodes");
         assert!(!decoded.auto);
-        assert_eq!(names(&resolve_for_spawn(&items, &decoded.items, &scope)), ["house", "always"]);
+        assert_eq!(
+            names(&resolve_for_spawn(&items, &[], &decoded.items, &scope)),
+            ["house", "always"]
+        );
         let legacy: cctui_proto::api::SpawnContext =
             serde_json::from_str(r#"{"items":[],"auto":true}"#).expect("decodes");
         assert!(legacy.auto);
-        assert_eq!(names(&resolve_for_spawn(&items, &legacy.items, &scope)), ["house"]);
+        assert_eq!(names(&resolve_for_spawn(&items, &[], &legacy.items, &scope)), ["house"]);
     }
 
     #[test]
     fn an_unknown_pick_is_ignored_rather_than_failing_the_spawn() {
         let items = vec![item("memory", "known", "user", None)];
-        let got = resolve_for_spawn(&items, &["ghost".to_owned()], &SpawnScope::default());
+        let got = resolve_for_spawn(&items, &[], &["ghost".to_owned()], &SpawnScope::default());
         assert!(got.is_empty());
     }
 
@@ -1573,11 +1796,8 @@ mod tests {
         let items: Vec<ContextItem> =
             (0..50).map(|i| item("memory", &format!("m{i:02}"), "user", None)).collect();
         let picks: Vec<String> = items.iter().map(|i| i.name.clone()).collect();
-        assert_eq!(matching_memories(&items, &SpawnScope::default()).len(), 50);
-        assert_eq!(
-            resolve_for_spawn(&items, &picks, &SpawnScope::default()).len(),
-            MAX_ITEMS_PER_SPAWN
-        );
+        assert_eq!(matching_memories(&items, &home()).len(), 50);
+        assert_eq!(resolve_for_spawn(&items, &[], &picks, &home()).len(), MAX_ITEMS_PER_SPAWN);
     }
 
     #[test]
@@ -1761,10 +1981,11 @@ mod tests {
         let m = insert(&pool, uid, &memory, None, None).await.expect("memory");
 
         let key = format!("ctx-key-{}", Uuid::new_v4());
-        let stored = StoredScope { user_id: uid, coords: at("codex", "/w"), dispatched: false };
+        let stored =
+            StoredScope { user_id: uid, coords: owned_at(uid, "codex", "/w"), dispatched: false };
         remember_intent(&pool, &key, &[r.clone(), m.clone()], &stored).await;
 
-        let first = for_launch(&pool, &key, true).await;
+        let first = only(for_launch(&pool, &key, true).await, &[uid]);
         assert_eq!(names(&first), ["house", "note"]);
         assert_eq!(first[0].body, "v1 body");
 
@@ -1774,7 +1995,7 @@ mod tests {
 
         let session = format!("ctx-session-{}", Uuid::new_v4());
         claim_intent(&pool, &session, Some(&key)).await;
-        let resumed = for_launch(&pool, &session, true).await;
+        let resumed = only(for_launch(&pool, &session, true).await, &[uid]);
         assert_eq!(names(&resumed), ["house", "note"], "the resume keeps the kit");
         assert_eq!(resumed[0].body, "v2 body", "the edit reaches the next launch");
 
@@ -1782,22 +2003,29 @@ mod tests {
         else {
             panic!("the re-keyed row exists");
         };
+        let rules = own_refs(rules, &[r.id]);
         assert_eq!(rules.len(), 1);
         assert_eq!(memories.len(), 1);
         assert_eq!((memories[0].name.as_str(), memories[0].version), ("note", 1));
         assert_eq!((rules[0].name.as_str(), rules[0].version), ("house", 2));
 
-        let legacy = for_launch(&pool, &session, false).await;
+        let legacy = only(for_launch(&pool, &session, false).await, &[uid]);
         assert_eq!(names(&legacy), ["note"], "a daemon that predates rules is not sent them");
         let Some(Intent { rules, .. }) = intent_of(&pool, &session).await.expect("row") else {
             panic!("the re-keyed row exists");
         };
-        assert!(rules.is_empty(), "rules a daemon cannot deliver are not recorded as delivered");
+        assert!(
+            own_refs(rules, &[r.id]).is_empty(),
+            "rules a daemon cannot deliver are not recorded as delivered"
+        );
 
-        let claude = StoredScope { coords: at("claude-code", "/w"), ..stored };
+        let claude = StoredScope { coords: owned_at(uid, "claude-code", "/w"), ..stored };
         let other = format!("ctx-key-{}", Uuid::new_v4());
         remember_intent(&pool, &other, &[], &claude).await;
-        assert!(for_launch(&pool, &other, true).await.is_empty(), "a codex rule skips claude");
+        assert!(
+            only(for_launch(&pool, &other, true).await, &[uid]).is_empty(),
+            "a codex rule skips claude"
+        );
 
         sqlx::query("DELETE FROM session_context WHERE spawn_key = ANY($1)")
             .bind(vec![key, session, other])
@@ -1979,12 +2207,14 @@ mod tests {
             paths: vec!["/w".into()],
             labels: vec![label.to_string()],
             adapters: vec!["codex".into()],
+            ..ContextMatch::default()
         };
-        insert(&pool, uid, &rule_spec("here", "b", here), None, None).await.expect("rule");
+        let here =
+            insert(&pool, uid, &rule_spec("here", "b", here), None, None).await.expect("rule");
         let claude = ContextMatch { adapters: vec!["claude-code".into()], ..Default::default() };
         insert(&pool, uid, &rule_spec("claude", "b", claude), None, None).await.expect("rule");
 
-        assert_eq!(names(&for_launch(&pool, &sid, true).await), ["here"]);
+        assert_eq!(names(&only(for_launch(&pool, &sid, true).await, &[uid])), ["here"]);
         let stored = ownership::launch_scope(&pool, &sid).await.expect("adopted");
         assert_eq!(stored.user_id, uid);
         assert_eq!(stored.coords.working_dir.as_deref(), Some("/w/repo"));
@@ -1993,21 +2223,31 @@ mod tests {
         let Some(Intent { rules, .. }) = intent_of(&pool, &sid).await.expect("row") else {
             panic!("the adopted row exists");
         };
-        assert_eq!(rules.len(), 1, "the delivery is recorded for the card");
+        assert_eq!(own_refs(rules, &[here.id]).len(), 1, "the delivery is recorded for the card");
 
         let granted = format!("ctx-granted-{}", Uuid::new_v4());
         grant(&pool, &granted, &[]).await.expect("grant-only row");
-        assert!(for_launch(&pool, &granted, true).await.is_empty(), "no session row, no scope");
+        assert!(
+            only(for_launch(&pool, &granted, true).await, &[uid]).is_empty(),
+            "no session row, no scope"
+        );
 
-        let elsewhere =
-            StoredScope { user_id: uid, coords: at("claude-code", "/elsewhere"), dispatched: true };
+        let elsewhere = StoredScope {
+            user_id: uid,
+            coords: owned_at(uid, "claude-code", "/elsewhere"),
+            dispatched: false,
+        };
         sqlx::query("UPDATE session_context SET scope = $2 WHERE spawn_key = $1")
             .bind(&sid)
             .bind(Jsonb(&elsewhere))
             .execute(&pool)
             .await
             .expect("store a scope");
-        assert_eq!(names(&for_launch(&pool, &sid, true).await), ["claude"], "a stored scope wins");
+        assert_eq!(
+            names(&only(for_launch(&pool, &sid, true).await, &[uid])),
+            ["claude"],
+            "a stored scope wins"
+        );
 
         sqlx::query("DELETE FROM session_context WHERE spawn_key = ANY($1)")
             .bind(vec![sid.clone(), granted])
@@ -2028,7 +2268,8 @@ mod tests {
         insert(&pool, uid, &rule_spec("house", "b", codex), None, None).await.expect("rule");
 
         let parent = format!("ctx-parent-{}", Uuid::new_v4());
-        let stored = StoredScope { user_id: uid, coords: at("codex", "/w"), dispatched: false };
+        let stored =
+            StoredScope { user_id: uid, coords: owned_at(uid, "codex", "/w"), dispatched: false };
         remember_intent(&pool, &parent, &[], &stored).await;
         let command_id = Uuid::new_v4().to_string();
         inherit_intent(&pool, &command_id, &parent).await;
@@ -2038,7 +2279,7 @@ mod tests {
         assert!(intent_of(&pool, &thread).await.expect("lookup").is_none(), "not theirs");
 
         claim_fork_intent(&pool, &thread, &command_id, uid).await;
-        assert_eq!(names(&for_launch(&pool, &thread, true).await), ["house"]);
+        assert_eq!(names(&only(for_launch(&pool, &thread, true).await, &[uid])), ["house"]);
 
         let note = clean_spec(ContextItemSpec {
             kind: "memory".into(),
@@ -2240,5 +2481,299 @@ mod tests {
         .execute(&mut *conn)
         .await;
         assert!(rule_after_down.is_err(), "the kind check is restored");
+    }
+
+    fn dispatch(owner: Uuid, dispatcher: &str, profile: Option<&str>) -> SpawnScope {
+        SpawnScope {
+            working_dir: Some("/w".into()),
+            adapter: Some("claude-code".into()),
+            dispatch: Some(DispatchCoords {
+                owner,
+                dispatcher: Some(dispatcher.into()),
+                profile: profile.map(str::to_owned),
+            }),
+            ..SpawnScope::default()
+        }
+    }
+
+    #[test]
+    fn an_item_reaches_only_its_owners_machines_by_default() {
+        let (a, b) = (Uuid::new_v4(), Uuid::new_v4());
+        let open = ContextMatch::default();
+        assert!(filter_matches(&open, a, &owned_at(a, "codex", "/w")));
+        assert!(!filter_matches(&open, a, &owned_at(b, "codex", "/w")), "another user's machine");
+        assert!(!filter_matches(&open, a, &SpawnScope::default()), "no machine, no owner");
+        let listed = ContextMatch { machines: vec!["m-1".into()], ..ContextMatch::default() };
+        assert!(!filter_matches(&listed, a, &owned_at(b, "codex", "/w")), "listed is no excuse");
+
+        let wide = ContextMatch { reach: ContextReach::AllUsers, ..ContextMatch::default() };
+        assert!(filter_matches(&wide, a, &owned_at(b, "codex", "/w")), "all users' machines");
+        assert!(!filter_matches(&wide, a, &SpawnScope::default()), "still a machine");
+        let wide_listed = ContextMatch { machines: vec!["m-2".into()], ..wide };
+        assert!(
+            !filter_matches(&wide_listed, a, &owned_at(b, "codex", "/w")),
+            "machines still AND"
+        );
+    }
+
+    #[test]
+    fn a_dispatch_gets_no_item_without_the_opt_in_and_only_its_owners() {
+        let (a, b) = (Uuid::new_v4(), Uuid::new_v4());
+        let worker = dispatch(a, "kube", Some("rev"));
+        let open = ContextMatch::default();
+        assert!(!filter_matches(&open, a, &worker), "no opt-in, no item");
+        let wide = ContextMatch { reach: ContextReach::AllUsers, ..ContextMatch::default() };
+        assert!(!filter_matches(&wide, a, &worker), "all users' machines are not dispatches");
+
+        let opted = ContextMatch { dispatch: true, ..ContextMatch::default() };
+        assert!(filter_matches(&opted, a, &worker));
+        assert!(!filter_matches(&opted, b, &worker), "another user's dispatch");
+        assert!(filter_matches(&opted, a, &owned_at(a, "codex", "/w")), "and the owner's machines");
+        let pinned = ContextMatch { machines: vec!["m-9".into()], ..opted.clone() };
+        assert!(filter_matches(&pinned, a, &worker), "machines do not apply to a worker");
+
+        let kube = ContextMatch { dispatchers: vec!["kube".into()], ..opted.clone() };
+        assert!(filter_matches(&kube, a, &worker));
+        assert!(!filter_matches(&kube, a, &dispatch(a, "docker", Some("rev"))));
+        let rev = ContextMatch { profiles: vec!["rev".into()], ..opted };
+        assert!(filter_matches(&rev, a, &worker));
+        assert!(!filter_matches(&rev, a, &dispatch(a, "kube", None)), "a profile is required");
+        let narrow_only = ContextMatch { dispatchers: vec!["kube".into()], ..open };
+        assert!(!filter_matches(&narrow_only, a, &worker), "narrowing is no opt-in");
+    }
+
+    #[test]
+    fn shared_rules_join_the_launch_but_never_the_picks() {
+        let (me, admin) = (Uuid::new_v4(), Uuid::new_v4());
+        let mut theirs = item("memory", "note", "user", None);
+        theirs.user_id = admin;
+        let wide = ContextMatch { reach: ContextReach::AllUsers, ..ContextMatch::default() };
+        let shared = [test_items::rule(admin, "house", wide), theirs];
+        let scope = owned_at(me, "codex", "/w");
+        let got = resolve_for_spawn(&[], &shared, &["note".to_owned()], &scope);
+        assert_eq!(names(&got), ["house"], "a pick never takes another user's memory");
+    }
+
+    async fn seed_machine(pool: &PgPool, uid: Uuid) -> Uuid {
+        let mid = Uuid::new_v4();
+        sqlx::query("INSERT INTO machines (id, user_id, name, key_hash) VALUES ($1, $2, $3, $4)")
+            .bind(mid)
+            .bind(uid)
+            .bind(format!("m-{mid}"))
+            .bind(format!("mk-{mid}"))
+            .execute(pool)
+            .await
+            .expect("seed machine");
+        mid
+    }
+
+    async fn seed_session_on(pool: &PgPool, uid: Uuid, machine: Uuid) -> String {
+        let sid = format!("ctx-reach-{}", Uuid::new_v4());
+        sqlx::query(
+            "INSERT INTO sessions \
+                 (id, machine_id, machine_uuid, working_dir, status, user_id, adapter_id) \
+             VALUES ($1, $2, $3, '/w', 'active', $4, 'codex')",
+        )
+        .bind(&sid)
+        .bind(machine.to_string())
+        .bind(machine)
+        .bind(uid)
+        .execute(pool)
+        .await
+        .expect("seed session");
+        sid
+    }
+
+    async fn drop_reach_seed(pool: &PgPool, users: &[Uuid], keys: &[String]) {
+        sqlx::query("DELETE FROM session_context WHERE spawn_key = ANY($1)")
+            .bind(keys)
+            .execute(pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM sessions WHERE id = ANY($1)").bind(keys).execute(pool).await.ok();
+        for table in ["context_items", "machines", "user_acls"] {
+            sqlx::query(sqlx::AssertSqlSafe(format!(
+                "DELETE FROM {table} WHERE user_id = ANY($1)"
+            )))
+            .bind(users)
+            .execute(pool)
+            .await
+            .ok();
+        }
+        sqlx::query("DELETE FROM users WHERE id = ANY($1)").bind(users).execute(pool).await.ok();
+    }
+
+    /// An adopted session resolves against its own row: its user's items, on
+    /// its machine, whose owner may be someone else.
+    #[tokio::test]
+    async fn an_adopted_session_on_another_users_machine_gets_none_of_its_users_default_rules() {
+        let Some(pool) = test_pool("context_reach_adopted").await else { return };
+        let (a, b) = (seed_user(&pool).await, seed_user(&pool).await);
+        let (ma, mb) = (seed_machine(&pool, a).await, seed_machine(&pool, b).await);
+        insert(&pool, a, &rule_spec("house", "b", ContextMatch::default()), None, None)
+            .await
+            .expect("rule");
+        let (home, away) =
+            (seed_session_on(&pool, a, ma).await, seed_session_on(&pool, a, mb).await);
+
+        assert_eq!(names(&only(for_launch(&pool, &home, true).await, &[a, b])), ["house"]);
+        assert!(only(for_launch(&pool, &away, true).await, &[a, b]).is_empty(), "B's machine");
+        let adopted = ownership::launch_scope(&pool, &away).await.expect("adopted");
+        assert_eq!((adopted.user_id, adopted.coords.machine_owner), (a, Some(b)));
+
+        drop_reach_seed(&pool, &[a, b], &[home, away]).await;
+    }
+
+    /// A scope recorded before reach existed carries no machine owner; the
+    /// launch reads it off the machine.
+    #[tokio::test]
+    async fn a_scope_recorded_before_reach_learns_its_machines_owner_at_launch() {
+        let Some(pool) = test_pool("context_reach_legacy_scope").await else { return };
+        let (a, b) = (seed_user(&pool).await, seed_user(&pool).await);
+        let (ma, mb) = (seed_machine(&pool, a).await, seed_machine(&pool, b).await);
+        insert(&pool, a, &rule_spec("house", "b", ContextMatch::default()), None, None)
+            .await
+            .expect("rule");
+        let at_machine = |m: Uuid| StoredScope {
+            user_id: a,
+            coords: SpawnScope { machine_id: Some(m.to_string()), ..SpawnScope::default() },
+            dispatched: false,
+        };
+        let (mine, theirs) = (
+            format!("ctx-legacy-a-{}", Uuid::new_v4()),
+            format!("ctx-legacy-b-{}", Uuid::new_v4()),
+        );
+        remember_intent(&pool, &mine, &[], &at_machine(ma)).await;
+        remember_intent(&pool, &theirs, &[], &at_machine(mb)).await;
+
+        assert_eq!(names(&only(for_launch(&pool, &mine, true).await, &[a, b])), ["house"]);
+        assert!(only(for_launch(&pool, &theirs, true).await, &[a, b]).is_empty());
+
+        drop_reach_seed(&pool, &[a, b], &[mine, theirs]).await;
+    }
+
+    #[tokio::test]
+    async fn a_dispatched_worker_gets_only_its_owners_opted_in_rules() {
+        let Some(pool) = test_pool("context_reach_dispatch").await else { return };
+        let (a, b) = (seed_user(&pool).await, seed_user(&pool).await);
+        sqlx::query("INSERT INTO user_acls (user_id, scope) VALUES ($1, 'admin')")
+            .bind(b)
+            .execute(&pool)
+            .await
+            .expect("b is an admin");
+        let opted = ContextMatch { dispatch: true, ..ContextMatch::default() };
+        for (name, m) in [
+            ("plain", ContextMatch::default()),
+            ("opted", opted.clone()),
+            ("kube", ContextMatch { dispatchers: vec!["kube".into()], ..opted.clone() }),
+            ("docker", ContextMatch { dispatchers: vec!["docker".into()], ..opted.clone() }),
+            ("rev", ContextMatch { profiles: vec!["rev".into()], ..opted.clone() }),
+        ] {
+            insert(&pool, a, &rule_spec(name, "b", m), None, None).await.expect("rule");
+        }
+        let wide = ContextMatch { reach: ContextReach::AllUsers, ..opted.clone() };
+        insert(&pool, b, &rule_spec("admins", "b", wide), None, None).await.expect("rule");
+
+        let worker = format!("ctx-dispatch-{}", Uuid::new_v4());
+        let scope =
+            StoredScope { user_id: a, coords: dispatch(a, "kube", Some("rev")), dispatched: true };
+        remember_intent(&pool, &worker, &[], &scope).await;
+        assert_eq!(
+            names(&only(for_launch(&pool, &worker, true).await, &[a, b])),
+            ["kube", "opted", "rev"]
+        );
+
+        let legacy = format!("ctx-dispatch-legacy-{}", Uuid::new_v4());
+        let old = StoredScope {
+            user_id: a,
+            coords: SpawnScope { adapter: Some("claude-code".into()), ..SpawnScope::default() },
+            dispatched: true,
+        };
+        remember_intent(&pool, &legacy, &[], &old).await;
+        assert_eq!(
+            names(&only(for_launch(&pool, &legacy, true).await, &[a, b])),
+            ["opted"],
+            "unnarrowed only"
+        );
+
+        drop_reach_seed(&pool, &[a, b], &[worker, legacy]).await;
+    }
+
+    #[tokio::test]
+    async fn an_admins_all_users_rule_reaches_every_users_machine_while_they_are_admin() {
+        let Some(pool) = test_pool("context_reach_all_users").await else { return };
+        let (admin, b) = (seed_user(&pool).await, seed_user(&pool).await);
+        sqlx::query("INSERT INTO user_acls (user_id, scope) VALUES ($1, 'admin')")
+            .bind(admin)
+            .execute(&pool)
+            .await
+            .expect("an admin");
+        let mb = seed_machine(&pool, b).await;
+        let wide = ContextMatch { reach: ContextReach::AllUsers, ..ContextMatch::default() };
+        insert(&pool, admin, &rule_spec("everyone", "b", wide), None, None).await.expect("rule");
+        insert(&pool, admin, &rule_spec("mine", "b", ContextMatch::default()), None, None)
+            .await
+            .expect("rule");
+        let sid = seed_session_on(&pool, b, mb).await;
+
+        assert_eq!(names(&only(for_launch(&pool, &sid, true).await, &[admin, b])), ["everyone"]);
+        sqlx::query("DELETE FROM user_acls WHERE user_id = $1 AND scope = 'admin'")
+            .bind(admin)
+            .execute(&pool)
+            .await
+            .expect("demote");
+        assert!(
+            only(for_launch(&pool, &sid, true).await, &[admin, b]).is_empty(),
+            "no longer an admin's decision"
+        );
+
+        drop_reach_seed(&pool, &[admin, b], &[sid]).await;
+    }
+
+    fn caller(user_id: Uuid, admin: bool) -> AuthContext {
+        use crate::auth::Scope;
+        let mut scopes = vec![Scope::Read, Scope::Dispatch];
+        if admin {
+            scopes.push(Scope::Admin);
+        }
+        AuthContext {
+            user_id,
+            key_id: Uuid::nil(),
+            machine_id: None,
+            scopes: scopes.into_iter().collect(),
+        }
+    }
+
+    #[tokio::test]
+    async fn the_preview_resolves_as_the_launch_it_previews() {
+        let Some(pool) = test_pool("context_reach_preview").await else { return };
+        let (a, b) = (seed_user(&pool).await, seed_user(&pool).await);
+        let mb = seed_machine(&pool, b).await;
+        let on =
+            |m: Uuid| ResolveQuery { machine_id: Some(m.to_string()), ..ResolveQuery::default() };
+
+        let admin_on_b = preview_scope(&pool, &caller(a, true), on(mb)).await.expect("preview");
+        assert_eq!((admin_on_b.user_id, admin_on_b.coords.machine_owner), (b, Some(b)));
+        let grantee_on_b = preview_scope(&pool, &caller(a, false), on(mb)).await.expect("preview");
+        assert_eq!((grantee_on_b.user_id, grantee_on_b.coords.machine_owner), (a, Some(b)));
+
+        let nowhere = preview_scope(&pool, &caller(a, false), ResolveQuery::default()).await;
+        assert_eq!(nowhere.expect("preview").coords.machine_owner, Some(a), "a machine of mine");
+
+        let q = ResolveQuery {
+            dispatch: true,
+            dispatcher: Some(" kube ".into()),
+            machine_id: Some(mb.to_string()),
+            ..ResolveQuery::default()
+        };
+        let worker = preview_scope(&pool, &caller(a, true), q).await.expect("preview");
+        assert!(worker.dispatched && worker.coords.machine_id.is_none());
+        let d = worker.coords.dispatch.expect("dispatch coords");
+        assert_eq!((d.owner, d.dispatcher.as_deref()), (a, Some("kube")));
+
+        let ghost = preview_scope(&pool, &caller(a, true), on(Uuid::new_v4())).await;
+        assert!(ghost.is_err(), "an unknown machine");
+
+        drop_reach_seed(&pool, &[a, b], &[]).await;
     }
 }

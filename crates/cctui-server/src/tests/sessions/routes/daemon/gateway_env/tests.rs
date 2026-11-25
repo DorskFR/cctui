@@ -563,7 +563,8 @@ async fn with_context_off_both_launch_pulls_are_empty_and_ownership_still_holds(
     .expect("valid rule");
     let rule = insert(&pool, ua, &rule, None, None).await.expect("rule");
     let key = format!("cmd-{}", Uuid::new_v4());
-    let scope = StoredScope { user_id: ua, coords: SpawnScope::default(), dispatched: false };
+    let coords = SpawnScope { machine_id: Some(ma.to_string()), ..SpawnScope::default() };
+    let scope = StoredScope { user_id: ua, coords, dispatched: false };
     ownership::record(&pool, &key, &scope).await;
     let mut state = AppState::for_test(pool.clone());
     state.config.features = FeatureSet::all().without(Feature::Context);
@@ -583,7 +584,11 @@ async fn with_context_off_both_launch_pulls_are_empty_and_ownership_still_holds(
 
     state.config.features = FeatureSet::all();
     let on = super::launch_context(&state, ua, ma, &key, true).await.expect("pull");
-    assert_eq!(on.iter().map(|i| i.name.as_str()).collect::<Vec<_>>(), ["always"]);
+    let pulled_on: Vec<&str> = on.iter().map(|i| i.name.as_str()).collect();
+    assert!(
+        pulled_on.contains(&"always"),
+        "other tests' all-users rules may ride along: {pulled_on:?}"
+    );
 
     sqlx::query("DELETE FROM session_context WHERE spawn_key = $1")
         .bind(&key)

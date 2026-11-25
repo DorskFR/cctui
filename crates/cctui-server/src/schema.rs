@@ -211,6 +211,16 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "drop_stream_events_search_text",
         sql: include_str!("../schema/0031_drop_stream_events_search_text.sql"),
     },
+    Migration {
+        version: 32,
+        name: "context_reach_foreign_machines",
+        sql: include_str!("../schema/0032_context_reach_foreign_machines.sql"),
+    },
+    Migration {
+        version: 33,
+        name: "privacy_scan_local_transcripts",
+        sql: include_str!("../schema/0033_privacy_scan_local_transcripts.sql"),
+    },
 ];
 
 /// Expand a core installation, or adopt the already migrated full schema.
@@ -387,7 +397,9 @@ mod tests {
                     (28, "bootstrap".to_owned()),
                     (29, "bootstrap".to_owned()),
                     (30, "bootstrap".to_owned()),
-                    (31, "bootstrap".to_owned())
+                    (31, "bootstrap".to_owned()),
+                    (32, "bootstrap".to_owned()),
+                    (33, "bootstrap".to_owned())
                 ]
             );
 
@@ -501,7 +513,7 @@ mod tests {
             drop(conn);
             let versions: Vec<i64> =
                 installations(&pool, "workspace").await.into_iter().map(|(v, _)| v).collect();
-            assert_eq!(versions.last(), Some(&31));
+            assert_eq!(versions.last(), Some(&33));
             assert!(installations(&pool, super::SEARCH_PACKAGE).await.is_empty());
             assert_eq!(search_text_objects(&pool).await, (false, false, 0, false));
             assert_eq!(insert_and_read_plain_event(&pool).await, "t");
@@ -766,6 +778,91 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn the_context_reach_migration_drops_other_users_machines_from_non_admin_items() {
+        with_isolated_database("context_reach_migration", |pool| async move {
+            provisioned(&pool).await;
+            let (a, admin, b) = (uuid::Uuid::new_v4(), uuid::Uuid::new_v4(), uuid::Uuid::new_v4());
+            let (ma, mb) = (uuid::Uuid::new_v4(), uuid::Uuid::new_v4());
+            for uid in [a, admin, b] {
+                sqlx::query("INSERT INTO users (id, name, key_hash) VALUES ($1, $1::text, $1::text)")
+                    .bind(uid)
+                    .execute(&pool)
+                    .await
+                    .unwrap();
+            }
+            sqlx::query("INSERT INTO user_acls (user_id, scope) VALUES ($1, 'admin')")
+                .bind(admin)
+                .execute(&pool)
+                .await
+                .unwrap();
+            for (mid, uid) in [(ma, a), (mb, b)] {
+                sqlx::query(
+                    "INSERT INTO machines (id, user_id, name, key_hash) VALUES ($1, $2, $1::text, $1::text)",
+                )
+                .bind(mid)
+                .bind(uid)
+                .execute(&pool)
+                .await
+                .unwrap();
+            }
+            let (ma, mb) = (ma.to_string(), mb.to_string());
+            let ghost = uuid::Uuid::new_v4().to_string();
+            let seed = [
+                (a, "both", serde_json::json!({"machines": [ma, mb]}), "user", None),
+                (a, "only-b", serde_json::json!({"machines": [mb]}), "machine", Some(mb.clone())),
+                (a, "b-and-path", serde_json::json!({"machines": [mb], "paths": ["/w"]}), "user", None),
+                (admin, "admins", serde_json::json!({"machines": [mb]}), "machine", Some(mb.clone())),
+                (a, "own", serde_json::json!({"machines": [ma]}), "machine", Some(ma.clone())),
+                (a, "ghost", serde_json::json!({"machines": [ghost]}), "machine", Some(ghost.clone())),
+                (a, "open", serde_json::json!({}), "user", None),
+            ];
+            for (uid, name, filters, scope, scope_ref) in seed {
+                sqlx::query(
+                    "INSERT INTO context_items (user_id, kind, name, title, filters, scope, scope_ref) \
+                     VALUES ($1, 'rule', $2, $2, $3, $4, $5)",
+                )
+                .bind(uid)
+                .bind(name)
+                .bind(filters)
+                .bind(scope)
+                .bind(scope_ref)
+                .execute(&pool)
+                .await
+                .unwrap();
+            }
+            let rows = "SELECT jsonb_agg(jsonb_build_object('name', name, 'filters', filters, \
+                        'scope', scope, 'ref', scope_ref, 'enabled', enabled) ORDER BY name) \
+                        FROM context_items";
+            let migration = super::MIGRATIONS.iter().find(|m| m.version == 32).unwrap();
+            sqlx::raw_sql(migration.sql).execute(&pool).await.unwrap();
+            let once: serde_json::Value = sqlx::query_scalar(rows).fetch_one(&pool).await.unwrap();
+            sqlx::raw_sql(migration.sql).execute(&pool).await.unwrap();
+            let twice: serde_json::Value = sqlx::query_scalar(rows).fetch_one(&pool).await.unwrap();
+            assert_eq!(once, twice, "idempotent");
+
+            let by = |name: &str| {
+                once.as_array().unwrap().iter().find(|r| r["name"] == name).unwrap().clone()
+            };
+            let both = by("both");
+            assert_eq!(both["filters"]["machines"], serde_json::json!([ma]));
+            assert_eq!((&both["scope"], &both["ref"]), (&serde_json::json!("machine"), &serde_json::json!(ma)));
+            assert_eq!(both["enabled"], true);
+            let only_b = by("only-b");
+            assert_eq!(only_b["filters"]["machines"], serde_json::json!([]));
+            assert_eq!((&only_b["scope"], &only_b["ref"]), (&serde_json::json!("user"), &serde_json::Value::Null));
+            assert_eq!(only_b["enabled"], false, "never widened to every machine of its owner");
+            let with_path = by("b-and-path");
+            assert_eq!((&with_path["scope"], &with_path["ref"]), (&serde_json::json!("path"), &serde_json::json!("/w")));
+            assert_eq!(with_path["enabled"], false);
+            assert_eq!(by("admins")["filters"]["machines"], serde_json::json!([mb]), "the admin decides");
+            assert_eq!(by("own")["filters"]["machines"], serde_json::json!([ma]));
+            assert_eq!(by("ghost")["filters"]["machines"], serde_json::json!([ghost]));
+            assert_eq!(by("open")["filters"], serde_json::json!({}));
+        })
+        .await;
+    }
+
+    #[tokio::test]
     async fn the_thread_root_migration_backfills_every_followup_line() {
         with_isolated_database("session_thread_root_migration", |pool| async move {
             provisioned(&pool).await;
@@ -985,7 +1082,9 @@ mod tests {
                     (28, "bootstrap".to_owned()),
                     (29, "bootstrap".to_owned()),
                     (30, "bootstrap".to_owned()),
-                    (31, "bootstrap".to_owned())
+                    (31, "bootstrap".to_owned()),
+                    (32, "bootstrap".to_owned()),
+                    (33, "bootstrap".to_owned())
                 ]
             );
             let rows: i64 =

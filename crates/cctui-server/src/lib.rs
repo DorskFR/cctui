@@ -1578,6 +1578,7 @@ mod tests {
             "POST /cctuiverse/links/{id}/messages/{msg}/drop Bearer Human",
             "POST /cctuiverse/links/{id}/messages/{msg}/release Bearer Human",
             "GET /context Bearer Human",
+            "PATCH /context Bearer Human",
             "POST /context Bearer Human",
             "GET /context/resolve Bearer Human",
             "DELETE /context/{id} Bearer Human",

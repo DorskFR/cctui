@@ -1,12 +1,14 @@
-//! The machines and labels a filter can name. [`super::filter_matches`]
-//! compares `match.machines` and `match.labels` against ids, so a save
-//! resolves names to the owner's ids and rejects anything else.
+//! The machines and labels a filter can name.
+//!
+//! [`super::filter_matches`] compares `match.machines` and `match.labels`
+//! against ids, so a save resolves names to the owner's ids and rejects
+//! anything else. Only an all-users item may name another user's machine.
 
 use axum::http::StatusCode;
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use super::{ContextItem, ContextItemSpec, ContextMatch, scope_of};
+use super::{ContextItem, ContextItemSpec, ContextMatch, ContextReach, scope_of};
 use crate::error::AppError;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -99,12 +101,22 @@ const fn names_targets(m: &ContextMatch) -> bool {
 
 impl Targets {
     pub async fn load(pool: &PgPool, owner: Uuid) -> Result<Self, sqlx::Error> {
+        Self::load_with(pool, owner, false).await
+    }
+
+    /// With `every_machine`, the machines of every user, for an all-users item.
+    pub async fn load_with(
+        pool: &PgPool,
+        owner: Uuid,
+        every_machine: bool,
+    ) -> Result<Self, sqlx::Error> {
         let machines: Vec<(Uuid, String, Option<String>)> = sqlx::query_as(
             "SELECT id, name, display_name FROM machines \
-             WHERE user_id = $1 AND deleted_at IS NULL \
+             WHERE ($2 OR user_id = $1) AND deleted_at IS NULL \
              ORDER BY lower(coalesce(display_name, name)), id",
         )
         .bind(owner)
+        .bind(every_machine)
         .fetch_all(pool)
         .await?;
         let labels: Vec<(Uuid, String)> =
@@ -141,8 +153,7 @@ impl Targets {
         Ok(ContextMatch {
             machines: resolve_all("machine", &m.machines, &self.machines, &kept_machines)?,
             labels: resolve_all("label", &m.labels, &self.labels, &kept_labels)?,
-            paths: m.paths,
-            adapters: m.adapters,
+            ..m
         })
     }
 
@@ -161,9 +172,23 @@ impl Targets {
 
     #[must_use]
     pub fn render(&self, m: &ContextMatch) -> String {
-        if m.is_empty() {
-            return "everywhere".to_owned();
+        let reach = match m.reach {
+            ContextReach::Owner => "my machines",
+            ContextReach::AllUsers => "all users' machines (admin)",
+        };
+        let mut out = reach.to_owned();
+        if m.dispatch {
+            out.push_str(" + my dispatches");
         }
+        let keys = self.render_keys(m);
+        if !keys.is_empty() {
+            out.push_str(": ");
+            out.push_str(&keys);
+        }
+        out
+    }
+
+    fn render_keys(&self, m: &ContextMatch) -> String {
         let named = |ids: &[String], known: &[Target]| {
             ids.iter()
                 .map(|id| {
@@ -188,8 +213,48 @@ impl Targets {
         if !m.adapters.is_empty() {
             parts.push(format!("adapters={}", m.adapters.join(" | ")));
         }
+        if !m.dispatchers.is_empty() {
+            parts.push(format!("dispatchers={}", m.dispatchers.join(" | ")));
+        }
+        if !m.profiles.is_empty() {
+            parts.push(format!("profiles={}", m.profiles.join(" | ")));
+        }
         parts.join(", ")
     }
+}
+
+/// 422 when `m` names, by id, a machine of a user other than `owner`, unless
+/// the item reaches all users' machines.
+pub async fn refuse_foreign_machines(
+    pool: &PgPool,
+    owner: Uuid,
+    m: &ContextMatch,
+) -> Result<(), AppError> {
+    if m.reach == ContextReach::AllUsers {
+        return Ok(());
+    }
+    let ids: Vec<Uuid> = m.machines.iter().filter_map(|v| Uuid::parse_str(v).ok()).collect();
+    if ids.is_empty() {
+        return Ok(());
+    }
+    let foreign: Vec<Uuid> = sqlx::query_scalar(
+        "SELECT id FROM machines WHERE id = ANY($1) AND user_id <> $2 ORDER BY id",
+    )
+    .bind(&ids)
+    .bind(owner)
+    .fetch_all(pool)
+    .await?;
+    if foreign.is_empty() {
+        return Ok(());
+    }
+    let listed = foreign.iter().map(|id| short(&id.to_string())).collect::<Vec<_>>().join(", ");
+    Err(AppError::new(
+        StatusCode::UNPROCESSABLE_ENTITY,
+        format!(
+            "machine {listed} belongs to another user: an item reaches only its owner's \
+             machines unless an admin sets it to reach all users' machines"
+        ),
+    ))
 }
 
 pub async fn resolve_spec(
@@ -201,7 +266,9 @@ pub async fn resolve_spec(
     if !names_targets(&spec.match_) {
         return Ok(spec);
     }
-    Targets::load(pool, owner).await?.spec(spec, keep)
+    refuse_foreign_machines(pool, owner, &spec.match_).await?;
+    let every_machine = spec.match_.reach == ContextReach::AllUsers;
+    Targets::load_with(pool, owner, every_machine).await?.spec(spec, keep)
 }
 
 #[cfg(test)]
@@ -312,13 +379,13 @@ mod tests {
     #[test]
     fn a_filter_renders_names_beside_short_ids() {
         let t = fleet();
-        assert_eq!(t.render(&ContextMatch::default()), "everywhere");
+        assert_eq!(t.render(&ContextMatch::default()), "my machines");
         let m = ContextMatch {
             machines: vec![DEV1.into()],
             paths: vec!["/w/repo".into()],
             ..ContextMatch::default()
         };
-        assert_eq!(t.render(&m), "machines=dev1 (3d3d04a3…), paths=/w/repo");
+        assert_eq!(t.render(&m), "my machines: machines=dev1 (3d3d04a3…), paths=/w/repo");
         let m = ContextMatch {
             machines: vec!["dev1".into(), BOX_B.into()],
             labels: vec![OPS.into()],
@@ -327,7 +394,19 @@ mod tests {
         };
         assert_eq!(
             t.render(&m),
-            "machines=unknown (dev1) | Laptop (bbbbbbbb…), labels=ops (cccccccc…), adapters=codex"
+            "my machines: machines=unknown (dev1) | Laptop (bbbbbbbb…), labels=ops (cccccccc…), \
+             adapters=codex"
+        );
+        let wide = ContextMatch {
+            reach: ContextReach::AllUsers,
+            dispatch: true,
+            dispatchers: vec!["kube".into()],
+            ..ContextMatch::default()
+        };
+        assert_eq!(
+            t.render(&wide),
+            "all users' machines (admin) + my dispatches: dispatchers=kube",
+            "never a bare everywhere"
         );
     }
 
@@ -419,8 +498,45 @@ mod tests {
 
         let targets = Targets::load(&pool, uid).await.expect("load");
         let shown = targets.render(&stored.match_);
-        assert_eq!(shown, format!("machines=dev1 ({}…)", &dev1.to_string()[..8]));
+        assert_eq!(shown, format!("my machines: machines=dev1 ({}…)", &dev1.to_string()[..8]));
 
         cleanup(&pool, uid).await;
+    }
+
+    #[tokio::test]
+    async fn another_users_machine_id_is_refused_with_422_unless_the_item_reaches_all_users() {
+        let Some(url) = cctui_server_kernel::test_support::db_url("context_targets_foreign") else {
+            return;
+        };
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&url)
+            .await
+            .expect("connect test db");
+        let (uid, mine, _) = seed(&pool).await;
+        let (other, theirs, _) = seed(&pool).await;
+        let theirs_id = theirs.to_string();
+
+        let err = resolve_spec(&pool, uid, rule(machines(&[theirs_id.as_str()])), &[])
+            .await
+            .expect_err("another user's machine");
+        assert_eq!(err.status(), StatusCode::UNPROCESSABLE_ENTITY, "{}", message(&err));
+        assert!(message(&err).contains(&theirs_id[..8]), "{}", message(&err));
+
+        let mixed = machines(&[mine.to_string().as_str(), theirs_id.as_str()]);
+        let kept = resolve_spec(&pool, uid, rule(mixed.clone()), &[&mixed]).await;
+        assert_eq!(
+            kept.expect_err("kept is no excuse").status(),
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "an edit that keeps a foreign id is still refused"
+        );
+
+        let wide =
+            ContextMatch { reach: ContextReach::AllUsers, ..machines(&[theirs_id.as_str()]) };
+        let spec = resolve_spec(&pool, uid, rule(wide), &[]).await.expect("an all-users item");
+        assert_eq!(spec.match_.machines, [theirs_id]);
+
+        cleanup(&pool, uid).await;
+        cleanup(&pool, other).await;
     }
 }

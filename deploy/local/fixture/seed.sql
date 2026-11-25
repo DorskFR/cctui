@@ -235,6 +235,54 @@ VALUES
   ('a0000000-0000-4000-8000-000000000003', 'msg_seed_04', 5400, 1220, 88000, 15000, now() - interval '26 minutes', 'opus'),
   ('a0000000-0000-4000-8000-000000000004', 'msg_seed_05', 1900, 350, 21000,  6000, now() - interval '20 hours',   'gpt-5.6-sol');
 
+-- An ACP harness: gemini driven over the Agent Client Protocol. Its rows are
+-- in the shape the daemon's ACP normalizer emits, not Claude Code's.
+INSERT INTO sessions (
+  id, parent_id, machine_id, machine_uuid, working_dir, status, registered_at,
+  last_heartbeat, metadata, user_id, adapter_id, tempo, agent_state, activity,
+  session_name, model, effort, pinned, pinned_at, last_tool_at, last_tool_name,
+  tool_use_count, children, ended_at, end_reason, todos, todo_updated_at
+) VALUES
+  ('a0000000-0000-4000-8000-000000000006', NULL, 'workstation-01',
+   'c0000000-0000-4000-8000-000000000001', '/work/acme/storefront', 'active',
+   now() - interval '50 minutes', now() - interval '7 minutes',
+   '{"title":"Explain the checkout page state machine","harness":"gemini"}'::jsonb,
+   '00000000-0000-0000-0000-000000000000', 'gemini', 'idle', 'idle',
+   NULL, 'Explain the checkout page state machine', 'gemini-2.5-pro', NULL,
+   false, NULL, now() - interval '8 minutes', 'run_shell_command', 2,
+   '[]'::jsonb, NULL, NULL, NULL, NULL);
+
+INSERT INTO session_labels (session_id, label_id) VALUES
+  ('a0000000-0000-4000-8000-000000000006', 'b0000000-0000-4000-8000-000000000002');
+
+INSERT INTO stream_events (session_id, event_type, payload, created_at) VALUES
+  ('a0000000-0000-4000-8000-000000000006', 'message',
+   '{"role":"user","text":"How does the checkout page move between its states? Point me at the code."}'::jsonb,
+   now() - interval '50 minutes'),
+  ('a0000000-0000-4000-8000-000000000006', 'message',
+   '{"type":"text","role":"assistant_thinking","text":"The page component probably delegates to a reducer; read it before answering.","content":"The page component probably delegates to a reducer; read it before answering.","message_id":"acp-msg-1"}'::jsonb,
+   now() - interval '49 minutes'),
+  ('a0000000-0000-4000-8000-000000000006', 'tool_use',
+   '{"type":"tool_call","tool":"read_file","input":{"absolute_path":"/work/acme/storefront/src/pages/checkout/state.ts"},"id":"acp-call-1","tool_use_id":"acp-call-1","title":"ReadFile src/pages/checkout/state.ts"}'::jsonb,
+   now() - interval '49 minutes'),
+  ('a0000000-0000-4000-8000-000000000006', 'tool_use',
+   '{"type":"tool_result","kind":"tool_result","content":"export type Checkout = { kind: \"cart\" } | { kind: \"address\" } | { kind: \"payment\" } | { kind: \"done\" };  (61 lines)","output_summary":"export type Checkout = …  (61 lines)","is_error":false,"error":false,"tool_use_id":"acp-call-1"}'::jsonb,
+   now() - interval '49 minutes'),
+  ('a0000000-0000-4000-8000-000000000006', 'tool_use',
+   '{"type":"tool_call","tool":"run_shell_command","input":{"command":"grep -rn \"dispatch(\" src/pages/checkout","description":"Find the transitions"},"id":"acp-call-2","tool_use_id":"acp-call-2","title":"Shell grep -rn \"dispatch(\" src/pages/checkout"}'::jsonb,
+   now() - interval '8 minutes'),
+  ('a0000000-0000-4000-8000-000000000006', 'tool_use',
+   '{"type":"tool_result","kind":"tool_result","content":"src/pages/checkout/Address.tsx:40\nsrc/pages/checkout/Payment.tsx:72\nsrc/pages/checkout/Cart.tsx:18","output_summary":"3 matches","is_error":false,"error":false,"tool_use_id":"acp-call-2"}'::jsonb,
+   now() - interval '8 minutes'),
+  ('a0000000-0000-4000-8000-000000000006', 'message',
+   '{"type":"text","role":"assistant","text":"Checkout is a four-state union in `src/pages/checkout/state.ts`: cart, address, payment, done. Each step component dispatches the next state, and only `Payment.tsx` can reach `done`.","content":"Checkout is a four-state union in `src/pages/checkout/state.ts`: cart, address, payment, done. Each step component dispatches the next state, and only `Payment.tsx` can reach `done`.","message_id":"msg_seed_08"}'::jsonb,
+   now() - interval '7 minutes');
+
+INSERT INTO session_token_usage
+  (session_id, message_id, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, created_at, model)
+VALUES
+  ('a0000000-0000-4000-8000-000000000006', 'msg_seed_08', 8300, 540, 0, 0, now() - interval '7 minutes', 'gemini-2.5-pro');
+
 -- Saved spawn profiles, in the order the panel lists them. `no_account` keeps
 -- them free of a foreign key on the accounts the API half seeds, which do not
 -- exist yet on the first of this file's two passes.

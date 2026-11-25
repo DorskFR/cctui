@@ -4,6 +4,8 @@ import type { ContextItemSpec } from "@bindings/ContextItemSpec";
 import type { AttachContextResponse } from "@bindings/AttachContextResponse";
 import type { ResolvedContextResponse } from "@bindings/ResolvedContextResponse";
 import type { SessionContextResponse } from "@bindings/SessionContextResponse";
+import type { BulkContextUpdate } from "@bindings/BulkContextUpdate";
+import type { BulkContextOutcome } from "@bindings/BulkContextOutcome";
 import type { AttachedContextRef } from "@bindings/AttachedContextRef";
 import { endpoints } from "./endpoints";
 import { qk } from "./keys";
@@ -54,11 +56,19 @@ export interface ContextCoords {
   /** Label ids. */
   labels?: string[];
   adapter?: string;
+  /** Resolve as a worker the caller dispatches, on no machine. */
+  dispatch?: boolean;
+  dispatcher?: string;
+  profile?: string;
 }
 
 export function resolveParams(c: ContextCoords): Record<string, string> {
   const out: Record<string, string> = {};
-  if (c.machine_id) out.machine_id = c.machine_id;
+  if (c.dispatch) {
+    out.dispatch = "true";
+    if (c.dispatcher?.trim()) out.dispatcher = c.dispatcher.trim();
+    if (c.profile?.trim()) out.profile = c.profile.trim();
+  } else if (c.machine_id) out.machine_id = c.machine_id;
   if (c.working_dir?.trim()) out.working_dir = c.working_dir.trim();
   if (c.labels?.length) out.labels = [...c.labels].sort().join(",");
   if (c.adapter) out.adapter = c.adapter;
@@ -75,7 +85,10 @@ export const useResolvedContext = (
       queryKey: qk.contextResolve(params),
       queryFn: async () => asResolved(await endpoints.resolveContext(params)),
       retry: false,
-      enabled: enabled() && !!params.machine_id && hasFeature("context"),
+      enabled:
+        enabled() &&
+        (!!params.machine_id || !!params.dispatch) &&
+        hasFeature("context"),
     };
   });
 
@@ -108,6 +121,11 @@ export function useContextActions() {
     remove: async (id: string): Promise<void> => {
       await endpoints.deleteContextItem(id);
       await invalidate();
+    },
+    bulk: async (req: BulkContextUpdate): Promise<BulkContextOutcome[]> => {
+      const res = await endpoints.bulkUpdateContext(req);
+      await invalidate();
+      return list<BulkContextOutcome>(field(res, "outcomes"));
     },
     approvePending: async (id: string): Promise<ContextItem> => {
       const item = await endpoints.approveContextPending(id);

@@ -1,12 +1,14 @@
 <script lang="ts">
 	import type { AccountProvider, OAuthAccount } from '#lib/queries/index.ts';
 	import ProviderColumn from '../ProviderColumn.svelte';
+	import { canEditProvider } from '../account-editor.logic';
 	import { Button, Card, Text } from '@dorsk/tsumikit';
 	import { m } from '#lib/paraglide/messages.js';
 
 	let {
 		account,
 		managed = false,
+		owned = false,
 		canAddProvider = false,
 		onadd,
 		onedit,
@@ -15,6 +17,7 @@
 	}: {
 		account: OAuthAccount;
 		managed?: boolean;
+		owned?: boolean;
 		canAddProvider?: boolean;
 		onadd?: () => void;
 		onedit?: (p: AccountProvider) => void;
@@ -34,8 +37,8 @@
 		{#each account.providers as p (p.id)}
 			<ProviderColumn
 				provider={p}
-				canManage={!p.managed && !managed}
-				canRemove={!p.managed && !managed}
+				canManage={canEditProvider(p, owned) && !managed}
+				canRemove={canEditProvider(p, owned) && !managed}
 				onedit={() => onedit?.(p)}
 				onreauth={() => onreauth?.(p)}
 				onremove={() => onremove?.(p)}

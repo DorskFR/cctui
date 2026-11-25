@@ -47,6 +47,9 @@ const LIST_DIRS_FORWARD_TIMEOUT: std::time::Duration = std::time::Duration::from
 const DIAGNOSE_FORWARD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 /// Outlasts the bus's 60 s `READ_FILE_TIMEOUT`.
 const READ_FILE_FORWARD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(70);
+const TRANSCRIPT_AUDIT_FORWARD_TIMEOUT: std::time::Duration =
+    cctui_server_kernel::bus::TRANSCRIPT_AUDIT_TIMEOUT
+        .saturating_add(std::time::Duration::from_secs(10));
 /// Timeout for a forwarded dispatcher round-trip (peer waits 30s).
 const DISPATCHER_FORWARD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(35);
 /// Timeout for one relay POST to one peer. Publish is best-effort; a slow peer
@@ -115,6 +118,10 @@ pub enum RouteRequest {
         adapter_id: String,
         local_id: String,
     },
+    DaemonTranscriptAudit {
+        machine: Uuid,
+        dry_run: bool,
+    },
     DispatcherCommand {
         dispatcher: Uuid,
         frame: DispatcherFrameDown,
@@ -137,7 +144,8 @@ impl RouteRequest {
             | Self::DaemonListDirs { machine, .. }
             | Self::DaemonGitInfo { machine, .. }
             | Self::DaemonReadFile { machine, .. }
-            | Self::DaemonDiagnose { machine, .. } => Some(*machine),
+            | Self::DaemonDiagnose { machine, .. }
+            | Self::DaemonTranscriptAudit { machine, .. } => Some(*machine),
             Self::DispatcherCommand { .. } | Self::DispatcherRequest { .. } => None,
         }
     }
@@ -176,6 +184,9 @@ pub enum RouteResponse {
     Diagnose {
         report: Box<cctui_proto::diagnose::SessionDiagnose>,
     },
+    TranscriptAudit {
+        report: Box<cctui_proto::api::privacy_scan::TranscriptAuditReport>,
+    },
     DispatcherReply {
         frame: DispatcherFrameUp,
     },
@@ -212,6 +223,7 @@ pub enum WireErrorCode {
     ListDirs,
     GitInfo,
     ReadFile { kind: ReadFileErrorKind },
+    TranscriptAudit,
     Other,
 }
 
@@ -229,6 +241,7 @@ pub fn encode_error(err: &BusError) -> (WireErrorCode, String) {
         BusError::ListDirs(msg) => (WireErrorCode::ListDirs, msg.clone()),
         BusError::GitInfo(msg) => (WireErrorCode::GitInfo, msg.clone()),
         BusError::ReadFile(r) => (WireErrorCode::ReadFile { kind: r.kind }, r.message.clone()),
+        BusError::TranscriptAudit(msg) => (WireErrorCode::TranscriptAudit, msg.clone()),
         BusError::NotFound
         | BusError::NoAdapter
         | BusError::NoMachine
@@ -258,6 +271,7 @@ pub fn decode_error(
         WireErrorCode::ReadFile { kind } => {
             BusError::ReadFile(cctui_proto::ws::ReadFileRefusal { kind, message, allowed_folders })
         }
+        WireErrorCode::TranscriptAudit => BusError::TranscriptAudit(message),
         // An unclassified peer-side failure still means the frame was not
         // delivered; surface the peer's message verbatim.
         WireErrorCode::Other => BusError::Transport(message),
@@ -656,6 +670,10 @@ impl Transport for PeerHttpTransport {
                 RouteRequest::DaemonDiagnose { machine, adapter_id, local_id },
                 DIAGNOSE_FORWARD_TIMEOUT,
             ),
+            DaemonRequest::TranscriptAudit { dry_run } => (
+                RouteRequest::DaemonTranscriptAudit { machine, dry_run },
+                TRANSCRIPT_AUDIT_FORWARD_TIMEOUT,
+            ),
         };
         match self.route(target, &request, timeout).await? {
             RouteResponse::StagedFiles { paths } => Ok(DaemonResponse::StagedFiles(paths)),
@@ -663,6 +681,9 @@ impl Transport for PeerHttpTransport {
             RouteResponse::GitInfo { info } => Ok(DaemonResponse::GitInfo(info)),
             RouteResponse::File { file } => Ok(DaemonResponse::File(file)),
             RouteResponse::Diagnose { report } => Ok(DaemonResponse::Diagnose(report)),
+            RouteResponse::TranscriptAudit { report } => {
+                Ok(DaemonResponse::TranscriptAudit(report))
+            }
             other => Err(BusError::Transport(format!("unexpected peer reply: {other:?}"))),
         }
     }

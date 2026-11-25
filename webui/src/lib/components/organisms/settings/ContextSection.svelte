@@ -3,7 +3,7 @@
 	// can be launched with. Skills are not here — a skill bundle is a plugin, so
 	// it lives on the Plugins page.
 	import { onMount } from 'svelte';
-	import { Badge, Button, Input, Link, Select, Switch, Text, Textarea, Toggle } from '@dorsk/tsumikit';
+	import { Badge, Button, Checkbox, Input, Link, Select, Switch, Text, Textarea, Toggle } from '@dorsk/tsumikit';
 	import SettingGroup from '#lib/components/molecules/SettingGroup.svelte';
 	import SettingRow from '#lib/components/molecules/SettingRow.svelte';
 	import SettingSection from '#lib/components/molecules/SettingSection.svelte';
@@ -11,12 +11,15 @@
 	import type { ContextItemSpec } from '@bindings/ContextItemSpec';
 	import type { ContextMatch } from '@bindings/ContextMatch';
 	import {
+		useAllMachines,
 		useMachineResources,
 		useContextActions,
 		useContextItems,
 		useHarnesses,
 		useLabels,
-		useResolvedContext
+		useMe,
+		useResolvedContext,
+		useUsers
 	} from '#lib/queries/index.ts';
 	import { harnessTable } from '#lib/harnesses.svelte.ts';
 	import { sessionHref } from '#lib/sessionFailureToast.ts';
@@ -26,16 +29,27 @@
 	import {
 		bodyBytes,
 		bodyMax,
+		bulkRequest,
+		bulkResult,
 		contextProblems,
+		foreignMachines,
+		groupMachines,
+		itemFilter,
 		lineDiff,
 		matchSummary,
 		newContextItem,
 		parsePaths,
 		pendingChanges,
+		reachOf,
 		slugify,
+		toggleAll,
 		toggleIn,
 		toSpec,
-		type ContextKind
+		type BulkKey,
+		type BulkOp,
+		type BulkResult,
+		type ContextKind,
+		type OwnedMachine
 	} from './context.logic';
 
 	const itemsQ = useContextItems();
@@ -44,19 +58,49 @@
 	useHarnesses();
 	const actions = useContextActions();
 
+	const me = useMe();
+	const meId = $derived(me.data?.user_id ?? null);
+	const isAdmin = $derived(me.data?.role === 'admin');
+	const allMachinesQ = useAllMachines(() => isAdmin);
+	const usersQ = useUsers(() => isAdmin);
+
 	const machines = $derived(machinesQ.data ?? []);
 	const labels = $derived(labelsQ.data?.labels ?? []);
 	const harnesses = $derived(harnessTable());
 	const items = $derived(itemsQ.data ?? []);
-	const ofKind = (kind: ContextKind) => items.filter((i) => i.kind === kind);
 
-	const machineName = (id: string) => {
-		const r = machines.find((x) => x.machine_id === id);
-		return r ? (r.display_name ?? r.name) : id;
-	};
+	const owned = $derived<OwnedMachine[]>(
+		isAdmin && allMachinesQ.data
+			? allMachinesQ.data.map((r) => ({ id: r.id, owner: r.user_id, name: r.display_name ?? r.name }))
+			: machines.map((r) => ({ id: r.machine_id, owner: meId ?? '', name: r.display_name ?? r.name }))
+	);
+	const ownerName = (id: string) => usersQ.data?.find((u) => u.id === id)?.name ?? id.slice(0, 8);
+	const groups = $derived(groupMachines(owned, meId, ownerName));
+
+	const machineName = (id: string) => owned.find((x) => x.id === id)?.name ?? id;
 	const labelName = (id: string) => labels.find((l) => l.id === id)?.name ?? id;
+	const words = $derived({
+		mine: m.settings_context_reach_mine(),
+		allUsers: m.settings_context_reach_all_users(),
+		dispatches: m.settings_context_reach_dispatches()
+	});
 	const summary = (mt: ContextMatch | null | undefined) =>
-		matchSummary(mt, m.settings_context_match_always(), { machine: machineName, label: labelName });
+		matchSummary(mt, words, { machine: machineName, label: labelName });
+
+	let filter = $state('');
+	const shown = $derived(items.filter(itemFilter(filter)));
+	const ofKind = (kind: ContextKind) => shown.filter((i) => i.kind === kind);
+	let selected = $state<Set<string>>(new Set());
+	const picked = $derived(items.filter((i) => selected.has(i.id)).map((i) => i.id));
+	function toggleRow(id: string) {
+		const next = new Set(selected);
+		if (!next.delete(id)) next.add(id);
+		selected = next;
+	}
+	let bulkOp = $state<'add' | 'remove'>('add');
+	let bulkKey = $state<BulkKey>('machines');
+	let bulkValue = $state('');
+	let bulkOutcome = $state<BulkResult | null>(null);
 
 	// The row being edited: a copy, so nothing lands until Save.
 	let draft = $state<ContextItemSpec | null>(null);
@@ -65,6 +109,9 @@
 	let busy = $state(false);
 	let error = $state<string | null>(null);
 	const problems = $derived(draft ? contextProblems(draft) : []);
+	const foreign = $derived(
+		draft && reachOf(draft.match) !== 'all_users' ? foreignMachines(draft.match, owned, meId) : []
+	);
 	const bytes = $derived(draft ? bodyBytes(draft.body ?? '') : 0);
 
 	let reviewId = $state<string | null>(null);
@@ -107,7 +154,7 @@
 		}
 	}
 	async function save() {
-		if (!draft || problems.length || busy) return;
+		if (!draft || problems.length || foreign.length || busy) return;
 		const spec = draft;
 		if (await run(() => (editing ? actions.update(editing, spec) : actions.create(spec)))) cancel();
 	}
@@ -135,13 +182,47 @@
 		pathsText = text;
 		if (draft) draft.match = { ...draft.match, paths: parsePaths(text) };
 	}
+	const commaList = (text: string) =>
+		text
+			.split(',')
+			.map((v) => v.trim())
+			.filter(Boolean);
+	function setReach(all: boolean) {
+		if (draft) draft.match = { ...draft.match, reach: all ? 'all_users' : 'owner' };
+	}
+	function setDispatch(on: boolean) {
+		if (draft) draft.match = { ...draft.match, dispatch: on };
+	}
+	function onNarrow(key: 'dispatchers' | 'profiles', text: string) {
+		if (draft) draft.match = { ...draft.match, [key]: commaList(text) };
+	}
+
+	async function applyBulk(change: BulkOp) {
+		if (!picked.length || busy) return;
+		bulkOutcome = null;
+		let outcomes: Awaited<ReturnType<typeof actions.bulk>> = [];
+		if (await run(async () => (outcomes = await actions.bulk(bulkRequest(picked, change))))) {
+			bulkOutcome = bulkResult(outcomes);
+		}
+	}
+	const bulkValues = () => (bulkKey === 'paths' ? parsePaths(bulkValue) : bulkValue ? [bulkValue] : []);
 
 	let previewMachine = $state('');
 	let previewDir = $state('');
 	let previewAdapter = $state('');
+	let previewDispatch = $state(false);
+	let previewDispatcher = $state('');
+	let previewProfile = $state('');
 	const preview = useResolvedContext(
-		() => ({ machine_id: previewMachine, working_dir: previewDir, adapter: previewAdapter }),
-		() => !!previewMachine
+		() => ({
+			machine_id: previewMachine,
+			working_dir: previewDir,
+			adapter: previewAdapter,
+			dispatch: previewDispatch,
+			dispatcher: previewDispatcher,
+			profile: previewProfile
+		}),
+		() => !!previewMachine || previewDispatch
 	);
 
 	const buckets = $derived([
@@ -183,6 +264,123 @@
 		<Text size="sm" tone="faint">{m.settings_context_intro()}</Text>
 	{/snippet}
 
+	{#if items.length}
+		<SettingGroup title={m.settings_context_filter_placeholder()}>
+			<SettingRow label={m.settings_context_filter_placeholder()} wide selfLabelled>
+				<div class="bulkbar">
+					<Input
+						style="flex:1 1 14rem"
+						placeholder={m.settings_context_filter_placeholder()}
+						aria-label={m.settings_context_filter_placeholder()}
+						value={filter}
+						oninput={(e) => (filter = inp(e))}
+					/>
+					<Button size="sm" onclick={() => (selected = toggleAll(selected, shown.map((i) => i.id)))}
+						>{m.settings_context_select_all()}</Button
+					>
+				</div>
+			</SettingRow>
+		</SettingGroup>
+	{/if}
+
+	{#if picked.length}
+		<SettingGroup title={m.settings_context_bulk_title({ count: picked.length })}>
+			<SettingRow label={m.settings_context_bulk_title({ count: picked.length })} wide selfLabelled>
+				<div class="match" data-bulk>
+					<div class="bulkbar">
+						<Select value={bulkOp} onchange={(e) => (bulkOp = sel(e) as 'add' | 'remove')}>
+							<option value="add">{m.settings_context_bulk_add()}</option>
+							<option value="remove">{m.settings_context_bulk_remove()}</option>
+						</Select>
+						<Select
+							value={bulkKey}
+							onchange={(e) => {
+								bulkKey = sel(e) as BulkKey;
+								bulkValue = '';
+							}}
+						>
+							{#if hasFeature('machine_spawn')}
+								<option value="machines">{m.settings_context_match_machines()}</option>
+							{/if}
+							<option value="paths">{m.settings_context_match_paths()}</option>
+							{#if hasFeature('organising')}
+								<option value="labels">{m.settings_context_match_labels()}</option>
+							{/if}
+							<option value="adapters">{m.settings_context_match_adapters()}</option>
+						</Select>
+						{#if bulkKey === 'machines'}
+							<Select value={bulkValue} onchange={(e) => (bulkValue = sel(e))}>
+								<option value=""></option>
+								{#each groups as g (g.owner)}
+									<optgroup
+										label={g.mine ? m.settings_context_my_machines() : m.settings_context_another_user({ name: ownerName(g.owner) })}
+									>
+										{#each g.machines as r (r.id)}<option value={r.id}>{r.name}</option>{/each}
+									</optgroup>
+								{/each}
+							</Select>
+						{:else if bulkKey === 'labels'}
+							<Select value={bulkValue} onchange={(e) => (bulkValue = sel(e))}>
+								<option value=""></option>
+								{#each labels as l (l.id)}<option value={l.id}>{l.name}</option>{/each}
+							</Select>
+						{:else if bulkKey === 'adapters'}
+							<Select value={bulkValue} onchange={(e) => (bulkValue = sel(e))}>
+								<option value=""></option>
+								{#each harnesses as h (h.id)}<option value={h.id}>{h.label}</option>{/each}
+							</Select>
+						{:else}
+							<Input mono placeholder="/home/me/project" value={bulkValue} oninput={(e) => (bulkValue = inp(e))} />
+						{/if}
+						<Button
+							size="sm"
+							variant="primary"
+							disabled={busy || !bulkValues().length}
+							onclick={() => applyBulk({ op: bulkOp, key: bulkKey, values: bulkValues() })}
+							>{m.settings_context_bulk_apply()}</Button
+						>
+					</div>
+					<div class="bulkbar">
+						{#if hasFeature('machine_spawn')}
+							<Button size="sm" disabled={busy} onclick={() => applyBulk({ op: 'clear_machines' })}
+								>{m.settings_context_bulk_clear_machines()}</Button
+							>
+						{/if}
+						{#if isAdmin}
+							<Button size="sm" disabled={busy} onclick={() => applyBulk({ op: 'reach', reach: 'owner' })}
+								>{m.settings_context_bulk_reach_mine()}</Button
+							>
+							<Button size="sm" disabled={busy} onclick={() => applyBulk({ op: 'reach', reach: 'all_users' })}
+								>{m.settings_context_bulk_reach_all()}</Button
+							>
+						{/if}
+						<Button size="sm" disabled={busy} onclick={() => applyBulk({ op: 'dispatch', on: true })}
+							>{m.settings_context_bulk_dispatch_on()}</Button
+						>
+						<Button size="sm" disabled={busy} onclick={() => applyBulk({ op: 'dispatch', on: false })}
+							>{m.settings_context_bulk_dispatch_off()}</Button
+						>
+						<Button size="sm" disabled={busy} onclick={() => (selected = new Set())}
+							>{m.settings_context_bulk_clear_selection()}</Button
+						>
+					</div>
+					{#if bulkOutcome}
+						<Text size="sm" tone={bulkOutcome.failed.length ? 'danger' : 'faint'} data-bulk-result
+							>{m.settings_context_bulk_result({ updated: bulkOutcome.updated, failed: bulkOutcome.failed.length })}</Text
+						>
+						{#each bulkOutcome.failed as f (f.id)}
+							<Text size="xs" tone="danger"
+								>{items.find((i) => i.id === f.id)?.title ?? f.id.slice(0, 8)}: {f.error}</Text
+							>
+						{/each}
+					{:else if error && !draft}
+						<Text size="sm" tone="danger">{error}</Text>
+					{/if}
+				</div>
+			</SettingRow>
+		</SettingGroup>
+	{/if}
+
 	{#each buckets as bucket (bucket.kind)}
 		<SettingGroup title={bucket.title}>
 			<SettingRow label={bucket.title} help={bucket.help} wide selfLabelled>
@@ -192,6 +390,12 @@
 					<ul class="list">
 						{#each bucket.rows as item (item.id)}
 							<li class="item" data-setting-row>
+								<Checkbox
+									label={m.settings_context_select_item({ title: item.title })}
+									labelHidden
+									checked={selected.has(item.id)}
+									onchange={() => toggleRow(item.id)}
+								/>
 								<span class="main">
 									<span class="title">{item.title}</span>
 									<span class="meta">
@@ -307,16 +511,48 @@
 			>
 				<div class="match">
 					{#if hasFeature('machine_spawn')}
+						{@const wide = reachOf(draft.match) === 'all_users'}
 						<Text size="xs" weight="medium">{m.settings_context_match_machines()}</Text>
+						{#if isAdmin}
+							<Switch
+								bind:checked={() => wide, (v) => setReach(v)}
+								label={m.settings_context_reach_all_users_toggle()}
+								labelVisible
+							/>
+							<Text size="xs" tone="faint">{m.settings_context_reach_all_users_help()}</Text>
+						{/if}
 						<div class="toggles">
-							{#each machines as r (r.machine_id)}
-								<Toggle
-									pill
-									pressed={draft.match.machines.includes(r.machine_id)}
-									onclick={() => toggleMatch('machines', r.machine_id)}>{r.display_name ?? r.name}</Toggle
-								>
+							<Toggle
+								pill
+								pressed={!draft.match.machines.length}
+								onclick={() => draft && (draft.match = { ...draft.match, machines: [] })}
+								>{m.settings_context_my_machines()}</Toggle
+							>
+							{#each groups.filter((g) => g.mine) as g (g.owner)}
+								{#each g.machines as r (r.id)}
+									<Toggle pill pressed={draft.match.machines.includes(r.id)} onclick={() => toggleMatch('machines', r.id)}
+										>{r.name}</Toggle
+									>
+								{/each}
 							{/each}
 						</div>
+						{#if isAdmin && wide}
+							{#each groups.filter((g) => !g.mine) as g (g.owner)}
+								<Text size="xs" tone="faint">{m.settings_context_another_user({ name: ownerName(g.owner) })}</Text>
+								<div class="toggles">
+									{#each g.machines as r (r.id)}
+										<Toggle pill pressed={draft.match.machines.includes(r.id)} onclick={() => toggleMatch('machines', r.id)}
+											>{r.name}</Toggle
+										>
+									{/each}
+								</div>
+							{/each}
+						{/if}
+						{#if foreign.length}
+							<Text size="xs" tone="danger" data-foreign
+								>{m.settings_context_foreign_machines({ count: foreign.length })}</Text
+							>
+						{/if}
 					{/if}
 					<Text size="xs" weight="medium">{m.settings_context_match_paths()}</Text>
 					<Textarea
@@ -346,6 +582,28 @@
 							>
 						{/each}
 					</div>
+					<Switch
+						bind:checked={() => !!draft?.match.dispatch, (v) => setDispatch(v)}
+						label={m.settings_context_dispatch_toggle()}
+						labelVisible
+					/>
+					{#if draft.match.dispatch}
+						<Text size="xs" tone="faint">{m.settings_context_dispatch_help()}</Text>
+						<Input
+							style="width:100%"
+							placeholder={m.settings_context_dispatchers()}
+							aria-label={m.settings_context_dispatchers()}
+							value={(draft.match.dispatchers ?? []).join(', ')}
+							onchange={(e) => onNarrow('dispatchers', inp(e))}
+						/>
+						<Input
+							style="width:100%"
+							placeholder={m.settings_context_profiles()}
+							aria-label={m.settings_context_profiles()}
+							value={(draft.match.profiles ?? []).join(', ')}
+							onchange={(e) => onNarrow('profiles', inp(e))}
+						/>
+					{/if}
 					<Text size="xs" tone="faint">{summary(draft.match)}</Text>
 				</div>
 			</SettingRow>
@@ -367,7 +625,7 @@
 			{/if}
 			<SettingRow label={m.common_save()} wide selfLabelled>
 				<div class="acts">
-					<Button variant="primary" disabled={busy || problems.length > 0} onclick={save}
+					<Button variant="primary" disabled={busy || problems.length > 0 || foreign.length > 0} onclick={save}
 						>{m.common_save()}</Button
 					>
 					<Button disabled={busy} onclick={cancel}>{m.common_cancel()}</Button>
@@ -379,13 +637,33 @@
 	{#if hasFeature('machine_spawn')}
 		<SettingGroup title={m.settings_context_preview_title()}>
 			<SettingRow label={m.spawn_machine_label()} help={m.settings_context_preview_help()}>
-				<Select style="width:100%" value={previewMachine} onchange={(e) => (previewMachine = sel(e))}>
+				<Select
+					style="width:100%"
+					value={previewMachine}
+					disabled={previewDispatch}
+					onchange={(e) => (previewMachine = sel(e))}
+				>
 					<option value="">{m.settings_macros_pick_machine()}</option>
-					{#each machines as r (r.machine_id)}
-						<option value={r.machine_id}>{r.display_name ?? r.name}</option>
+					{#each groups as g (g.owner)}
+						<optgroup
+							label={g.mine ? m.settings_context_my_machines() : m.settings_context_another_user({ name: ownerName(g.owner) })}
+						>
+							{#each g.machines as r (r.id)}<option value={r.id}>{r.name}</option>{/each}
+						</optgroup>
 					{/each}
 				</Select>
 			</SettingRow>
+			<SettingRow label={m.settings_context_preview_dispatch()}>
+				<Switch bind:checked={previewDispatch} label={m.settings_context_preview_dispatch()} />
+			</SettingRow>
+			{#if previewDispatch}
+				<SettingRow label={m.settings_context_preview_dispatcher()}>
+					<Input style="width:100%" value={previewDispatcher} oninput={(e) => (previewDispatcher = inp(e))} />
+				</SettingRow>
+				<SettingRow label={m.settings_context_preview_profile()}>
+					<Input style="width:100%" value={previewProfile} oninput={(e) => (previewProfile = inp(e))} />
+				</SettingRow>
+			{/if}
 			<SettingRow label={m.spawn_cwd_label()}>
 				<Input
 					style="width:100%"
@@ -403,7 +681,7 @@
 					{/each}
 				</Select>
 			</SettingRow>
-			{#if previewMachine && preview.data}
+			{#if (previewMachine || previewDispatch) && preview.data}
 				<SettingRow label={m.settings_context_preview_result()} wide selfLabelled>
 					<div class="preview" data-preview>
 						<Text size="xs" weight="medium"
@@ -470,6 +748,13 @@
 	}
 	.add {
 		margin-top: 0.6rem;
+	}
+	.bulkbar {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: var(--sp-2);
+		width: 100%;
 	}
 	.match,
 	.review,

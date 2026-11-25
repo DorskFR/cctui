@@ -534,8 +534,7 @@ async fn run(args: Args) -> anyhow::Result<()> {
         tracing::warn!("failed to load initial policy (deny-all until fixed): {e}");
     }
 
-    // Hot-reload via mtime poll.
-    tokio::spawn(policy.clone().watch(Duration::from_secs(1)));
+    tokio::spawn(policy.clone().watch(Duration::from_millis(100)));
 
     {
         let addr = args.health_listen.clone();

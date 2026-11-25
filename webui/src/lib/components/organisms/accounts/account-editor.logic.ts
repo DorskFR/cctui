@@ -1,5 +1,7 @@
+import type { MeResponse } from '@bindings/MeResponse';
 import type {
 	AccountModel,
+	AccountProvider,
 	OAuthAccount,
 	RateLimits,
 	SoftLimitConfig,
@@ -101,4 +103,17 @@ export function modelList(rows: { model: string; label: string }[]): AccountMode
 export function availableKinds(a: OAuthAccount): ProviderKind[] {
 	const taken = new Set(a.providers.map((p) => p.family));
 	return providerKindOptions().map((k) => k.value).filter((v) => !taken.has(providerFamily(v)));
+}
+
+/** Whether the signed-in user may edit the account: its owner, or an admin. A shared account is read-only. */
+export function ownsAccount(
+	a: Pick<OAuthAccount, 'user_id'>,
+	me: Pick<MeResponse, 'role' | 'user_id'> | null | undefined
+): boolean {
+	if (!me) return false;
+	return me.role === 'admin' || (me.user_id !== null && me.user_id === a.user_id);
+}
+
+export function canEditProvider(p: Pick<AccountProvider, 'managed'>, owned: boolean): boolean {
+	return owned && !p.managed;
 }

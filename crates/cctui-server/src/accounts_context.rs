@@ -271,6 +271,13 @@ impl ProxyContext for AppState {
         cctui_server_accounts::routes::gateway::usage_notices::deliver_if_due(self, account, token)
             .await;
     }
+    async fn outbound_scrub(
+        &self,
+        session_token: &str,
+    ) -> Result<Option<Arc<cctui_crypto::redact::CompiledPatterns>>, sqlx::Error> {
+        cctui_server_accounts::gateway::outbound_scrub::outbound_patterns(&self.pool, session_token)
+            .await
+    }
 }
 
 #[cfg(test)]

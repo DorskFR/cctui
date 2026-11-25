@@ -127,6 +127,15 @@ pub(super) async fn process_frame<S: SessionsContext>(
             );
             Ok(())
         }
+        DaemonFrameUp::TranscriptAuditResult { request_id, report, error } => {
+            let outcome = report.ok_or_else(|| {
+                error.unwrap_or_else(|| "daemon returned no transcript audit".to_owned())
+            });
+            if !state.bus().resolve_transcript_audit(request_id, outcome) {
+                tracing::debug!(%request_id, "TranscriptAuditResult for unknown request");
+            }
+            Ok(())
+        }
         frame @ DaemonFrameUp::Heartbeat { .. } => {
             on_heartbeat(state, machine_id, frame);
             Ok(())

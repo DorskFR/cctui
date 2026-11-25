@@ -806,6 +806,21 @@ impl Harness {
             .unwrap();
     }
 
+    async fn spawn_guarded(
+        &self,
+        script: &Value,
+        mode: Option<PermissionMode>,
+        prompt: &str,
+        guard_url: &str,
+    ) {
+        let mut spec = self.spec(script, mode, prompt);
+        spec.env.insert(cctui_daemon::guardwatch::URL_ENV.to_owned(), guard_url.to_owned());
+        self.commands
+            .send(AdapterCommand::Spawn { spec, command_id: Some(SPAWN), session_id: None })
+            .await
+            .unwrap();
+    }
+
     async fn send(&self, cmd: AdapterCommand) {
         self.commands.send(cmd).await.unwrap();
     }
@@ -954,6 +969,99 @@ fn full_script() -> Value {
     })
 }
 
+/// A `cctui-guard` stand-in: answers every request with one verdict and
+/// records the request line and JSON body it was asked.
+mod fake_guard {
+    use std::sync::{Arc, Mutex};
+
+    use serde_json::Value;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::{TcpListener, TcpStream};
+
+    pub struct FakeGuard {
+        pub url: String,
+        seen: Arc<Mutex<Vec<(String, Value)>>>,
+        task: tokio::task::JoinHandle<()>,
+    }
+
+    impl FakeGuard {
+        pub fn seen(&self) -> Vec<(String, Value)> {
+            self.seen.lock().unwrap().clone()
+        }
+    }
+
+    impl Drop for FakeGuard {
+        fn drop(&mut self) {
+            self.task.abort();
+        }
+    }
+
+    pub async fn serve(verdict: Value) -> anyhow::Result<FakeGuard> {
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let url = format!("http://{}", listener.local_addr()?);
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let log = Arc::clone(&seen);
+        let task = tokio::spawn(async move {
+            while let Ok((stream, _)) = listener.accept().await {
+                let (log, verdict) = (Arc::clone(&log), verdict.clone());
+                tokio::spawn(async move {
+                    if let Ok(request) = answer(stream, &verdict).await {
+                        log.lock().unwrap().push(request);
+                    }
+                });
+            }
+        });
+        Ok(FakeGuard { url, seen, task })
+    }
+
+    /// A port nothing listens on.
+    pub async fn dead_url() -> anyhow::Result<String> {
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let url = format!("http://{}", listener.local_addr()?);
+        drop(listener);
+        Ok(url)
+    }
+
+    async fn answer(mut stream: TcpStream, verdict: &Value) -> anyhow::Result<(String, Value)> {
+        let mut buf = Vec::new();
+        let mut chunk = [0u8; 4096];
+        let head_end = loop {
+            let n = stream.read(&mut chunk).await?;
+            anyhow::ensure!(n > 0, "request ended before its headers");
+            buf.extend_from_slice(&chunk[..n]);
+            if let Some(i) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                break i + 4;
+            }
+        };
+        let head = String::from_utf8_lossy(&buf[..head_end]).into_owned();
+        let length = head
+            .lines()
+            .find_map(|l| {
+                let (k, v) = l.split_once(':')?;
+                k.eq_ignore_ascii_case("content-length").then(|| v.trim().parse::<usize>().ok())?
+            })
+            .unwrap_or(0);
+        while buf.len() < head_end + length {
+            let n = stream.read(&mut chunk).await?;
+            anyhow::ensure!(n > 0, "request ended before its body");
+            buf.extend_from_slice(&chunk[..n]);
+        }
+        let body = serde_json::from_slice(&buf[head_end..head_end + length])?;
+        let reply = verdict.to_string();
+        stream
+            .write_all(
+                format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{reply}",
+                    reply.len()
+                )
+                .as_bytes(),
+            )
+            .await?;
+        stream.shutdown().await?;
+        Ok((head.lines().next().unwrap_or_default().to_owned(), body))
+    }
+}
+
 mod scenarios {
     use super::{
         AdapterCommand, AdapterEvent, DIAGNOSE, Duration, EndReason, FAKE_ROW, INTERRUPT,
@@ -997,6 +1105,9 @@ mod scenarios {
         scenario!(an_account_bound_launch_with_no_gateway_env_fails_closed),
         scenario!(an_account_bound_goose_launch_gets_its_provider_env_aliased),
         scenario!(a_one_shot_dispatch_ends_on_the_stop_reason),
+        scenario!(a_guard_deny_reaches_the_agent_as_reject_once_with_the_reason),
+        scenario!(a_guard_allow_leaves_the_permission_flow_unchanged),
+        scenario!(an_unreachable_guard_fails_closed),
     ];
 
     /// The dispatch path: the core session in one-shot mode runs the one
@@ -1334,6 +1445,137 @@ mod scenarios {
                 .strip_prefix("answered: ")
                 .and_then(|j| serde_json::from_str(j).ok())
         })
+    }
+
+    const GUARD_REASON: &str = "[Step 2] reading files is disallowed in this step";
+
+    /// A Yolo turn whose one permission request the guard answers: no card,
+    /// and what the agent was sent.
+    async fn guarded_yolo_turn(guard_url: &str) -> anyhow::Result<(Vec<AdapterEvent>, Value)> {
+        let mut h = start(&FAKE_ROW, &exe());
+        let mut script = full_script();
+        script["turn"] = json!("permission");
+        h.spawn_guarded(&script, Some(PermissionMode::Yolo), "do it", guard_url).await;
+        let events = h.until(is_idle, Duration::from_secs(30)).await?;
+        anyhow::ensure!(
+            !events.iter().any(|e| matches!(e, AdapterEvent::PermissionRequest { .. })),
+            "a guarded yolo turn shows no permission card: {events:#?}"
+        );
+        let answer =
+            answered(&events).ok_or_else(|| anyhow::anyhow!("no answer echoed: {events:#?}"))?;
+        let local_id = started(&events).unwrap().to_owned();
+        h.send(AdapterCommand::Kill { local_id, signal: None }).await;
+        h.until(|e| matches!(e, AdapterEvent::SessionEnded { .. }), Duration::from_secs(15))
+            .await?;
+        h.finish().await;
+        Ok((events, answer))
+    }
+
+    fn guard_note(events: &[AdapterEvent], needle: &str) -> bool {
+        messages(events, "assistant").iter().any(|m| {
+            m["meta"] == true
+                && m["content"].as_str().is_some_and(|c| {
+                    c.starts_with("cctui-guard blocked List files: ") && c.contains(needle)
+                })
+        })
+    }
+
+    pub async fn a_guard_deny_reaches_the_agent_as_reject_once_with_the_reason()
+    -> anyhow::Result<()> {
+        let guard = super::fake_guard::serve(json!({
+            "outcome": { "outcome": "selected", "optionId": "reject_once" },
+            "_meta": { "reason": GUARD_REASON },
+        }))
+        .await?;
+        let (events, answer) = guarded_yolo_turn(&guard.url).await?;
+        anyhow::ensure!(
+            answer
+                == json!({
+                    "outcome": { "outcome": "selected", "optionId": "reject-once" },
+                    "_meta": { "reason": GUARD_REASON },
+                }),
+            "the agent gets reject_once with the reason, not the yolo allow: {answer}"
+        );
+        anyhow::ensure!(
+            tool_uses(&events, "tool_result").iter().any(|r| r["is_error"] == true),
+            "the tool fails: {events:#?}"
+        );
+        anyhow::ensure!(
+            guard_note(&events, GUARD_REASON),
+            "the transcript shows the reason: {events:#?}"
+        );
+        let seen = guard.seen();
+        anyhow::ensure!(seen.len() == 1, "one /check per request: {seen:#?}");
+        anyhow::ensure!(seen[0].0.starts_with("POST /check?dialect=acp "), "{seen:#?}");
+        anyhow::ensure!(
+            seen[0].1
+                == json!({ "tool_name": "Read", "tool_input": { "path": ".", "file_path": "." } }),
+            "the guard is asked in its own tool vocabulary: {seen:#?}"
+        );
+        Ok(())
+    }
+
+    pub async fn a_guard_allow_leaves_the_permission_flow_unchanged() -> anyhow::Result<()> {
+        let guard = super::fake_guard::serve(json!({
+            "outcome": { "outcome": "selected", "optionId": "allow_once" },
+        }))
+        .await?;
+        let (events, answer) = guarded_yolo_turn(&guard.url).await?;
+        anyhow::ensure!(
+            answer == json!({ "outcome": { "outcome": "selected", "optionId": "allow-once" } }),
+            "yolo still auto-allows once: {answer}"
+        );
+        anyhow::ensure!(
+            tool_uses(&events, "tool_result").iter().any(|r| r["is_error"] == false),
+            "the tool runs: {events:#?}"
+        );
+        anyhow::ensure!(!guard_note(&events, ""), "an allow adds no guard row: {events:#?}");
+
+        let mut h = start(&FAKE_ROW, &exe());
+        let mut script = full_script();
+        script["turn"] = json!("permission");
+        h.spawn_guarded(&script, Some(PermissionMode::Ask), "do it", &guard.url).await;
+        let events = h
+            .until(|e| matches!(e, AdapterEvent::PermissionRequest { .. }), Duration::from_secs(30))
+            .await?;
+        let local_id = started(&events).unwrap().to_owned();
+        let Some(AdapterEvent::PermissionRequest { request_id, .. }) = events.last() else {
+            unreachable!()
+        };
+        h.send(AdapterCommand::PermissionResponse {
+            local_id: local_id.clone(),
+            request_id: request_id.clone(),
+            allow: true,
+            option_id: None,
+        })
+        .await;
+        let rest = h.until(is_idle, Duration::from_secs(30)).await?;
+        anyhow::ensure!(
+            tool_uses(&rest, "tool_result").iter().any(|r| r["is_error"] == false),
+            "a guard allow still leaves an ask session's card to the human: {rest:#?}"
+        );
+        anyhow::ensure!(guard.seen().len() == 2, "both requests were checked: {:#?}", guard.seen());
+        h.send(AdapterCommand::Kill { local_id, signal: None }).await;
+        h.until(|e| matches!(e, AdapterEvent::SessionEnded { .. }), Duration::from_secs(15))
+            .await?;
+        h.finish().await;
+        Ok(())
+    }
+
+    pub async fn an_unreachable_guard_fails_closed() -> anyhow::Result<()> {
+        let url = super::fake_guard::dead_url().await?;
+        let (events, answer) = guarded_yolo_turn(&url).await?;
+        anyhow::ensure!(
+            answer["outcome"] == json!({ "outcome": "selected", "optionId": "reject-once" }),
+            "an unreachable guard rejects: {answer}"
+        );
+        let reason = answer["_meta"]["reason"].as_str().unwrap_or_default();
+        anyhow::ensure!(
+            reason.contains(&url) && reason.contains("failing closed"),
+            "the reason names the guard and the policy: {reason}"
+        );
+        anyhow::ensure!(guard_note(&events, "failing closed"), "{events:#?}");
+        Ok(())
     }
 
     pub async fn an_allow_always_pick_round_trips_its_option_id() -> anyhow::Result<()> {

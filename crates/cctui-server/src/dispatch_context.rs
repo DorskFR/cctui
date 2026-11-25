@@ -198,7 +198,7 @@ impl DispatchContext for AppState {
     ) {
         if let Some(uid) = real_user {
             if context_record_is_callers(&self.pool, session, uid).await {
-                let scope = dispatch_context_scope(uid, &req.payload);
+                let scope = dispatch_context_scope(uid, &req.dispatcher, &req.payload);
                 if self.config.features.contains(cctui_proto::features::Feature::Context) {
                     cctui_server_sessions::routes::context::remember_intent(
                         &self.pool,
@@ -296,11 +296,12 @@ pub async fn context_record_is_callers(
     }
 }
 
-/// The coordinates a dispatched worker's rules resolve against. No human
-/// watches a worker, so everything it saves through `CctuiContext` waits for
-/// approval.
+/// The coordinates a dispatched worker's rules resolve against: only the
+/// items its owner opted in to dispatches reach it. No human watches a worker,
+/// so everything it saves through `CctuiContext` waits for approval.
 pub fn dispatch_context_scope(
     uid: uuid::Uuid,
+    dispatcher: &str,
     payload: &serde_json::Value,
 ) -> cctui_server_sessions::routes::context::StoredScope {
     let text = |key: &str| {
@@ -318,6 +319,12 @@ pub fn dispatch_context_scope(
             working_dir: text("working_dir").or_else(|| text("cwd")),
             label_ids: Vec::new(),
             adapter: Some(payload_adapter(payload).unwrap_or("claude-code").to_owned()),
+            machine_owner: None,
+            dispatch: Some(cctui_server_sessions::routes::context::DispatchCoords {
+                owner: uid,
+                dispatcher: Some(dispatcher.trim().to_owned()).filter(|d| !d.is_empty()),
+                profile: text("profile"),
+            }),
         },
         dispatched: true,
     }

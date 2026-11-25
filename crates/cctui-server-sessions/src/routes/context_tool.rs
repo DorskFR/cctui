@@ -4,7 +4,8 @@
 //! user whose items are read and written. A rule, or anything a dispatched
 //! worker saves, lands as a pending proposal and files a "needs you" card: a
 //! rule rides into every future matching launch, so an agent that read a
-//! hostile page must not be able to plant one unseen.
+//! hostile page must not be able to plant one unseen. An agent never sets an
+//! item's reach or dispatch opt-in.
 
 use axum::Json;
 use axum::extract::{Path, State};
@@ -15,10 +16,11 @@ use uuid::Uuid;
 
 use crate::context::SessionsContext;
 use crate::error::AppError;
+use crate::routes::context::reach::hold_agent_reach;
 use crate::routes::context::targets::{self, Targets};
 use crate::routes::context::{
-    ContextItem, ContextItemSpec, KINDS, approval_title, attach_memories, clean_name, clean_spec,
-    count_for_user, db_err, insert, list_for_user, ownership, propose, spec_of, update,
+    ContextItem, ContextItemSpec, ContextMatch, KINDS, approval_title, attach_memories, clean_name,
+    clean_spec, count_for_user, db_err, insert, list_for_user, ownership, propose, spec_of, update,
 };
 
 pub const SAVES_PER_HOUR: i64 = 20;
@@ -242,6 +244,8 @@ async fn save<S: SessionsContext>(
                     format!("a user may hold at most {MAX_ITEMS_PER_USER} context items"),
                 ));
             }
+            let mut match_ = req.match_.clone().unwrap_or_default();
+            hold_agent_reach(&ContextMatch::default(), &mut match_)?;
             let spec = clean_spec(ContextItemSpec {
                 kind: kind.to_owned(),
                 name: name.clone(),
@@ -251,10 +255,11 @@ async fn save<S: SessionsContext>(
                     .filter(|t| !t.trim().is_empty())
                     .unwrap_or_else(|| name.clone()),
                 body: req.body.clone().unwrap_or_default(),
-                match_: req.match_.clone().unwrap_or_default(),
+                match_,
                 enabled: true,
                 ..ContextItemSpec::default()
             })?;
+            targets::refuse_foreign_machines(state.pool(), owner, &spec.match_).await?;
             let spec = targets.spec(spec, &[])?;
             let created = if needs_approval {
                 let live = ContextItemSpec { body: String::new(), enabled: false, ..spec.clone() };
@@ -271,7 +276,10 @@ async fn save<S: SessionsContext>(
             ));
         }
         (mode, Some(existing)) => {
-            let next = clean_spec(edited_spec(existing, mode, req, &date, needs_approval))?;
+            let mut next = edited_spec(existing, mode, req, &date, needs_approval);
+            hold_agent_reach(&existing.match_, &mut next.match_)?;
+            let next = clean_spec(next)?;
+            targets::refuse_foreign_machines(state.pool(), owner, &next.match_).await?;
             let next = targets.spec(next, &targets::kept(existing))?;
             let saved = if needs_approval {
                 propose(state.pool(), owner, existing.id, &next, session_id).await
@@ -436,9 +444,42 @@ mod tests {
             ..ContextMatch::default()
         };
         let e = entry(&item, &targets);
-        assert_eq!(e.match_summary.as_deref(), Some("machines=dev1 (3d3d04a3…), paths=/w/repo"));
+        assert_eq!(
+            e.match_summary.as_deref(),
+            Some("my machines: machines=dev1 (3d3d04a3…), paths=/w/repo")
+        );
         item.match_ = ContextMatch::default();
-        assert_eq!(entry(&item, &targets).match_summary.as_deref(), Some("everywhere"));
+        assert_eq!(entry(&item, &targets).match_summary.as_deref(), Some("my machines"));
+    }
+
+    #[test]
+    fn an_agent_save_keeps_the_humans_reach_and_cannot_widen_it() {
+        use crate::routes::context::ContextReach;
+        let mut item = memory("b");
+        item.match_ = ContextMatch {
+            reach: ContextReach::AllUsers,
+            dispatch: true,
+            profiles: vec!["rev".into()],
+            ..ContextMatch::default()
+        };
+        let mut req = call("replace", "new");
+        req.match_ = Some(ContextMatch { paths: vec!["/w".into()], ..ContextMatch::default() });
+        let mut next = edited_spec(&item, "replace", &req, "D", false);
+        hold_agent_reach(&item.match_, &mut next.match_).expect("a narrower filter");
+        assert_eq!((next.match_.reach, next.match_.dispatch), (ContextReach::AllUsers, true));
+        assert_eq!(next.match_.profiles, ["rev"]);
+
+        let plain = memory("b");
+        for wide in [
+            ContextMatch { reach: ContextReach::AllUsers, ..ContextMatch::default() },
+            ContextMatch { dispatch: true, ..ContextMatch::default() },
+        ] {
+            let mut req = call("replace", "new");
+            req.match_ = Some(wide);
+            let mut next = edited_spec(&plain, "replace", &req, "D", true);
+            let err = hold_agent_reach(&plain.match_, &mut next.match_).expect_err("widens");
+            assert_eq!(err.status(), StatusCode::FORBIDDEN);
+        }
     }
 
     /// The tool reuses the human API's validation, so an agent sees the same

@@ -31,6 +31,8 @@ use crate::auth::AuthContext;
 use crate::context::SessionsContext;
 use crate::routes::settings::secret_scrub_of;
 
+pub mod local;
+
 pub use cctui_proto::api::privacy_scan::{
     PrivacyScanJob, RescrubRequest, ScanCategory, ScanSample,
 };
@@ -80,6 +82,7 @@ type JobRow = (
     Option<String>,
     chrono::DateTime<chrono::Utc>,
     Option<chrono::DateTime<chrono::Utc>>,
+    Option<Value>,
 );
 
 /// sqlx 0.9 takes only `&'static str`, so the shared column list is spliced at
@@ -89,7 +92,7 @@ macro_rules! job_query {
         concat!(
             "SELECT id, status, dry_run, cancel_requested, rows_total, rows_scanned, ",
             "rows_changed, substitutions, by_category, samples, error, created_at, ",
-            "finished_at FROM privacy_scan_jobs ",
+            "finished_at, local_transcripts FROM privacy_scan_jobs ",
             $tail
         )
     };
@@ -118,6 +121,7 @@ pub fn to_job(row: JobRow) -> PrivacyScanJob {
         error,
         created_at,
         finished_at,
+        local_transcripts,
     ) = row;
     let by_category: BTreeMap<String, i64> =
         serde_json::from_value(by_category).unwrap_or_default();
@@ -153,6 +157,7 @@ pub fn to_job(row: JobRow) -> PrivacyScanJob {
         error,
         created_at,
         finished_at,
+        local_transcripts: local::summarize(local_transcripts),
     }
 }
 
@@ -374,7 +379,7 @@ async fn save_progress(pool: &PgPool, id: Uuid, p: &Progress) -> Result<(), sqlx
     Ok(())
 }
 
-async fn cancel_requested(pool: &PgPool, id: Uuid) -> bool {
+pub(crate) async fn cancel_requested(pool: &PgPool, id: Uuid) -> bool {
     sqlx::query_scalar::<_, bool>("SELECT cancel_requested FROM privacy_scan_jobs WHERE id = $1")
         .bind(id)
         .fetch_optional(pool)
@@ -402,13 +407,32 @@ async fn finish(pool: &PgPool, id: Uuid, status: &str, error: Option<String>) {
 /// Drive one job to a terminal state. Public so a test can await the sweep
 /// instead of racing the spawned task.
 pub async fn run<S: SessionsContext>(state: S, spec: JobSpec) {
-    match sweep(&state, &spec).await {
+    let outcome = match local::start(&state, spec.id, spec.user_id, spec.dry_run).await {
+        Ok(local) => sweep_with_local(&state, &spec, local).await,
+        Err(e) => Err(e.into()),
+    };
+    match outcome {
         Ok(status) => finish(state.pool(), spec.id, status, None).await,
         Err(e) => {
             tracing::error!("privacy scan failed: {e}");
             finish(state.pool(), spec.id, "failed", Some(e.to_string())).await;
         }
     }
+}
+
+async fn sweep_with_local<S: SessionsContext>(
+    state: &S,
+    spec: &JobSpec,
+    local: Option<local::Running>,
+) -> Result<&'static str, SweepError> {
+    let outcome = sweep(state, spec).await;
+    let Some(mut running) = local else { return outcome };
+    if matches!(outcome, Ok("completed")) && local::wait(state.pool(), spec.id, &mut running).await
+    {
+        return outcome;
+    }
+    local::abort(state.pool(), spec.id, running).await;
+    outcome.map(|status| if status == "completed" { "cancelled" } else { status })
 }
 
 type SweepError = Box<dyn std::error::Error + Send + Sync>;

@@ -6,6 +6,7 @@ pub mod failover;
 pub mod health;
 pub mod limits;
 pub mod mint;
+pub mod outbound_scrub;
 pub mod proxy;
 pub mod ratelimit;
 pub mod toolguard;

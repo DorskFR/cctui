@@ -83,6 +83,7 @@ fn daemon_response(response: DaemonResponse) -> RouteResponse {
         DaemonResponse::GitInfo(info) => RouteResponse::GitInfo { info },
         DaemonResponse::File(file) => RouteResponse::File { file },
         DaemonResponse::Diagnose(report) => RouteResponse::Diagnose { report },
+        DaemonResponse::TranscriptAudit(report) => RouteResponse::TranscriptAudit { report },
     }
 }
 
@@ -147,6 +148,7 @@ const fn route_op(request: &RouteRequest) -> &'static str {
         RouteRequest::DaemonGitInfo { .. } => "daemon_git_info",
         RouteRequest::DaemonReadFile { .. } => "daemon_read_file",
         RouteRequest::DaemonDiagnose { .. } => "daemon_diagnose",
+        RouteRequest::DaemonTranscriptAudit { .. } => "daemon_transcript_audit",
         RouteRequest::DispatcherCommand { .. } => "dispatcher_command",
         RouteRequest::DispatcherRequest { .. } => "dispatcher_request",
     }
@@ -202,6 +204,11 @@ async fn deliver_local(state: &AppState, request: RouteRequest) -> Result<RouteR
                 &local_id.clone(),
                 DaemonRequest::Diagnose { adapter_id, local_id },
             )
+            .await
+            .map(daemon_response),
+        RouteRequest::DaemonTranscriptAudit { machine, dry_run } => state
+            .bus
+            .request_daemon_local(machine, DaemonRequest::TranscriptAudit { dry_run })
             .await
             .map(daemon_response),
         RouteRequest::DispatcherCommand { dispatcher, frame } => {

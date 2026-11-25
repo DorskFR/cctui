@@ -16,7 +16,7 @@
 	import { Breadcrumb, Button, Text } from '@dorsk/tsumikit';
 	import PageHead from '#lib/components/molecules/PageHead.svelte';
 	import AccountEditorModal from '#lib/components/organisms/accounts/AccountEditorModal.svelte';
-	import { availableKinds } from '#lib/components/organisms/accounts/account-editor.logic.ts';
+	import { availableKinds, ownsAccount } from '#lib/components/organisms/accounts/account-editor.logic.ts';
 	import {
 		ACCOUNTS_HREF,
 		accountHref,
@@ -124,6 +124,7 @@
 			<ProvidersSection
 				{account}
 				{managed}
+				owned={ownsAccount(account, me.data)}
 				canAddProvider={!managed && availableKinds(account).length > 0}
 				onadd={() => editor?.openAddProvider(account)}
 				onedit={(p) => selectProvider(p, true)}

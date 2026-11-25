@@ -1,5 +1,6 @@
-//! Egress allow-list policy: JSON file, fail-closed, hot-reloaded by mtime poll.
+//! Egress allow-list policy: JSON file, fail-closed, hot-reloaded by polling.
 
+use std::os::unix::fs::MetadataExt;
 use std::path::PathBuf;
 use std::sync::{Arc, PoisonError, RwLock};
 use std::time::{Duration, SystemTime};
@@ -8,22 +9,27 @@ use cctui_guard::decision_log::DecisionLog;
 use serde::Deserialize;
 
 /// The on-disk policy document:
-/// `{ "allowed_hosts": ["host:port", …], "default": "deny" }`.
+/// `{ "allowed_hosts": ["host:port", …], "default": "deny", "generation": 3 }`.
 #[derive(Debug, Clone, Deserialize)]
 pub struct PolicyConfig {
     #[serde(default)]
     pub allowed_hosts: Vec<String>,
     #[serde(default)]
     pub default: String,
+    /// Stamped by the guard so it can confirm this policy is live; 0 when absent.
+    #[serde(default)]
+    pub generation: u64,
 }
 
+type FileStamp = (SystemTime, u64, u64);
+
 /// Holds the active policy and the path it was loaded from. Hot-reloads when the
-/// file's mtime changes. A `None` config means deny-all (fail closed): a missing,
+/// file's mtime or inode changes. A `None` config means deny-all (fail closed): a missing,
 /// unreadable, or invalid policy never opens the gate.
 pub struct PolicyManager {
     config: RwLock<Option<PolicyConfig>>,
     path: PathBuf,
-    last_mtime: RwLock<Option<SystemTime>>,
+    last_stamp: RwLock<Option<FileStamp>>,
     decision_log: Option<Arc<DecisionLog>>,
 }
 
@@ -33,7 +39,7 @@ impl PolicyManager {
         Self {
             config: RwLock::new(None),
             path: path.into(),
-            last_mtime: RwLock::new(None),
+            last_stamp: RwLock::new(None),
             decision_log: None,
         }
     }
@@ -87,25 +93,26 @@ impl PolicyManager {
         })
     }
 
-    /// True if a policy is currently loaded (used by the health endpoint).
+    /// Generation of the loaded policy, `None` when none is loaded.
     #[must_use]
-    pub fn is_loaded(&self) -> bool {
-        self.config.read().unwrap_or_else(PoisonError::into_inner).is_some()
+    pub fn generation(&self) -> Option<u64> {
+        self.config.read().unwrap_or_else(PoisonError::into_inner).as_ref().map(|c| c.generation)
     }
 
-    /// Polls the policy file's mtime forever, reloading on change. The directory
-    /// approach the Go impl used (fsnotify) is replaced by an mtime poll, which
-    /// the ticket explicitly permits and which survives atomic-rename writes.
+    /// The inode is part of the stamp because a rename can land within the
+    /// same mtime tick as the write it replaces.
     pub async fn watch(self: std::sync::Arc<Self>, interval: Duration) {
         loop {
             tokio::time::sleep(interval).await;
-            let mtime = std::fs::metadata(&self.path).and_then(|m| m.modified()).ok();
+            let stamp = std::fs::metadata(&self.path)
+                .and_then(|m| Ok((m.modified()?, m.ino(), m.len())))
+                .ok();
             let changed = {
-                let last = self.last_mtime.read().unwrap_or_else(PoisonError::into_inner);
-                *last != mtime
+                let last = self.last_stamp.read().unwrap_or_else(PoisonError::into_inner);
+                *last != stamp
             };
             if changed {
-                *self.last_mtime.write().unwrap_or_else(PoisonError::into_inner) = mtime;
+                *self.last_stamp.write().unwrap_or_else(PoisonError::into_inner) = stamp;
                 match self.load() {
                     Ok(()) => tracing::info!("policy reloaded successfully"),
                     Err(e) => tracing::warn!("failed to reload policy: {e}"),
@@ -195,7 +202,7 @@ mod tests {
 
         assert!(!pm.is_allowed("example.com:443"));
         assert!(!pm.is_allowed("api.example.com:80"));
-        assert!(!pm.is_loaded());
+        assert_eq!(pm.generation(), None);
     }
 
     #[test]
@@ -221,7 +228,7 @@ mod tests {
         // load() errors and leaves config as the initial None: deny-all.
         assert!(pm.load().is_err());
         assert!(!pm.is_allowed("example.com:443"));
-        assert!(!pm.is_loaded());
+        assert_eq!(pm.generation(), None);
     }
 
     #[test]
@@ -277,6 +284,49 @@ mod tests {
         assert_eq!(get_host("[::1]:8080"), "[::1]");
         assert_eq!(get_host("example.com:443"), "example.com");
         assert_eq!(get_host("example.com"), "example.com");
+    }
+
+    #[test]
+    fn policy_without_generation_loads_as_generation_zero() {
+        let (_dir, path) = write_policy(r#"{"allowed_hosts": ["a.test:443"], "default": "deny"}"#);
+        let pm = PolicyManager::new(&path);
+        assert_eq!(pm.generation(), None);
+        pm.load().unwrap();
+        assert_eq!(pm.generation(), Some(0));
+        assert!(pm.is_allowed("a.test:443"));
+    }
+
+    #[test]
+    fn policy_generation_is_read_from_the_file() {
+        let (_dir, path) =
+            write_policy(r#"{"allowed_hosts": [], "default": "deny", "generation": 12}"#);
+        let pm = PolicyManager::new(&path);
+        pm.load().unwrap();
+        assert_eq!(pm.generation(), Some(12));
+    }
+
+    #[tokio::test]
+    async fn policy_hot_reload_picks_up_a_rename_over_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("policy.json");
+        std::fs::write(&path, r#"{"allowed_hosts": [], "default": "deny", "generation": 1}"#)
+            .unwrap();
+        let pm = std::sync::Arc::new(PolicyManager::new(&path));
+        pm.load().unwrap();
+        let handle = tokio::spawn(pm.clone().watch(Duration::from_millis(20)));
+        tokio::time::sleep(Duration::from_millis(60)).await;
+
+        let tmp = dir.path().join("policy.json.tmp");
+        std::fs::write(&tmp, r#"{"allowed_hosts": [], "default": "deny", "generation": 2}"#)
+            .unwrap();
+        std::fs::rename(&tmp, &path).unwrap();
+
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        while pm.generation() != Some(2) && tokio::time::Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(pm.generation(), Some(2));
+        handle.abort();
     }
 
     #[tokio::test]

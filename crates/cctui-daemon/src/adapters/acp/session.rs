@@ -207,6 +207,7 @@ pub struct AcpSession {
     ending: bool,
     /// Ends after its first turn: a dispatched worker's one prompt.
     oneshot: bool,
+    guard: Option<super::guard::Guard>,
 }
 
 impl AcpSession {
@@ -219,6 +220,7 @@ impl AcpSession {
     ) -> Self {
         let (commands_tx, commands_rx) = mpsc::channel(32);
         let (inbox_tx, inbox_rx) = mpsc::unbounded_channel();
+        let guard = super::guard::Guard::resolve(&params.env);
         Self {
             params,
             events,
@@ -252,6 +254,7 @@ impl AcpSession {
             turn_end_supported: crate::adapters::turn_end::supported(),
             ending: false,
             oneshot: false,
+            guard,
         }
     }
 
@@ -784,6 +787,12 @@ impl AcpSession {
             .get("toolCallId")
             .and_then(Value::as_str)
             .map_or_else(|| Uuid::new_v4().to_string(), str::to_owned);
+        if let Some(guard) = &self.guard
+            && let super::guard::Verdict::Reject(reason) = guard.check(&tool_call).await
+        {
+            self.guard_reject(local_id, &tool_call, &options, reply, &reason).await;
+            return;
+        }
         if matches!(self.params.permission_mode, Some(PermissionMode::Yolo | PermissionMode::Whip))
             && let Some(answer) = protocol::auto_allow(&options)
         {
@@ -793,6 +802,34 @@ impl AcpSession {
         let event = normalize::permission_request(local_id, &request_id, &tool_call, &options);
         self.pending.insert(request_id, Pending { options, reply });
         let _ = self.events.send(event).await;
+    }
+
+    async fn guard_reject(
+        &self,
+        local_id: &str,
+        tool_call: &Value,
+        options: &[protocol::PermissionOption],
+        reply: tokio::sync::oneshot::Sender<Value>,
+        reason: &str,
+    ) {
+        tracing::info!(%local_id, %reason, "acp: the workflow guard rejected a permission request");
+        let _ = reply.send(protocol::guard_reject(options, reason));
+        let tool = tool_call
+            .get("title")
+            .and_then(Value::as_str)
+            .or_else(|| tool_call.get("kind").and_then(Value::as_str))
+            .unwrap_or("tool");
+        let text = format!("cctui-guard blocked {tool}: {reason}");
+        let _ = self
+            .events
+            .send(AdapterEvent::Message {
+                local_id: local_id.to_owned(),
+                payload: serde_json::json!({
+                    "type": "text", "content": text, "role": "assistant", "text": text, "meta": true,
+                }),
+                turn_id: self.turn.as_ref().and_then(|t| t.turn_id),
+            })
+            .await;
     }
 
     async fn answer_permission(&mut self, request_id: &str, allow: bool, option_id: Option<&str>) {

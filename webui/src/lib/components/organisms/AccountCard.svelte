@@ -5,6 +5,7 @@
 	import AccountAvatar from '#lib/components/molecules/AccountAvatar.svelte';
 	import ResourceShares from '#lib/components/molecules/ResourceShares.svelte';
 	import ProviderColumn from '#lib/components/organisms/accounts/ProviderColumn.svelte';
+	import { canEditProvider } from '#lib/components/organisms/accounts/account-editor.logic.ts';
 	import { exhaustedWindow } from '#lib/components/organisms/accounts/pools.logic.ts';
 	import { accountHandleDrag } from '#lib/components/organisms/accounts/handleDrag.svelte.ts';
 	import { providerLabel } from '#lib/providers.ts';
@@ -21,6 +22,7 @@
 		pools = [],
 		enabled = true,
 		managed = false,
+		owned = false,
 		canAddProvider = false,
 		canShare = false,
 		showOwner = false,
@@ -46,6 +48,8 @@
 		enabled?: boolean;
 		/** Every provider is server-managed → the account is read-only. */
 		managed?: boolean;
+		/** The signed-in user owns the account (or is an admin); otherwise its providers and caps are read-only. */
+		owned?: boolean;
 		canAddProvider?: boolean;
 		canShare?: boolean;
 		showOwner?: boolean;
@@ -283,8 +287,8 @@
 			<ProviderColumn
 				provider={p}
 				usageEnabled={enabled}
-				canManage={!p.managed && !compact}
-				canRemove={!p.managed && !compact}
+				canManage={canEditProvider(p, owned) && !compact}
+				canRemove={canEditProvider(p, owned) && !compact}
 				dense={compact}
 				onedit={() => oneditprovider?.(p)}
 				onreauth={() => onreauthprovider?.(p)}

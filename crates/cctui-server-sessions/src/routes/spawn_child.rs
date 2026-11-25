@@ -66,22 +66,7 @@ pub async fn remember_child_context<S: SessionsContext>(
     cwd: Option<&str>,
     profile: Option<&str>,
 ) {
-    use crate::routes::context::{SpawnScope, StoredScope};
-    let scope = StoredScope {
-        user_id: parent.user_id,
-        coords: SpawnScope {
-            machine_id: Some(parent.machine_uuid.to_string()),
-            working_dir: cwd.map(str::to_owned),
-            label_ids: Vec::new(),
-            adapter: Some(adapter.to_owned()),
-        },
-        dispatched: crate::routes::context::ownership::launch_scope(
-            state.pool(),
-            &parent.session_id,
-        )
-        .await
-        .is_some_and(|s| s.dispatched),
-    };
+    let scope = child_scope(state.pool(), parent, adapter, cwd).await;
     if state.config().features.contains(cctui_proto::features::Feature::Context) {
         let context = crate::routes::context::resolve_for_child(
             state.pool(),
@@ -96,6 +81,36 @@ pub async fn remember_child_context<S: SessionsContext>(
     }
     let spawner = state.child_spawner(parent).await;
     state.remember_spawner(child_key, spawner, None).await;
+}
+
+/// A child runs on its parent's machine, whoever owns it, and a dispatched
+/// parent's child is dispatched work too.
+pub async fn child_scope(
+    pool: &sqlx::PgPool,
+    parent: &Parent,
+    adapter: &str,
+    cwd: Option<&str>,
+) -> crate::routes::context::StoredScope {
+    use crate::routes::context::{SpawnScope, StoredScope, complete_scope, machine_owner};
+    let machine = parent.machine_uuid.to_string();
+    let parent_scope =
+        match crate::routes::context::ownership::launch_scope(pool, &parent.session_id).await {
+            Some(s) => Some(complete_scope(pool, s).await),
+            None => None,
+        };
+    let dispatched = parent_scope.as_ref().is_some_and(|s| s.dispatched);
+    StoredScope {
+        user_id: parent.user_id,
+        coords: SpawnScope {
+            machine_owner: machine_owner(pool, &machine).await,
+            machine_id: Some(machine),
+            working_dir: cwd.map(str::to_owned),
+            label_ids: Vec::new(),
+            adapter: Some(adapter.to_owned()),
+            dispatch: parent_scope.and_then(|s| s.coords.dispatch).filter(|_| dispatched),
+        },
+        dispatched,
+    }
 }
 
 /// Children counting against the parent's spawn quota: every child except those
@@ -335,5 +350,123 @@ mod tests {
         sqlx::query("DELETE FROM sessions WHERE user_id = $1").bind(uid).execute(&pool).await.ok();
         sqlx::query("DELETE FROM machines WHERE user_id = $1").bind(uid).execute(&pool).await.ok();
         sqlx::query("DELETE FROM users WHERE id = $1").bind(uid).execute(&pool).await.ok();
+    }
+
+    async fn seed_two_owners(pool: &sqlx::PgPool) -> (Uuid, Uuid, Uuid, Uuid) {
+        use crate::routes::context::{ContextItemSpec, clean_spec, insert};
+        let (a, b) = (Uuid::new_v4(), Uuid::new_v4());
+        let (ma, mb) = (Uuid::new_v4(), Uuid::new_v4());
+        for (uid, machine) in [(a, ma), (b, mb)] {
+            sqlx::query("INSERT INTO users (id, name, key_hash) VALUES ($1, $2, $3)")
+                .bind(uid)
+                .bind(format!("child-reach-{uid}"))
+                .bind(format!("kh-{uid}"))
+                .execute(pool)
+                .await
+                .expect("seed user");
+            sqlx::query(
+                "INSERT INTO machines (id, user_id, name, key_hash) VALUES ($1, $2, $3, $4)",
+            )
+            .bind(machine)
+            .bind(uid)
+            .bind(machine.to_string())
+            .bind(format!("kh-{machine}"))
+            .execute(pool)
+            .await
+            .expect("seed machine");
+        }
+        let house = clean_spec(ContextItemSpec {
+            kind: "rule".into(),
+            name: "house".into(),
+            title: "House".into(),
+            body: "b".into(),
+            ..ContextItemSpec::default()
+        })
+        .expect("valid");
+        insert(pool, a, &house, None, None).await.expect("rule");
+        (a, b, ma, mb)
+    }
+
+    #[tokio::test]
+    async fn a_child_on_another_users_machine_gets_none_of_its_parents_default_rules() {
+        use crate::routes::context::{
+            DispatchCoords, SpawnScope, StoredScope, ownership, resolve_for_child,
+        };
+        let Some(url) = cctui_server_kernel::test_support::db_url("child_scope_reach") else {
+            return;
+        };
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&url)
+            .await
+            .expect("connect test db");
+        let (a, b, ma, mb) = seed_two_owners(&pool).await;
+        let parent = |machine: Uuid| Parent {
+            session_id: format!("child-reach-parent-{}", Uuid::new_v4()),
+            machine_uuid: machine,
+            working_dir: Some("/w".into()),
+            user_id: a,
+            permission_mode: None,
+        };
+
+        let (home, away) = (parent(ma), parent(mb));
+        let at_home = child_scope(&pool, &home, "codex", Some("/w")).await;
+        let own = |items: Vec<crate::routes::context::ContextItem>| -> Vec<String> {
+            items.into_iter().filter(|i| i.user_id == a).map(|i| i.name).collect()
+        };
+        let got = own(resolve_for_child(&pool, a, None, &at_home.coords).await);
+        assert_eq!(got, ["house"]);
+        let at_b = child_scope(&pool, &away, "codex", Some("/w")).await;
+        assert_eq!(at_b.coords.machine_owner, Some(b));
+        assert!(
+            own(resolve_for_child(&pool, a, None, &at_b.coords).await).is_empty(),
+            "B's machine"
+        );
+
+        let worker = parent(ma);
+        let coords = SpawnScope {
+            dispatch: Some(DispatchCoords {
+                owner: a,
+                dispatcher: Some("kube".into()),
+                profile: None,
+            }),
+            ..SpawnScope::default()
+        };
+        ownership::record(
+            &pool,
+            &worker.session_id,
+            &StoredScope { user_id: a, coords, dispatched: true },
+        )
+        .await;
+        let child = child_scope(&pool, &worker, "codex", None).await;
+        assert!(child.dispatched);
+        assert_eq!(
+            child.coords.dispatch.as_ref().and_then(|d| d.dispatcher.as_deref()),
+            Some("kube")
+        );
+        assert!(
+            resolve_for_child(&pool, a, None, &child.coords).await.is_empty(),
+            "a dispatched parent's child is dispatched work: no opt-in, no rule"
+        );
+
+        sqlx::query("DELETE FROM session_context WHERE spawn_key = $1")
+            .bind(&worker.session_id)
+            .execute(&pool)
+            .await
+            .ok();
+        for table in ["context_items", "machines"] {
+            sqlx::query(sqlx::AssertSqlSafe(format!(
+                "DELETE FROM {table} WHERE user_id = ANY($1)"
+            )))
+            .bind(vec![a, b])
+            .execute(&pool)
+            .await
+            .ok();
+        }
+        sqlx::query("DELETE FROM users WHERE id = ANY($1)")
+            .bind(vec![a, b])
+            .execute(&pool)
+            .await
+            .ok();
     }
 }
