@@ -56,7 +56,7 @@
 		sessionId?: string | null;
 		onretry: (ts: number) => void;
 		onedit: (text: string, ts: number) => void;
-		onsaveimage: (e: MouseEvent, ln: Line) => void;
+		onsaveimage: (from: Element, ln: Line) => void;
 		oncopymarkdown: (ln: Line) => void;
 		// Subset-fork affordances: only assistant lines carry the
 		// `messageId` anchor shared by the line and the on-disk transcript.
@@ -137,6 +137,7 @@
 	data-seq={ln.seq}
 	data-journey="line"
 	data-journey-key={ln.role}
+	tabindex="-1"
 	class:mcp={ln.mcp}
 	class:pending={ln.pending}
 	class:failed={!!ln.failed}
@@ -209,19 +210,21 @@
 			<Timestamp value={ln.ts} mode="time" tone="faint" size="xs" />
 		{/if}
 		<LineDelivery {ln} {archived} {queueWaiting} {onretry} {onedit} />
-		<LineActions
-			{ln}
-			{pinnable}
-			{pinned}
-			{onpin}
-			{onsaveimage}
-			{oncopymarkdown}
-			{onbookmark}
-			{bookmarked}
-			onquote={quotable ? onquote : undefined}
-			onspeak={ln.role === 'assistant' && ln.text ? onspeak : undefined}
-			{speaking}
-		/>
+		<span class="acts" class:keep={speaking}>
+			<LineActions
+				{ln}
+				{pinnable}
+				{pinned}
+				{onpin}
+				{onsaveimage}
+				{oncopymarkdown}
+				{onbookmark}
+				{bookmarked}
+				onquote={quotable ? onquote : undefined}
+				onspeak={ln.role === 'assistant' && ln.text ? onspeak : undefined}
+				{speaking}
+			/>
+		</span>
 	</div>
 	{#if ln.role === 'thinking'}
 		<ThinkingBubble html={ln.html} redacted={ln.redacted} noReply={ln.noReply} />
@@ -326,6 +329,24 @@
 		gap: var(--sp-2);
 		font-size: var(--fs-xs);
 		color: var(--text-faint);
+	}
+	.line:focus {
+		outline: none;
+	}
+	.acts {
+		margin-left: auto;
+		display: inline-flex;
+	}
+	/* Touch has no hover: a tap focuses the line, which reveals only its own actions. */
+	@media (hover: hover) {
+		.line:not(:hover, :focus-within) .acts:not(.keep) {
+			opacity: 0;
+		}
+	}
+	@media (hover: none) {
+		.line:not(:focus-within) .acts:not(.keep) {
+			display: none;
+		}
 	}
 	.fork-check {
 		display: inline-flex;

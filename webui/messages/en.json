@@ -333,6 +333,7 @@
 	"composer_schedule_custom_invalid": "Pick a time in the next 30 days",
 	"composer_schedule_confirm": "Schedule",
 	"conversation_dock_empty": "Pick a session in the list to open it here.",
+	"conversation_line_actions": "Message actions",
 	"conversation_scheduled_for": "Scheduled for {time}",
 	"device_approve": "Approve",
 	"device_approved": "Approved — the device can finish signing in.",

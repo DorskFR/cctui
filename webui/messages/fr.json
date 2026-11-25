@@ -333,6 +333,7 @@
 	"composer_schedule_custom_invalid": "Choisissez un moment dans les 30 prochains jours",
 	"composer_schedule_confirm": "Programmer",
 	"conversation_dock_empty": "Choisissez une session dans la liste pour l’ouvrir ici.",
+	"conversation_line_actions": "Actions du message",
 	"conversation_scheduled_for": "Programmé pour {time}",
 	"device_approve": "Approuver",
 	"device_approved": "Approuvé — l'appareil peut terminer sa connexion.",

@@ -27,8 +27,8 @@ export function bubbleSelection(bubble: Element | null): string | null {
 // out the hover action buttons, and bake the page background in so transparent
 // bubbles read correctly. html-to-image is loaded on demand to keep it out of
 // the main bundle.
-export async function saveLineImage(e: MouseEvent, ln: Line) {
-	const node = (e.currentTarget as HTMLElement).closest('.line') as HTMLElement | null;
+export async function saveLineImage(from: Element, ln: Line) {
+	const node = from.closest<HTMLElement>('.line');
 	if (!node) return;
 	try {
 		const bg = getComputedStyle(document.body).getPropertyValue('--bg').trim() || '#1e1e1e';
