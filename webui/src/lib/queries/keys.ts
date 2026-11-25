@@ -3,6 +3,14 @@
  * hidden from the "new machines" list in the UI. */
 export const SYSTEM_MACHINE_KINDS = new Set(["dispatch", "ephemeral"]);
 
+/** Flags join the key only when set, so the default key keeps its shape. */
+export type SessionSearchKey = {
+  q: string;
+  archived: boolean;
+  showHidden?: true;
+  excludeDispatched?: true;
+};
+
 /** Centralised query keys so invalidation stays consistent. */
 export const qk = {
   version: ["version"] as const,
@@ -11,10 +19,17 @@ export const qk = {
     showHidden
       ? (["sessions", { archived, showHidden: true }] as const)
       : (["sessions", { archived }] as const),
-  sessionSearch: (q: string, archived: boolean, showHidden = false) =>
-    showHidden
-      ? (["sessions", "search", { q, archived, showHidden: true }] as const)
-      : (["sessions", "search", { q, archived }] as const),
+  sessionSearch: (
+    q: string,
+    archived: boolean,
+    showHidden = false,
+    excludeDispatched = false,
+  ) => {
+    const key: SessionSearchKey = { q, archived };
+    if (showHidden) key.showHidden = true;
+    if (excludeDispatched) key.excludeDispatched = true;
+    return ["sessions", "search", key] as const;
+  },
   sessionStats: ["session-stats"] as const,
   tokenStats: ["token-stats"] as const,
   usageAnalytics: (days: number) => ["usage-analytics", { days }] as const,
@@ -47,6 +62,7 @@ export const qk = {
   conversationAll: ["conversation"] as const,
   me: ["me"] as const,
   hiddenOwners: ["hidden-owners"] as const,
+  adminStorage: ["admin-storage"] as const,
   notificationSettings: ["notification-settings"] as const,
   notificationEndpoints: ["notification-endpoints"] as const,
   voiceConfig: ["voice-config"] as const,

@@ -3,19 +3,28 @@
 	import { NotificationCenter } from '@dorsk/tsumikit';
 	import { errMessage } from '#lib/api.ts';
 	import {
+		DETAILS,
+		REDISPATCH,
+		failedDispatchOf,
+		failureHref,
 		notifications,
 		stateLabel,
 		toItem,
 		type NotificationStore
 	} from '#lib/notifications.svelte.ts';
-	import { notify } from '#lib/notify.svelte.ts';
+	import { failedDispatchEndpoints } from '#lib/queries/failedDispatches.ts';
 	import { toasts } from '#lib/toast.svelte.ts';
 	import { m } from '#lib/paraglide/messages.js';
 
 	let {
 		store = notifications,
-		open = $bindable(false)
-	}: { store?: NotificationStore; open?: boolean } = $props();
+		open = $bindable(false),
+		redispatch = failedDispatchEndpoints.redispatch
+	}: {
+		store?: NotificationStore;
+		open?: boolean;
+		redispatch?: (record: string) => Promise<unknown>;
+	} = $props();
 
 	const items = $derived(store.items.map(toItem));
 
@@ -28,7 +37,23 @@
 		if (document.visibilityState === 'visible') void store.markRead(id);
 	}
 
+	async function rerun(record: string) {
+		try {
+			await redispatch(record);
+			toasts.ok(m.notif_redispatched());
+		} catch (e) {
+			toasts.error(m.notif_act_failed({ error: errMessage(e) }));
+		}
+	}
+
 	async function onaction(id: string, action: string) {
+		const notice = store.items.find((n) => n.id === id);
+		const failed = notice ? failedDispatchOf(notice) : null;
+		if (failed && action === DETAILS) {
+			open = false;
+			return goto(failureHref(failed));
+		}
+		if (failed && action === REDISPATCH) return rerun(failed);
 		const out = await store.act(id, action);
 		if (out.kind === 'elsewhere') {
 			const state = stateLabel(out.notification) ?? out.notification.state;
@@ -39,9 +64,12 @@
 	}
 
 	async function ondismiss(id: string) {
-		const out = await store.dismiss(id);
-		if (out === 'blocking') toasts.info(m.notif_dismiss_blocking());
-		else if (out === 'failed') toasts.error(m.notif_dismiss_failed());
+		let out = await store.dismiss(id);
+		if (out === 'blocking') {
+			if (!confirm(m.notif_dismiss_blocking())) return;
+			out = await store.dismiss(id, true);
+		}
+		if (out !== 'dismissed') toasts.error(m.notif_dismiss_failed());
 	}
 
 	function onreadall() {
@@ -49,11 +77,7 @@
 	}
 
 	function onitemopen(id: string) {
-		const sessionId = store.items.find((n) => n.id === id)?.session_id;
-		if (!sessionId) return;
-		open = false;
-		notify.pendingOpen = sessionId;
-		if (!/^\/sessions(\/|$)/.test(location.pathname)) void goto('/sessions');
+		if (items.find((n) => n.id === id)?.href) open = false;
 	}
 </script>
 

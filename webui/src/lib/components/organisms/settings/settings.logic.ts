@@ -1,6 +1,6 @@
 import type { Feature } from '@bindings/Feature';
 
-// Read-only lists shown under Settings › Execution / Privacy, plus the
+// Read-only lists shown under Settings › Sessions, the page map, and the
 // text-normalizing helper the page filter uses.
 
 // Mirrors the daemon's compiled STALL_PHRASES (crates/cctui-daemon/src/whipstop.rs)
@@ -103,39 +103,38 @@ export function applySettingsFilter(root: ParentNode, query: string): number {
 	return visible;
 }
 
-/**
- * The routed Settings pages, in navigation order. The order is also the scope
- * grouping: every "you" page comes before every "instance" page, so the nav can
- * render one heading per scope without reordering.
- */
 export const SETTINGS_PAGES = [
-	'appearance',
+	'interface',
+	'accounts',
 	'sessions',
-	'macros',
-	'context',
-	'plugins',
-	'execution',
-	'privacy',
 	'notifications',
-	'monitoring',
-	'events',
-	'security',
-	'guides',
-	'users',
-	'dispatchers',
-	'instance',
-	'uploads'
+	'plugins',
+	'instance'
 ] as const;
 
 export type SettingsPage = (typeof SETTINGS_PAGES)[number];
 
+export const SETTINGS_SECTIONS: Record<SettingsPage, readonly string[]> = {
+	interface: ['theme', 'layout', 'conversation-display', 'help'],
+	accounts: ['profile', 'security', 'machines', 'provider-accounts', 'pools', 'sharing'],
+	sessions: ['launch', 'conversation', 'context', 'privacy', 'automation'],
+	notifications: ['notifications', 'voice'],
+	plugins: ['plugins'],
+	instance: [
+		'instance-general',
+		'instance-users',
+		'instance-machines',
+		'instance-limits',
+		'instance-gateway',
+		'instance-integrations',
+		'instance-plugins'
+	]
+};
+
+export const EVENTS_PAGE = 'events';
+
 const PAGE_FEATURE: Partial<Record<SettingsPage, Feature>> = {
-	context: 'context',
-	macros: 'machine_spawn',
-	monitoring: 'machine_spawn',
-	plugins: 'plugins',
-	security: 'passkeys',
-	uploads: 'uploads'
+	plugins: 'plugins'
 };
 
 /** The feature a page belongs to, `null` for a page that is always there. */
@@ -143,92 +142,110 @@ export function settingsPageFeature(page: string | null | undefined): Feature | 
 	return isSettingsPage(page) ? (PAGE_FEATURE[page] ?? null) : null;
 }
 
-export function availableSettingsPages(has: (feature: Feature) => boolean): SettingsPage[] {
+export function availableSettingsPages(
+	has: (feature: Feature) => boolean,
+	isAdmin = true
+): SettingsPage[] {
 	return SETTINGS_PAGES.filter((p) => {
+		if (p === 'instance' && !isAdmin) return false;
 		const feature = PAGE_FEATURE[p];
 		return !feature || has(feature);
 	});
 }
 
-export const DEFAULT_SETTINGS_PAGE: SettingsPage = 'appearance';
+export const DEFAULT_SETTINGS_PAGE: SettingsPage = 'interface';
 
 export const SETTINGS_SCOPES = ['you', 'instance'] as const;
 export type SettingsScope = (typeof SETTINGS_SCOPES)[number];
 
-const INSTANCE_PAGES: readonly SettingsPage[] = [
-	'users',
-	'dispatchers',
-	'instance',
-	'uploads'
-];
-
 export function settingsScope(page: SettingsPage): SettingsScope {
-	return INSTANCE_PAGES.includes(page) ? 'instance' : 'you';
+	return page === 'instance' ? 'instance' : 'you';
 }
 
 export function pagesInScope(scope: SettingsScope): SettingsPage[] {
 	return SETTINGS_PAGES.filter((p) => settingsScope(p) === scope);
 }
 
-/** Anchors older deep links point at, and the page that now owns them. */
-const HASH_ALIASES: Record<string, SettingsPage> = {
-	storage: 'sessions',
-	version: 'instance',
-	'passkey-sign-in': 'instance',
-	'upload-caps': 'uploads',
-	'self-update': 'instance',
-	'net-stats': 'instance',
-	upstreams: 'instance',
-	'spawn-limits': 'instance',
-	theme: 'appearance',
-	language: 'appearance',
-	spawn: 'sessions',
-	harness: 'execution',
-	redaction: 'privacy',
-	secrets: 'privacy',
-	notify: 'notifications',
-	resources: 'monitoring',
-	passkeys: 'security',
-	memory: 'context',
-	skills: 'plugins',
-	onboarding: 'guides',
-	tour: 'guides',
-	access: 'users',
-	keys: 'users',
-	machines: 'users',
-	tokens: 'users'
-};
-
-/** Former settings pages that are top-level screens again. */
-export const MOVED_OUT: Record<string, string> = {
-	accounts: '/accounts'
-};
-
 export function isSettingsPage(slug: string | null | undefined): slug is SettingsPage {
 	return !!slug && (SETTINGS_PAGES as readonly string[]).includes(slug);
 }
 
-/** `/settings#passkeys` and friends keep working: hash → owning page. */
-export function pageForHash(hash: string | null | undefined): SettingsPage {
+export function settingsHref(page: SettingsPage, section?: string): string {
+	return section ? `/settings/${page}#${section}` : `/settings/${page}`;
+}
+
+export const LEGACY_PAGES: Record<string, string> = {
+	appearance: settingsHref('interface', 'theme'),
+	monitoring: settingsHref('interface', 'layout'),
+	guides: settingsHref('interface', 'help'),
+	storage: settingsHref('interface', 'help'),
+	security: settingsHref('accounts', 'security'),
+	macros: settingsHref('sessions', 'launch'),
+	execution: settingsHref('sessions', 'launch'),
+	context: settingsHref('sessions', 'context'),
+	privacy: settingsHref('sessions', 'privacy'),
+	voice: settingsHref('notifications', 'voice'),
+	users: settingsHref('instance', 'instance-users'),
+	dispatchers: settingsHref('instance', 'instance-users'),
+	uploads: settingsHref('instance', 'instance-limits')
+};
+
+export function settingsRedirect(slug: string | null | undefined): string | null {
+	if (isSettingsPage(slug) || slug === EVENTS_PAGE) return null;
+	return (slug && LEGACY_PAGES[slug]) || settingsHref(DEFAULT_SETTINGS_PAGE);
+}
+
+export function settingsRouteSlugs(): string[] {
+	return [...SETTINGS_PAGES, EVENTS_PAGE, ...Object.keys(LEGACY_PAGES)];
+}
+
+const HASH_ALIASES: Record<string, string> = {
+	storage: settingsHref('interface', 'help'),
+	version: settingsHref('interface', 'help'),
+	'net-stats': settingsHref('interface', 'help'),
+	onboarding: settingsHref('interface', 'help'),
+	tour: settingsHref('interface', 'help'),
+	guides: settingsHref('interface', 'help'),
+	appearance: settingsHref('interface', 'theme'),
+	language: settingsHref('interface', 'theme'),
+	spawn: settingsHref('interface', 'layout'),
+	resources: settingsHref('interface', 'layout'),
+	monitoring: settingsHref('interface', 'layout'),
+	passkeys: settingsHref('accounts', 'security'),
+	harness: settingsHref('sessions', 'launch'),
+	execution: settingsHref('sessions', 'launch'),
+	macros: settingsHref('sessions', 'launch'),
+	redaction: settingsHref('sessions', 'privacy'),
+	secrets: settingsHref('sessions', 'privacy'),
+	memory: settingsHref('sessions', 'context'),
+	notify: settingsHref('notifications', 'notifications'),
+	skills: settingsHref('plugins'),
+	'passkey-sign-in': settingsHref('instance', 'instance-general'),
+	'self-update': settingsHref('instance', 'instance-general'),
+	'upload-caps': settingsHref('instance', 'instance-limits'),
+	uploads: settingsHref('instance', 'instance-limits'),
+	'spawn-limits': settingsHref('instance', 'instance-limits'),
+	'event-retention': settingsHref('instance', 'instance-limits'),
+	upstreams: settingsHref('instance', 'instance-gateway'),
+	access: settingsHref('instance', 'instance-users'),
+	users: settingsHref('instance', 'instance-users'),
+	keys: settingsHref('instance', 'instance-users'),
+	machines: settingsHref('instance', 'instance-users'),
+	tokens: settingsHref('instance', 'instance-users'),
+	dispatchers: settingsHref('instance', 'instance-users')
+};
+
+export function hrefForHash(hash: string | null | undefined): string {
 	const id = (hash ?? '').replace(/^#/, '').trim().toLowerCase();
-	if (isSettingsPage(id)) return id;
-	return HASH_ALIASES[id] ?? DEFAULT_SETTINGS_PAGE;
+	if (isSettingsPage(id)) return settingsHref(id);
+	if (HASH_ALIASES[id]) return HASH_ALIASES[id];
+	for (const page of SETTINGS_PAGES) {
+		if (SETTINGS_SECTIONS[page].includes(id)) return settingsHref(page, id);
+	}
+	return settingsHref(DEFAULT_SETTINGS_PAGE);
 }
 
-export function settingsHref(page: SettingsPage): string {
-	return `/settings/${page}`;
-}
-
-export function pagerNeighbours(page: SettingsPage): {
-	prev: SettingsPage | null;
-	next: SettingsPage | null;
-} {
-	const i = SETTINGS_PAGES.indexOf(page);
-	return {
-		prev: i > 0 ? SETTINGS_PAGES[i - 1] : null,
-		next: i >= 0 && i < SETTINGS_PAGES.length - 1 ? SETTINGS_PAGES[i + 1] : null
-	};
-}
+export const NON_ADMIN_INSTANCE_FALLBACK = settingsHref('accounts', 'profile');
 
 /**
  * First page still holding a visible row once `applySettingsFilter` has run

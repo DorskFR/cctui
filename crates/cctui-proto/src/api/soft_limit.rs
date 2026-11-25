@@ -94,24 +94,24 @@ pub fn window_applies(window: &UsageWindow, model: Option<&str>) -> bool {
 /// no bypass. `cap_usd` applies to the dollar windows, `cap_pct` to the percent ones; a window is
 /// evaluated against whichever its usage reports.
 #[derive(Debug, Clone, Copy, Default, PartialEq, serde::Serialize, serde::Deserialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export, rename = "SoftLimitConfig"))]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export, rename = "SoftLimitConfig"))]
 pub struct SoftLimit {
     /// Max % of the window cctui will consume before refusing more inference.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(feature = "ts", ts(type = "number | null", optional))]
+    #[cfg_attr(test, ts(type = "number | null", optional))]
     pub cap_pct: Option<i32>,
     /// Max USD cctui will spend in the window before refusing more inference.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(feature = "ts", ts(type = "number | null", optional))]
+    #[cfg_attr(test, ts(type = "number | null", optional))]
     pub cap_usd: Option<f64>,
     /// If the window's `resets_at` is within this many minutes, ignore its cap.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(feature = "ts", ts(type = "number | null", optional))]
+    #[cfg_attr(test, ts(type = "number | null", optional))]
     pub bypass_minutes: Option<i32>,
     /// Max burn rate as a multiple of the window's linear budget: `1.5` refuses
     /// once the window is spent 50% faster than evenly. Percent windows only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(feature = "ts", ts(type = "number | null", optional))]
+    #[cfg_attr(test, ts(type = "number | null", optional))]
     pub pace_cap: Option<f32>,
 }
 
@@ -231,7 +231,7 @@ fn sanitize_label(s: &str) -> String {
 
 /// One normalized usage window, provider-agnostic and self-describing.
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export))]
 pub struct UsageWindow {
     /// Stable canonical identity (`session` / `weekly_all` / `weekly_model:<id>`).
     pub key: String,
@@ -244,19 +244,19 @@ pub struct UsageWindow {
     pub utilization: f64,
     /// USD spent in the window; set only for the dollar windows.
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(feature = "ts", ts(type = "number | null", optional))]
+    #[cfg_attr(test, ts(type = "number | null", optional))]
     pub amount_usd: Option<f64>,
     /// When the window resets (rfc3339 upstream), if known.
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(feature = "ts", ts(type = "string | null", optional))]
+    #[cfg_attr(test, ts(type = "string | null", optional))]
     pub resets_at: Option<DateTime<Utc>>,
     /// Stable upstream model id for a scoped window, if any.
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(feature = "ts", ts(type = "string | null", optional))]
+    #[cfg_attr(test, ts(type = "string | null", optional))]
     pub model_id: Option<String>,
     /// Model display name for a scoped window, if any.
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(feature = "ts", ts(type = "string | null", optional))]
+    #[cfg_attr(test, ts(type = "string | null", optional))]
     pub model_display_name: Option<String>,
 }
 

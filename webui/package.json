@@ -1,7 +1,7 @@
 {
   "name": "cctui-webui",
   "private": true,
-  "version": "0.31.0",
+  "version": "0.32.0",
   "type": "module",
   "packageManager": "npm@10.9.8",
   "scripts": {
@@ -19,6 +19,8 @@
     "pretest": "npm run codegen:ensure",
     "test": "bash ../scripts/heavy.sh vitest run",
     "lint": "biome lint .",
+    "e2e": "playwright test --project hermetic --project drawer --project drawer-header",
+    "e2e:opt-in": "sh -c 'if [ \"$E2E\" = 1 ] || ! git diff --quiet \"${E2E_BASE:-origin/main}...HEAD\" -- e2e playwright.config.ts; then exec npm run e2e -- \"$@\"; fi; echo \"e2e skipped: nothing changed under webui/e2e or playwright.config.ts since ${E2E_BASE:-origin/main} (E2E=1 runs it)\"' e2e",
     "plugins:local": "vite build --config ../deploy/local/plugins/pagedemo/vite.config.ts",
     "journey:compile": "journey compile --public -o src/lib/journeys.generated.json",
     "journey:ir": "node scripts/journey-ir.mjs",
@@ -48,9 +50,9 @@
     "vitest": "^5.1.0"
   },
   "dependencies": {
-    "@dorsk/hmm": "^0.7.0",
+    "@dorsk/hmm": "^0.7.1",
     "@dorsk/journey": "^0.8.2",
-    "@dorsk/tsumikit": "^0.84.0",
+    "@dorsk/tsumikit": "^0.94.2",
     "@opentelemetry/api": "~1.9.1",
     "@opentelemetry/core": "~2.12.0",
     "@opentelemetry/exporter-trace-otlp-http": "^0.223.0",

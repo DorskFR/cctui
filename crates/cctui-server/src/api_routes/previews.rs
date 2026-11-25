@@ -1,0 +1,26 @@
+use axum::http::Method;
+use axum::routing::{get, post};
+
+use super::sess_read;
+use crate::authz::Routes;
+use cctui_server_extras::preview::routes;
+use cctui_server_kernel::authz::Authn;
+
+pub fn register(r: Routes) -> Routes {
+    r.add(
+        &[Method::GET],
+        "/sessions/{id}/previews",
+        "Dev-server previews open on a session (owner only).",
+        get(routes::list::<crate::state::AppState>),
+        Authn::Bearer,
+        sess_read(),
+    )
+    .add(
+        &[Method::POST],
+        "/sessions/{id}/previews/{pid}/ticket",
+        "Mint a 60 s single-use ticket that signs the owner into a preview host.",
+        post(routes::ticket::<crate::state::AppState>),
+        Authn::Bearer,
+        sess_read(),
+    )
+}

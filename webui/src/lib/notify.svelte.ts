@@ -3,11 +3,10 @@ import { goto } from "$app/navigation";
 import { m } from "#lib/paraglide/messages.js";
 import type { SessionListItem } from "@bindings/SessionListItem";
 import type { Notification as Notice } from "@bindings/Notification";
-import { isUnread } from "./notifications.svelte";
+import { isUnread, noticeHref } from "./notifications.svelte";
 import { freshResults } from "./outcome";
 
-const KEY_ENABLED = "cctui_notify_enabled";
-const KEY_SOUND = "cctui_notify_sound";
+const RETIRED_KEYS = ["cctui_notify_enabled", "cctui_notify_sound"];
 const BRAND = "cctui";
 
 /**
@@ -46,10 +45,11 @@ class Notifier {
   constructor() {
     if (browser) {
       this.permission = this.supported ? Notification.permission : "denied";
-      this.enabled =
-        localStorage.getItem(KEY_ENABLED) === "1" &&
-        this.permission === "granted";
-      this.sound = localStorage.getItem(KEY_SOUND) !== "0";
+      try {
+        for (const key of RETIRED_KEYS) localStorage.removeItem(key);
+      } catch {
+        /* blocked storage: nothing to clean */
+      }
     }
   }
 
@@ -71,28 +71,23 @@ class Notifier {
   async enable(): Promise<boolean> {
     const ok = await this.requestPermission();
     this.enabled = ok;
-    if (browser) localStorage.setItem(KEY_ENABLED, ok ? "1" : "0");
     return ok;
   }
 
   disable() {
     this.enabled = false;
-    if (browser) localStorage.setItem(KEY_ENABLED, "0");
   }
 
   setSound(on: boolean) {
     this.sound = on;
-    if (browser) localStorage.setItem(KEY_SOUND, on ? "1" : "0");
   }
 
-  /** Reflect the server-persisted display settings on load. Never requests
+  /** Reflect the stored settings (`settings` owns them). Never requests
    *  permission: `enabled` only sticks while the browser still grants it. */
   applyPersisted(enabled: boolean, sound: boolean) {
     if (!browser) return;
     this.setSound(sound);
-    const on = enabled && this.permission === "granted";
-    this.enabled = on;
-    localStorage.setItem(KEY_ENABLED, on ? "1" : "0");
+    this.enabled = enabled && this.permission === "granted";
   }
 
   /**
@@ -131,7 +126,8 @@ class Notifier {
     this.alerted.set(n.id, n.repeat_count);
     if (!this.enabled || this.permission !== "granted") return;
     if (document.visibilityState === "visible" && n.session_id && this.#open.has(n.session_id)) return;
-    const shown = this.show(n.title, n.body ?? undefined, n.collapse_key ?? n.id, n.session_id);
+    const tag = n.collapse_key ?? n.id;
+    const shown = this.show(n.title, n.body ?? undefined, tag, n.session_id, noticeHref(n));
     if (shown) this.shown.set(n.id, shown);
   }
 
@@ -210,13 +206,16 @@ class Notifier {
     body: string | undefined,
     tag: string,
     sessionId: string | null,
+    href?: string,
   ): Notification | null {
     let n: Notification | null = null;
     try {
       const shown = new Notification(title, { body, tag });
       shown.onclick = () => {
         window.focus();
-        if (sessionId) {
+        if (href) {
+          void goto(href);
+        } else if (sessionId) {
           this.pendingOpen = sessionId;
           if (!/^\/sessions(\/|$)/.test(location.pathname)) void goto("/sessions");
         }

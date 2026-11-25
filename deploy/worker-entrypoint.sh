@@ -76,6 +76,44 @@ landlock_strict_flags() {
     printf '%s\n' --strict
 }
 
+# Must match the adapters' default binaries (deploy/tests/test-agent-probe.sh)
+# and the daemon's lookup dirs (childenv::child_path).
+AGENT_BINS="claude codex opencode gemini qwen goose"
+AGENT_DIRS="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
+NO_AGENT_MSG="no agent CLI installed in this image; build FROM cctui-worker with one (see deploy/examples/worker-agents)"
+
+agent_installed() {
+    _ai_dirs="${PATH:-}:${WORKER_HOME:-/home/worker}/.local/bin:${AGENT_DIRS}"
+    _OLDIFS=$IFS; IFS=:
+    for _ai_d in $_ai_dirs; do
+        if [ -n "$_ai_d" ] && [ -f "$_ai_d/$1" ] && [ -x "$_ai_d/$1" ]; then
+            IFS=$_OLDIFS
+            return 0
+        fi
+    done
+    IFS=$_OLDIFS
+    return 1
+}
+
+is_dispatch() { [ -n "${TASK_PAYLOAD_JSON:-}" ] || [ -n "${CCTUI_DISPATCH_ID:-}" ]; }
+
+# Before the identity checks, so `docker run -it` reaches a shell; a dispatch
+# fails in require_agent instead, once the callback trap is set.
+phase_agent_probe() {
+    AGENTS_FOUND=""
+    for _ap_b in $AGENT_BINS; do
+        if agent_installed "$_ap_b"; then AGENTS_FOUND="${AGENTS_FOUND:+$AGENTS_FOUND }$_ap_b"; fi
+    done
+    if [ -n "$AGENTS_FOUND" ]; then
+        log "agents: $AGENTS_FOUND"
+        return 0
+    fi
+    if is_dispatch; then return 0; fi
+    log "WARNING: $NO_AGENT_MSG" >&2
+    if [ -t 0 ] && [ -t 1 ]; then exec bash; fi
+    exit 1
+}
+phase_agent_probe
 
 # ── Required platform identity ──────────────────────────────────────────────
 if [ -z "${CCTUI_MACHINE_KEY:-}" ]; then
@@ -178,6 +216,53 @@ fail_dispatch() {
     exit 1
 }
 
+require_agent() {
+    is_dispatch || return 0
+    [ -n "$AGENTS_FOUND" ] || fail_dispatch "$NO_AGENT_MSG"
+    case "$(adapter_kind)" in
+        claude) _ra_bin=claude ;;
+        codex) _ra_bin=codex ;;
+        opencode) _ra_bin=opencode ;;
+        *) _ra_bin=$TASK_ADAPTER ;;
+    esac
+    agent_installed "$_ra_bin" \
+        || fail_dispatch "adapter ${TASK_ADAPTER:-claude-code} needs \`$_ra_bin\`, which this image does not install (installed: $AGENTS_FOUND)"
+}
+
+# external-pod: the guard-proxy is its own pod at GUARD_PROXY_HOST. Every request
+# carries the dispatch's proxy token; the control token that steers its policy
+# sits in a mount outside the agent's Landlock domain and never enters env/argv.
+GUARD_AUTH_DIR="${GUARD_AUTH_DIR:-/var/run/guard-auth}"
+GUARD_GATEWAY_PORT=15003
+external_guard_failed() {
+    echo "cctui-worker: guard pod: $1" >&2
+    { printf 'guard pod: %s' "$1" > "$TERMINATION_LOG"; } 2>/dev/null || true
+    exit 1
+}
+# curl with `Authorization: Bearer` from the token file $1, fed as curl config
+# on stdin so the token never shows in argv.
+guard_curl() {
+    _gc_token=$1
+    shift
+    { printf 'header = "Authorization: Bearer '; tr -d '\n' < "$_gc_token"; printf '"\n'; } \
+        | curl -K - "$@"
+}
+external_guard_wait() {
+    [ -n "${GUARD_PROXY_HOST:-}" ] \
+        || external_guard_failed "GUARD_PROXY_HOST is unset (no cctui.dev/guard-service annotation)"
+    for _gw_t in proxy-token control-token; do
+        [ -s "$GUARD_AUTH_DIR/$_gw_t" ] || external_guard_failed "no $_gw_t in $GUARD_AUTH_DIR"
+    done
+    _gw_secs=${WORKER_GUARD_WAIT_SECS:-60}
+    _gw_deadline=$(( $(date +%s) + _gw_secs ))
+    until curl -4 -fsS -o /dev/null --max-time 2 \
+            "http://${GUARD_PROXY_HOST}:${PROXY_HEALTH_PORT:-15002}/health" 2>/dev/null; do
+        [ "$(date +%s)" -lt "$_gw_deadline" ] \
+            || external_guard_failed "${GUARD_PROXY_HOST} is not up after ${_gw_secs}s"
+        sleep 0.5
+    done
+}
+
 # A kube dispatch holds only a placeholder machine key: the guard-proxy redeemed
 # the pod's service-account token for the real one and serves the payload env
 # on its health port. No env, or a failed redeem, fails the pod with the reason.
@@ -189,7 +274,14 @@ dispatch_identity_failed() {
 }
 phase_dispatch_env() {
     [ -n "${CCTUI_DISPATCH_ID:-}" ] || return 0
-    _de_out=$(curl -4 -sS --max-time 30 -w '\n%{http_code}' "$DISPATCH_ENV_URL" 2>&1 || true)
+    if [ "${WORKER_NET_MODE:-}" = external-pod ]; then
+        external_guard_wait
+        DISPATCH_ENV_URL="http://${GUARD_PROXY_HOST}:${PROXY_HEALTH_PORT:-15002}/dispatch/env"
+        _de_out=$(guard_curl "$GUARD_AUTH_DIR/proxy-token" -4 -sS --max-time 30 \
+            -w '\n%{http_code}' "$DISPATCH_ENV_URL" 2>&1 || true)
+    else
+        _de_out=$(curl -4 -sS --max-time 30 -w '\n%{http_code}' "$DISPATCH_ENV_URL" 2>&1 || true)
+    fi
     _de_code=$(printf '%s\n' "$_de_out" | tail -n 1)
     _de_json=$(printf '%s\n' "$_de_out" | sed '$d')
     if [ "$_de_code" != 200 ]; then
@@ -588,6 +680,66 @@ install_transparent_rules() {
     fi
 }
 
+# PUT the file $2 to the guard pod's route $1 with the control token.
+guard_put() {
+    guard_curl "$GUARD_AUTH_DIR/control-token" -4 -fsS -o /dev/null --max-time 10 \
+        -X PUT --data-binary "@$2" "http://${GUARD_PROXY_HOST}:${PROXY_HEALTH_PORT}$1"
+}
+
+# cctui-guard rewrites policy.json per step: mirror every change to the guard pod.
+# The poll is short because each /transition waits until the guard pod reports
+# the new generation.
+guard_policy_sync() {
+    _gs_last=$(cksum "$POLICY_FILE" "$PRIVATE_ALLOW_FILE" 2>/dev/null || true)
+    while :; do
+        sleep "${WORKER_GUARD_SYNC_SECS:-0.2}"
+        _gs_now=$(cksum "$POLICY_FILE" "$PRIVATE_ALLOW_FILE" 2>/dev/null || true)
+        [ "$_gs_now" != "$_gs_last" ] || continue
+        if guard_put /policy "$POLICY_FILE" && guard_put /private-allow "$PRIVATE_ALLOW_FILE"; then
+            _gs_last=$_gs_now
+        else
+            log "WARNING: guard pod: policy push failed; retrying"
+        fi
+    done
+}
+
+# Where cctui-guard confirms a policy generation is live: the guard pod's
+# /ready in external-pod mode, its loopback default otherwise.
+guard_proxy_ready_addr() {
+    [ "${NET_MODE:-}" = external-pod ] || return 0
+    printf '%s\n' "${GUARD_PROXY_HOST}:${PROXY_HEALTH_PORT}"
+}
+
+# Steer the guard pod over HTTP, trust its CA, and route the worker through it:
+# proxy env for every tool, the gateway for the daemon (its WebSocket ignores
+# proxy env).
+phase_external_guard() {
+    external_guard_wait
+    guard_put /policy "$POLICY_FILE" || external_guard_failed "the guard pod refused the policy"
+    guard_put /private-allow "$PRIVATE_ALLOW_FILE" \
+        || external_guard_failed "the guard pod refused the private-allow list"
+    guard_policy_sync &
+    GUARD_SYNC_PID=$!
+    mkdir -p "$(dirname "$GUARD_CA_FILE")"
+    if curl -4 -fsS --max-time 10 -o "${GUARD_CA_FILE}.tmp" \
+            "http://${GUARD_PROXY_HOST}:${PROXY_HEALTH_PORT}/ca.pem" 2>/dev/null; then
+        mv -f "${GUARD_CA_FILE}.tmp" "$GUARD_CA_FILE"
+        install_guard_ca
+    else
+        rm -f "${GUARD_CA_FILE}.tmp"
+        log "guard pod serves no CA: injection off (passthrough only)"
+    fi
+    _eg_tok=$(tr -d '\n' < "$GUARD_AUTH_DIR/proxy-token")
+    export HTTP_PROXY="http://cctui:${_eg_tok}@${GUARD_PROXY_HOST}:${PROXY_PORT}"
+    export HTTPS_PROXY="$HTTP_PROXY" http_proxy="$HTTP_PROXY" https_proxy="$HTTP_PROXY"
+    export NO_PROXY="127.0.0.1,localhost,${GUARD_PROXY_HOST}"
+    export no_proxy="$NO_PROXY"
+    export CCTUI_URL="http://${GUARD_PROXY_HOST}:${GUARD_GATEWAY_PORT}/${_eg_tok}"
+    CCTUI_BASE_URL=$CCTUI_URL
+    unset CCTUI_SERVER_URL
+    log "external guard pod ${GUARD_PROXY_HOST} (sync pid $GUARD_SYNC_PID): proxy env + cctui server gateway set; gpg signing is not forwarded, commits are UNSIGNED"
+}
+
 NET_MODE=""
 phase_network() {
     # Decide the mode. Explicit WORKER_NET_MODE wins; else transparent iff we
@@ -604,6 +756,11 @@ phase_network() {
     fi
 
     seed_policy
+
+    if [ "$NET_MODE" = external-pod ]; then
+        phase_external_guard
+        return 0
+    fi
 
     if [ "$NET_MODE" = transparent-external ]; then
         # Nothing to start and no iptables here. The sidecar proxy is deny-all
@@ -1408,6 +1565,10 @@ phase_guard() {
     if guard_exec_on; then
         set -- "$@" --exec-socket "$GUARD_EXEC_SOCKET"
     fi
+    _gr_addr=$(guard_proxy_ready_addr)
+    if [ -n "$_gr_addr" ]; then
+        set -- "$@" --proxy-ready "$_gr_addr"
+    fi
 
     is_root || log "WARNING: guard: non-root start, cctui-guard runs as the agent's uid $(id -u)"
     cctui-guard "$@" &
@@ -1521,8 +1682,8 @@ preflight_targets() {
 
 # Exit 0 when the target answered. Transparent modes REDIRECT every agent
 # connect to the guard proxy, which closes a denied one unanswered, so only
-# bytes back count there; forward mode has no proxy in the path, so a connect
-# alone does.
+# bytes back count there; forward and external-pod have no proxy in the path,
+# so a connect alone does.
 preflight_connect() {
     _rc=0
     _tc=$(as_worker curl -q -sk -g -o /dev/null -w '%{time_connect}' --noproxy '*' \
@@ -1531,7 +1692,10 @@ preflight_connect() {
     case "$_rc" in
         0 | 1 | 8) return 0 ;;
     esac
-    [ "$NET_MODE" = forward ] && awk -v t="${_tc:-0}" 'BEGIN { exit !(t + 0 > 0) }'
+    case "$NET_MODE" in
+        forward | external-pod) awk -v t="${_tc:-0}" 'BEGIN { exit !(t + 0 > 0) }' ;;
+        *) return 1 ;;
+    esac
 }
 
 # Exit 0 when the resolver answered, 3 when no DNS client is available.
@@ -1579,6 +1743,7 @@ phase_preflight() {
         enforce | warn) ;;
         *) log "preflight: unknown mode '$_mode', enforcing"; _mode=enforce ;;
     esac
+    PREFLIGHT_RECHECK_MODE=$_mode
 
     _failed=""
     if is_root && ! command -v setpriv >/dev/null 2>&1; then
@@ -1615,7 +1780,7 @@ phase_preflight() {
             esac
         done
         [ -f "$_dir/control" ] \
-            || _failed="${_failed:+$_failed; }proxy path to the cctui server failed (${CCTUI_BASE_URL%/}/health)"
+            || _failed="${_failed:+$_failed; }proxy path to the cctui server failed ($(printf '%s' "${CCTUI_BASE_URL%/}/health" | sed 's,/[0-9a-f]\{64\}\(/\|$\),/<token>\1,'))"
         rm -rf "$_dir"
         _ms=$(( ($(date +%s%N) - _start) / 1000000 ))
         log "preflight: ${_n} deny probes + proxy control in ${_ms}ms (mode=$_mode)"
@@ -1632,6 +1797,54 @@ phase_preflight() {
         return 0
     fi
     fail_dispatch "preflight: $_failed"
+}
+
+# The pre-flight deny probes, re-run through the whole run: isolation that stops
+# holding mid-run (a CNI that drops NetworkPolicy enforcement, a flushed rule)
+# ends an enforcing dispatch instead of failing open.
+PREFLIGHT_RECHECK_MODE=off
+PREFLIGHT_RECHECK_SECS="${CCTUI_PREFLIGHT_RECHECK_SECS:-60}"
+case "$PREFLIGHT_RECHECK_SECS" in "" | *[!0-9]*) PREFLIGHT_RECHECK_SECS=60 ;; esac
+EGRESS_RECHECK_LOGGED=""
+
+# Every deny probe that reached its target, `; `-joined; empty while isolated.
+egress_breaches() {
+    _eb_dir=$(mktemp -d)
+    preflight_targets > "$_eb_dir/targets"
+    _eb_n=0
+    _eb_pids=""
+    while read -r _kind _target _reason; do
+        [ -n "$_kind" ] || continue
+        _eb_n=$((_eb_n + 1))
+        (
+            if preflight_probe "$_kind" "$_target"; then
+                printf '%s (%s)\n' "$_reason" "$_target" > "$_eb_dir/hit.$_eb_n"
+            fi
+        ) &
+        _eb_pids="$_eb_pids $!"
+    done < "$_eb_dir/targets"
+    # shellcheck disable=SC2086
+    [ -z "$_eb_pids" ] || wait $_eb_pids || true
+    cat "$_eb_dir"/hit.* 2>/dev/null | paste -sd ';' - | sed 's/;/; /g'
+    rm -rf "$_eb_dir"
+}
+
+egress_recheck() {
+    [ "$PREFLIGHT_RECHECK_MODE" != off ] || return 0
+    _er=$(egress_breaches)
+    [ -n "$_er" ] || return 0
+    if [ "$PREFLIGHT_RECHECK_MODE" = warn ]; then
+        [ "$_er" = "$EGRESS_RECHECK_LOGGED" ] \
+            || log "WARNING: egress re-check: $_er (warn mode, continuing)"
+        EGRESS_RECHECK_LOGGED=$_er
+        return 0
+    fi
+    log "egress re-check: FAIL $_er; ending the dispatch"
+    { printf 'egress re-check: %s' "$_er" > "$TERMINATION_LOG"; } 2>/dev/null || true
+    jq -nc --arg id "${TASK_ID:-}" --arg e "egress re-check: $_er" \
+        '{task_id:$id, status:"failed", error:$e}' > "$RESULT_FILE"
+    [ -z "${DAEMON_PID:-}" ] || stop_daemon_gracefully
+    exit 1
 }
 
 # ── Phase 7: Hardening report ───────────────────────────────────────────────
@@ -1819,6 +2032,7 @@ phase_codex_pack
 phase_acp_config
 phase_callback
 require_known_adapter
+require_agent
 phase_preflight
 phase_guard
 phase_guard_exec
@@ -1950,7 +2164,7 @@ probe_session() {
         # Surface a persistent auth/URL fault ONCE rather than failing blind —
         # the first fix died silently on a 403 from the wrong endpoint.
         if [ "$_PROBE_LOGGED_CODE" != "$_code" ]; then
-            log "wait: liveness probe HTTP $_code from $_SESSIONS_URL (treating as unknown)"
+            log "wait: liveness probe HTTP $_code from $(printf '%s' "$_SESSIONS_URL" | sed 's,/[0-9a-f]\{64\}\(/\|$\),/<token>\1,') (treating as unknown)"
             _PROBE_LOGGED_CODE="$_code"
         fi
         echo unknown
@@ -1996,6 +2210,7 @@ await_dispatch_done() {
     log "wait: blocking on dual signal (guard=$GUARD_ON, session=${SESSION_ID:-none})"
     _waited=0
     _next_probe=0
+    _next_recheck=$PREFLIGHT_RECHECK_SECS
     _result_armed=-1
     while :; do
         # The daemon process going away is itself terminal — nothing left to
@@ -2028,6 +2243,10 @@ await_dispatch_done() {
                 log "wait: RESULT_FILE grace elapsed (${WORKER_RESULT_GRACE_SECS}s) without a done-signal; exiting wait"
                 return 0
             fi
+        fi
+        if [ "$PREFLIGHT_RECHECK_SECS" -gt 0 ] && [ "$_waited" -ge "$_next_recheck" ]; then
+            _next_recheck=$((_waited + PREFLIGHT_RECHECK_SECS))
+            egress_recheck
         fi
         # Daemon-sourced liveness — throttled server probe (not every 2s).
         if [ "$_waited" -ge "$_next_probe" ]; then

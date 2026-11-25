@@ -142,8 +142,6 @@
 		switch (b) {
 			case 'blocked':
 				return m.sessions_bucket_blocked();
-			case 'review':
-				return m.sessions_bucket_review();
 			case 'done':
 				return m.sessions_bucket_done();
 			default:

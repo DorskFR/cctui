@@ -99,7 +99,7 @@ feature).
 | `plugins` | | Runtime plugins: install, settings, backend proxy, static files, boot init and the sync task. |
 | `auto_approve` | | Per-session auto-approval of tool use. |
 | `scheduling` | | Scheduled messages and scheduled launches (schedule and cancel), and their tasks. |
-| `automation` | | Keep-alive, auto-resume, auto-redeem and follow-ups, their tasks, the follow-up thread view, the event inbox ingress (`/inbox/events`) and launch presets (`/presets`). |
+| `automation` | | Keep-alive, auto-resume, auto-redeem and follow-ups, their tasks, the follow-up thread view, the event inbox ingress (`/inbox/events`), launch presets and their schedules (`/presets`) and signed inbound webhooks (`/webhooks`, `/hooks/{id}`). |
 | `rooms` | | Rooms, peers and agent-to-agent messages. |
 | `voice` | | Speech synthesis and transcription, the voice WebSocket, agent voice notes, the speech settings. |
 | `previews` | | Dev-server previews: preview tickets, the internal preview leg and the preview sweep. Off, the server drops every preview frame a worker sends: no registration is recorded and nothing is sent back. |
@@ -108,14 +108,14 @@ feature).
 | `passkeys` | | Passkey enrollment and passkey login, including the login screen's unauthenticated `/api/v1/auth/passkey/config` probe. |
 | `self_update` | | Server self-update, daemon self-update (`/manifest/daemon`, `/daemon/binary/{target}`), harness auto-update, update hooks, the release probe and changelog. Off, the harness report and update-hook flag a heartbeat carries are ignored and no harness policy is sent. |
 | `account_sharing` | | Account pools and sharing accounts or resources with other users. |
-| `observability` | | Langfuse cost views and the browser OTLP relay. |
+| `observability` | | Langfuse cost views, the browser OTLP relay, and red-team run results (`POST /redteam/runs`, `GET /admin/redteam`). |
 | `library` | | Saved prompts and the skill registry, and the boot sweep of orphaned skill files. |
 | `organising` | | Labels, bookmarks, pinned sessions and pinned messages, and the session emoji picker (`CCTUI_EMOJI_ENDPOINT`, which sends session titles to an external model). Off, a spawn or draft ignores the labels it carries, session start claims no label intent and the label-intent sweep does not run. |
 | `service_tokens` | | Account service tokens (`/accounts/{id}/service-tokens`): long-lived gateway credentials not tied to a session. Off, the gateway refuses a service token exactly as it refuses an unknown one, so tokens minted earlier stop working. |
 
 Every feature gates at least one route, task or message. A new feature that
 gates nothing must be listed as announcement-only in the gate test in
-`crates/cctui-server-workspace/src/lib.rs`, with the reason here.
+`crates/cctui-server/src/lib.rs`, with the reason here.
 
 ## Postgres requirements
 
@@ -124,20 +124,19 @@ gates nothing must be listed as announcement-only in the gate test in
 | `transcript_search` on (the default) | `pgcrypto`, `pg_trgm`, `btree_gin` |
 | `transcript_search` off | `pgcrypto` |
 
-The search objects (the two extensions and the trigram indexes on
-`search_chunks` and `stream_events`) live in their own schema stream,
+The search objects (the two extensions and the trigram index on
+`search_chunks`) live in their own schema stream,
 `workspace_search`, applied at boot only while `transcript_search` is on.
 
 - A fresh database with search off is created without them: the server
   provisions it through the package streams, never the legacy migrations.
 - Switching search on later applies the step at the next boot, and the
-  backfill chunks the history ingested while it was off. The step builds both
-  trigram indexes inside the boot transaction, holding a `SHARE` lock that
-  blocks writes to `stream_events` and `search_chunks` until they are built.
+  backfill chunks the history ingested while it was off. The step builds the
+  trigram index inside the boot transaction, holding a `SHARE` lock that
+  blocks writes to `search_chunks` until it is built.
 - A database that already has the search objects is left as it is: the step
   creates only what is missing, and switching search off drops nothing.
-- With search off, ingest writes no chunks, transcript rows and the
-  session-ended row store an empty `search_text`, the backfill does not run,
+- With search off, ingest writes no chunks, the backfill does not run,
   `/sessions/search/values` and find-in-conversation answer 404, and
   `GET /sessions/search` answers 400 to a non-empty `q`. With an empty `q` it
   still pages the archive, touching no search object.
@@ -147,6 +146,6 @@ The search objects (the two extensions and the trigram indexes on
 Every entry of `cctui_proto::api::routes::ROUTES` carries `feature`: `None`
 for core, `Some(Feature::..)` for a switchable one. All methods of one path
 share a feature. A core route must also be listed in
-`crates/cctui-server-workspace/src/api_routes/core_routes.txt`; the route
+`crates/cctui-server/src/api_routes/core_routes.txt`; the route
 tests fail until it is. Routes outside the table are classified where they are
-mounted, in `outer_routes` in `crates/cctui-server-workspace/src/lib.rs`.
+mounted, in `outer_routes` in `crates/cctui-server/src/lib.rs`.

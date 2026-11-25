@@ -49,19 +49,12 @@ describe('AccountAvatar', () => {
 
 	it('keeps the box square and sized in px', () => {
 		const el = open({ size: 28 });
-		expect(el.style.getPropertyValue('--avatar-size')).toBe('28px');
+		expect(el.getAttribute('style')).toContain('width: 28px; height: 28px;');
 		expect(el.classList.contains('square')).toBe(true);
 	});
 
 	it('drops the fill behind an emoji', () => {
 		expect(open({ emoji: '🐙' }).classList.contains('bare')).toBe(true);
 		expect(open({}).classList.contains('bare')).toBe(false);
-	});
-
-	it('tints the same account identically wherever it is drawn', () => {
-		const a = open({ size: 20 }).style.getPropertyValue('--avatar-hue');
-		const b = open({ name: 'other name', size: 40 }).style.getPropertyValue('--avatar-hue');
-		expect(a).toBe(b);
-		expect(a).not.toBe('');
 	});
 });

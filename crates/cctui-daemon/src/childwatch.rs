@@ -17,7 +17,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use cctui_proto::adapter::{AdapterEvent, EndReason};
-use cctui_proto::classifier::{Bucket, ClassifyInput, classify};
+use cctui_proto::classifier::{Bucket, ClassifyInput, classify, reports_finished};
 use tokio::sync::Notify;
 
 use crate::adapters::claude_code::stuck_turn::{
@@ -56,6 +56,8 @@ pub const BG_TASK_QUIET_CAP: Duration = Duration::from_mins(20);
 /// A task that outlives its turn (a dev server, a watcher) never notifies. A
 /// Monitor does, at the latest when it expires, so it is not cut short here.
 pub const BG_TASK_TURN_END_HOLD: Duration = Duration::from_mins(3);
+/// How long a roster sighting keeps a child's process counted as alive.
+pub const ALIVE_FRESH: Duration = Duration::from_secs(30);
 /// The one `stop_reason` that means the model handed back rather than lining up
 /// another tool call.
 const TURN_END_STOP_REASON: &str = "end_turn";
@@ -143,6 +145,7 @@ struct WatchState {
     bg_tasks: BTreeSet<String>,
     monitors: BTreeSet<String>,
     last_event_at: Option<Instant>,
+    alive_at: Option<Instant>,
 }
 
 struct Watch {
@@ -175,6 +178,7 @@ pub struct ChildSnapshot {
     bg_tasks: usize,
     monitors: usize,
     last_event_at: Option<Instant>,
+    alive_at: Option<Instant>,
 }
 
 /// What the tool handler should do with the current snapshot.
@@ -271,6 +275,19 @@ impl ChildSnapshot {
                 || self.turn_end_at.is_none_or(|at| now.duration_since(at) < BG_TASK_TURN_END_HOLD))
             && now.duration_since(self.last_event_at.unwrap_or(self.registered_at))
                 < BG_TASK_QUIET_CAP
+    }
+
+    /// Whether any event reached this watch: a transcript entry held back while
+    /// a follow-up prompt is pending still proves the child is working.
+    #[must_use]
+    pub const fn saw_events(&self) -> bool {
+        self.last_event_at.is_some() || self.tokens > 0
+    }
+
+    /// Whether the adapter listed the child's process alive within [`ALIVE_FRESH`].
+    #[must_use]
+    pub fn process_alive(&self, now: Instant) -> bool {
+        self.alive_at.is_some_and(|at| now.saturating_duration_since(at) < ALIVE_FRESH)
     }
 
     /// Whether the text in hand is the turn's last output, rather than
@@ -458,6 +475,7 @@ impl ChildWatch {
             bg_tasks: w.state.bg_tasks.len(),
             monitors: w.state.monitors.len(),
             last_event_at: w.state.last_event_at,
+            alive_at: w.state.alive_at,
         })
     }
 
@@ -482,6 +500,19 @@ impl ChildWatch {
         if let Some(w) = find_mut(&mut guard, local_id) {
             w.state.turn_end_at = Some(Instant::now());
             w.notify.notify_waiters();
+        }
+    }
+
+    /// The adapter lists one of `ids` as a live process. Not activity: a hookless
+    /// or idle worker is alive without producing anything.
+    pub fn note_alive(&self, ids: &[&str]) {
+        let Ok(mut guard) = self.watches.lock() else { return };
+        let now = Instant::now();
+        for (key, w) in guard.iter_mut() {
+            let id = w.state.local_id.as_deref();
+            if ids.iter().any(|i| *i == key.as_str() || Some(*i) == id) {
+                w.state.alive_at = Some(now);
+            }
         }
     }
 
@@ -604,7 +635,13 @@ fn apply_status(
     activity: Option<&str>,
 ) {
     let input = ClassifyInput { tempo, state, activity, ..ClassifyInput::default() };
-    match classify(&input, &HashMap::new()) {
+    let bucket = match classify(&input, &HashMap::new()) {
+        // An idle reading without a verdict is also what a child shows before
+        // its first prompt lands.
+        Bucket::Done if !reports_finished(state, activity) => Bucket::Working,
+        bucket => bucket,
+    };
+    match bucket {
         // A `working` reading is self-reported and can stand long after the
         // turn's last word, so it must not reopen a turn the text already
         // closed; only tool traffic and new messages do that.
@@ -616,7 +653,7 @@ fn apply_status(
         Bucket::Blocked => {
             set_blocked(w, BlockKind::Status, detail.unwrap_or("waiting for input").to_owned());
         }
-        Bucket::Done | Bucket::Review => {
+        Bucket::Done => {
             clear_blocked(w, BlockKind::Status);
             if w.state.done_since.is_none() {
                 w.state.done_since = Some(Instant::now());
@@ -2053,6 +2090,30 @@ mod tests {
         watch.observe(&msg_stopping("child-1", "Received.", "end_turn"));
         watch.observe(&ended("child-1"));
         assert_eq!(finished(&h).unwrap().final_text, None);
+    }
+
+    #[test]
+    fn a_roster_sighting_marks_the_child_alive_without_counting_as_activity() {
+        let watch = Arc::new(ChildWatch::default());
+        let h = watch.register_follow_up("child-1", "run the build");
+        watch.note_alive(&["some-other-session"]);
+        assert!(!h.snapshot().unwrap().process_alive(Instant::now()));
+        watch.note_alive(&["child-1"]);
+        let snap = h.snapshot().unwrap();
+        assert!(snap.process_alive(Instant::now()));
+        assert!(!snap.saw_events(), "being listed alive is not activity");
+        assert!(!snap.process_alive(Instant::now() + ALIVE_FRESH), "a stale sighting expires");
+    }
+
+    #[test]
+    fn a_transcript_entry_held_back_by_a_pending_follow_up_still_counts_as_events() {
+        let watch = Arc::new(ChildWatch::default());
+        let h = watch.register_follow_up("child-1", "run the build");
+        assert!(!h.snapshot().unwrap().saw_events());
+        watch.observe(&msg("child-1", "assistant", "still on the earlier turn"));
+        let snap = h.snapshot().unwrap();
+        assert!(snap.final_text.is_none(), "the earlier turn's text is not this turn's");
+        assert!(snap.saw_events());
     }
 
     #[test]

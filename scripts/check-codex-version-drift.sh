@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
-# CODEX_VERSION is a FLOOR, not an exact pin: derived images (the harbor worker
-# bake) refetch the harness, so the repo cannot promise which build ships —
-# only that it is never older than the declared version. The floor lives in
-# contract::CODEX_MIN_VERSION (the build the retained JSON Schema was generated
-# from) and the worker image ARG CODEX_VERSION must equal it, so the base image
+# CODEX_VERSION (deploy/examples/worker-agents/Dockerfile) is a FLOOR, not an
+# exact pin: derived images refetch the harness, so the repo cannot promise
+# which build ships, only that it is never older than the declared version. The
+# floor lives in contract::CODEX_MIN_VERSION (the build the retained JSON Schema
+# was generated from) and ARG CODEX_VERSION must equal it, so the sample
 # installs exactly the build the schema documents.
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 contract="${1:-$repo_root/crates/cctui-daemon/src/adapters/codex/contract.rs}"
-dockerfile="${2:-$repo_root/deploy/worker.Dockerfile}"
+dockerfile="${2:-$repo_root/deploy/examples/worker-agents/Dockerfile}"
 
 fail() { echo "::error::$*" >&2; exit 1; }
 
@@ -68,4 +68,4 @@ if at_least "$floor" "$upstream"; then
 fi
 
 echo "::notice::Codex floor $floor is behind upstream latest $upstream."
-echo "Raise CODEX_MIN_VERSION, ARG CODEX_VERSION, regenerate the retained schema, re-vendor codex-config.schema.json and re-verify codex-catalog.toml (scripts/check-codex-schema-drift.sh) when workers must not run anything older."
+echo "Raise CODEX_MIN_VERSION, ARG CODEX_VERSION (deploy/examples/worker-agents/Dockerfile), regenerate the retained schema, re-vendor codex-config.schema.json and re-verify codex-catalog.toml (scripts/check-codex-schema-drift.sh) when workers must not run anything older."

@@ -207,6 +207,7 @@ pub struct AcpSession {
     ending: bool,
     /// Ends after its first turn: a dispatched worker's one prompt.
     oneshot: bool,
+    guard: Option<super::guard::Guard>,
 }
 
 impl AcpSession {
@@ -219,6 +220,7 @@ impl AcpSession {
     ) -> Self {
         let (commands_tx, commands_rx) = mpsc::channel(32);
         let (inbox_tx, inbox_rx) = mpsc::unbounded_channel();
+        let guard = super::guard::Guard::resolve(&params.env);
         Self {
             params,
             events,
@@ -252,6 +254,7 @@ impl AcpSession {
             turn_end_supported: crate::adapters::turn_end::supported(),
             ending: false,
             oneshot: false,
+            guard,
         }
     }
 
@@ -313,10 +316,7 @@ impl AcpSession {
 
     fn launch(&self) -> Result<Launch, super::modes::Inexpressible> {
         let mut args: Vec<String> = self.params.row.args.iter().map(|a| (*a).to_owned()).collect();
-        if let Some(mode) = self.params.permission_mode
-            && let ModeApply::LaunchFlag(flag) =
-                self.params.row.modes.resolve(self.params.row.id, mode)?
-        {
+        if let Some(ModeApply::LaunchFlag(flag)) = self.agent_mode()? {
             args.push(flag.to_owned());
         }
         let mut env = self.params.env.clone();
@@ -456,9 +456,44 @@ impl AcpSession {
         protocol::parse_reattach(session_id, &resp)
     }
 
+    /// The agent-side mode: the cctui posture's, or the asking one under a
+    /// guard. A posture the agent cannot express is refused either way.
+    fn agent_mode(&self) -> Result<Option<ModeApply>, super::modes::Inexpressible> {
+        let (table, agent) = (&self.params.row.modes, self.params.row.id);
+        let Some(mode) = self.params.permission_mode else {
+            return Ok(self.guard.as_ref().and(table.ask));
+        };
+        let own = table.resolve(agent, mode)?;
+        if self.guard.is_some() {
+            table.resolve(agent, PermissionMode::Ask).map(Some)
+        } else {
+            Ok(Some(own))
+        }
+    }
+
+    /// Under a guard the agent's asking mode stands for the cctui posture.
+    fn posture(&self, agent_mode: &str) -> Option<PermissionMode> {
+        let posture = normalize::posture(&self.params.row.modes, agent_mode);
+        if self.guard.is_some() && posture == Some(PermissionMode::Ask) {
+            self.params.permission_mode.or(posture)
+        } else {
+            posture
+        }
+    }
+
+    /// cctui's own posture, applied once the guard allowed.
+    fn auto_answers(&self, tool_call: &Value) -> bool {
+        match self.params.permission_mode {
+            Some(PermissionMode::Yolo | PermissionMode::Whip) => true,
+            Some(PermissionMode::Auto) if self.guard.is_some() => super::modes::auto_approves(
+                tool_call.get("kind").and_then(Value::as_str).unwrap_or_default(),
+            ),
+            _ => false,
+        }
+    }
+
     async fn apply_mode(&mut self, session_id: &str) -> anyhow::Result<()> {
-        let Some(mode) = self.params.permission_mode else { return Ok(()) };
-        let apply = self.params.row.modes.resolve(self.params.row.id, mode)?;
+        let Some(apply) = self.agent_mode()? else { return Ok(()) };
         match apply {
             ModeApply::SessionMode(id) => {
                 self.request(
@@ -579,7 +614,7 @@ impl AcpSession {
             let _ = self.events.send(event).await;
         }
         if let Some(mode) = self.current_mode.clone() {
-            let posture = normalize::posture(&self.params.row.modes, &mode);
+            let posture = self.posture(&mode);
             if let Some(evt) =
                 normalize::address(&local_id, Out::Mode { agent_mode: mode, posture })
             {
@@ -759,7 +794,7 @@ impl AcpSession {
             }
             Out::Mode { agent_mode, .. } => {
                 self.current_mode = Some(agent_mode.clone());
-                let posture = normalize::posture(&self.params.row.modes, &agent_mode);
+                let posture = self.posture(&agent_mode);
                 if let Some(evt) = normalize::address(local_id, Out::Mode { agent_mode, posture }) {
                     let _ = self.events.send(evt).await;
                 }
@@ -784,7 +819,13 @@ impl AcpSession {
             .get("toolCallId")
             .and_then(Value::as_str)
             .map_or_else(|| Uuid::new_v4().to_string(), str::to_owned);
-        if matches!(self.params.permission_mode, Some(PermissionMode::Yolo | PermissionMode::Whip))
+        if let Some(guard) = &self.guard
+            && let super::guard::Verdict::Reject(reason) = guard.check(&tool_call).await
+        {
+            self.guard_reject(local_id, &tool_call, &options, reply, &reason).await;
+            return;
+        }
+        if self.auto_answers(&tool_call)
             && let Some(answer) = protocol::auto_allow(&options)
         {
             let _ = reply.send(answer);
@@ -793,6 +834,34 @@ impl AcpSession {
         let event = normalize::permission_request(local_id, &request_id, &tool_call, &options);
         self.pending.insert(request_id, Pending { options, reply });
         let _ = self.events.send(event).await;
+    }
+
+    async fn guard_reject(
+        &self,
+        local_id: &str,
+        tool_call: &Value,
+        options: &[protocol::PermissionOption],
+        reply: tokio::sync::oneshot::Sender<Value>,
+        reason: &str,
+    ) {
+        tracing::info!(%local_id, %reason, "acp: the workflow guard rejected a permission request");
+        let _ = reply.send(protocol::guard_reject(options, reason));
+        let tool = tool_call
+            .get("title")
+            .and_then(Value::as_str)
+            .or_else(|| tool_call.get("kind").and_then(Value::as_str))
+            .unwrap_or("tool");
+        let text = format!("cctui-guard blocked {tool}: {reason}");
+        let _ = self
+            .events
+            .send(AdapterEvent::Message {
+                local_id: local_id.to_owned(),
+                payload: serde_json::json!({
+                    "type": "text", "content": text, "role": "assistant", "text": text, "meta": true,
+                }),
+                turn_id: self.turn.as_ref().and_then(|t| t.turn_id),
+            })
+            .await;
     }
 
     async fn answer_permission(&mut self, request_id: &str, allow: bool, option_id: Option<&str>) {

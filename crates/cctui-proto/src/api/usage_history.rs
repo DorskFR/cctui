@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 #[derive(Debug, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export, rename = "UsageHistorySample"))]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export, rename = "UsageHistorySample"))]
 pub struct HistorySample {
     pub window_key: String,
     pub utilization: f64,
@@ -16,14 +16,14 @@ pub struct HistorySample {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export))]
 pub struct UsageHistory {
     pub account_id: Uuid,
     pub samples: Vec<HistorySample>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export, rename = "UsageWindowClose"))]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export, rename = "UsageWindowClose"))]
 pub struct WindowClose {
     pub account_id: Uuid,
     pub window_key: String,
@@ -36,16 +36,16 @@ pub struct WindowClose {
 
 /// Mean unused share of the closed instances of one window key.
 #[derive(Debug, Serialize, Deserialize, PartialEq)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export))]
 pub struct WastedSummary {
     pub window_key: String,
-    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    #[cfg_attr(test, ts(type = "number"))]
     pub windows: usize,
     pub mean_wasted_pct: f64,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export, rename = "UsageWindowCloses"))]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export, rename = "UsageWindowCloses"))]
 pub struct WindowCloses {
     pub closes: Vec<WindowClose>,
     pub summary: Vec<WastedSummary>,
@@ -53,7 +53,7 @@ pub struct WindowCloses {
 
 /// One reset of one window of one provider credential, with what went unused.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export))]
 pub struct AccountLedgerRow {
     /// The provider credential, as `account_id` in `GET /accounts/usage`.
     pub account_id: Uuid,
@@ -77,7 +77,7 @@ pub struct AccountLedgerRow {
 /// One credential's resets of one window over the requested range. Idle
 /// closes are counted but left out of the mean and the capacity sum.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export))]
 pub struct AccountLedgerTotal {
     pub account_id: Uuid,
     pub account_name: String,
@@ -90,7 +90,7 @@ pub struct AccountLedgerTotal {
 
 /// `GET /api/v1/accounts/usage/ledger`: rows newest reset first.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export))]
 pub struct AccountUsageLedger {
     pub rows: Vec<AccountLedgerRow>,
     pub totals: Vec<AccountLedgerTotal>,

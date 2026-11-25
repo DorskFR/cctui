@@ -46,6 +46,13 @@ fresh or stable target cannot be enrolled against a beta server.
 
 ## Worker images
 
+`ghcr.io/dorskfr/cctui-worker` is a barebone base with no agent CLI and no
+general tooling (docs/worker-contract.md, Bundled tools and derived images).
+A deployment runs an image built `FROM` it that installs its agents, from
+`deploy/examples/worker-agents` or its own Dockerfile; the release checks the
+agent version floors on that sample built with every switch on, and publishes
+only the base.
+
 The harbor worker bake is keyed by the full version: `make release
 VERSION=X.Y.Z-beta.N` builds on `cctui-worker:X.Y.Z-beta.N` and pushes the same
 tag, which can never collide with a stable `X.Y.Z`. Never pass a `TAG=` override
@@ -123,12 +130,15 @@ and the tagging, which is a manifest copy that takes seconds.
 
 ## macOS code signing and privacy grants
 
-Darwin release binaries are ad-hoc signed (`codesign --sign -` in `release.yml`).
-macOS ties Local Network and folder (TCC) grants to the code signature, so every
-cctui-daemon self-update, like every `claude` auto-update, invalidates the
-grants the user approved for the previous binary. The daemon detects the
-resulting denials with its machine-health probe and `cctui-daemon doctor
---grant` re-requests them, but the grants are lost again at the next release.
-Signing darwin builds with a stable Developer ID identity would make grants
-survive updates; that evaluation (Apple Developer Program membership, notarization
-in CI, secret handling for the signing identity) has not been done yet.
+Darwin release binaries are ad-hoc signed (`codesign --sign -` in `release.yml`),
+so their code signature changes on every build. macOS keys Local Network grants
+on the main executable's Mach-O UUID instead, so `release.yml` pins a constant
+`LC_UUID` on each darwin binary (`scripts/pin-macho-uuid.sh`) before signing.
+A Mac approves cctui-daemon once and the grant survives every self-update.
+Changing a pinned UUID revokes that grant on every Mac.
+
+Folder (TCC) grants follow the code signature and are still lost on update.
+The daemon detects the resulting denials with its machine-health probe and
+`cctui-daemon doctor --grant` re-requests them. A stable Developer ID identity
+would make them survive too; that (Apple Developer Program membership,
+notarization in CI, secret handling for the identity) has not been done yet.

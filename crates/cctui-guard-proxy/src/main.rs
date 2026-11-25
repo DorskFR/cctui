@@ -10,11 +10,14 @@
 //! IPv4 only — IPv6 egress is denied at the iptables layer by the worker
 //! entrypoint.
 
+mod auth;
 mod aws_creds;
 mod denylist;
 mod dispatch;
 mod forward;
 mod gate;
+mod gate_rules;
+mod gateway;
 mod ghapp;
 mod health;
 mod inject;
@@ -34,9 +37,11 @@ use std::time::Duration;
 use anyhow::Context as _;
 use clap::{Parser, Subcommand, ValueEnum};
 
+use crate::auth::GuardAuth;
 use crate::dispatch::{DispatchConfig, DispatchIdentity, ServerTarget};
 use crate::forward::ForwardListener;
-use crate::gate::{Gate, GatePolicy, HumanGate};
+use crate::gate::{GatePolicy, Mode as GateMode};
+use crate::gate_rules::RuleBook;
 use crate::ghapp::{GhAppConfig, GhAppMinter};
 use crate::inject::{InjectionPolicy, InjectionRule, Injector, PerPodCa};
 use crate::policy::PolicyManager;
@@ -179,19 +184,38 @@ struct Args {
     github_app_api_base: String,
 
     /// The profile's `humanGate`, rendered by the admission webhook. A value
-    /// that does not parse refuses every outbound connection.
+    /// naming no rule set refuses every outbound connection.
     #[arg(long, env = "GUARD_PROXY_HUMAN_GATE")]
     human_gate: Option<String>,
 
-    /// Branch names a `draftPrOnly` gate protects on top of `main`, `master`
-    /// and `trunk`.
+    /// Branch names an enforced gate protects on top of its rule set's.
     #[arg(long, value_delimiter = ',', env = "GUARD_PROXY_PROTECTED_BRANCHES")]
     protected_branches: Vec<String>,
+
+    /// Gate rule sets layered over the built-in ones. Absent: built-ins only;
+    /// unparseable: every outbound connection is refused.
+    #[arg(long, default_value = "/etc/guard-proxy/gates.json", env = "GUARD_PROXY_GATE_RULES")]
+    gate_rules: PathBuf,
 
     /// On SIGTERM/SIGINT, how long in-flight connections may finish before
     /// they are cut. Keep well inside the pod's terminationGracePeriodSeconds.
     #[arg(long, default_value_t = 10, env = "GUARD_PROXY_SHUTDOWN_DRAIN_SECS")]
     shutdown_drain_secs: u64,
+
+    /// File holding the per-dispatch proxy token a guard pod requires on every
+    /// worker request. Unset (the sidecar): no token is checked.
+    #[arg(long, env = "GUARD_PROXY_AUTH_TOKEN_FILE")]
+    auth_token_file: Option<PathBuf>,
+
+    /// File holding the per-dispatch token `PUT /policy` and
+    /// `PUT /private-allow` require. Unset: the policy is steered by file only.
+    #[arg(long, env = "GUARD_PROXY_CONTROL_TOKEN_FILE")]
+    control_token_file: Option<PathBuf>,
+
+    /// Plaintext listener relaying the worker to the cctui server with the
+    /// machine key injected; needs the proxy token.
+    #[arg(long, env = "GUARD_PROXY_SERVER_GATEWAY_LISTEN")]
+    server_gateway_listen: Option<String>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -262,20 +286,38 @@ fn build_ca(args: &Args) -> anyhow::Result<Arc<PerPodCa>> {
 }
 
 fn build_gate(args: &Args) -> Arc<GatePolicy> {
-    let policy = GatePolicy::new(Gate::parse(args.human_gate.as_deref()), &args.protected_branches);
-    match policy.gate() {
-        Gate::Open => {}
-        Gate::Unparseable => tracing::error!(
-            "human gate {:?} does not parse: every outbound connection is refused",
-            args.human_gate.as_deref().unwrap_or_default()
+    let book = gate_rules(&args.gate_rules)
+        .inspect_err(|e| {
+            tracing::error!(
+                "gate rules {} do not parse: every outbound connection is refused: {e:#}",
+                args.gate_rules.display()
+            );
+        })
+        .ok();
+    let name = args.human_gate.as_deref();
+    let policy = GatePolicy::from_rules(name, book.as_ref(), &args.protected_branches);
+    match policy.mode() {
+        GateMode::Unparseable if book.is_some() => tracing::error!(
+            "human gate {:?} names no rule set: every outbound connection is refused",
+            name.unwrap_or_default()
         ),
-        Gate::Declared(HumanGate::OutwardHeldForApproval) => tracing::warn!(
+        GateMode::Open | GateMode::Unparseable => {}
+        GateMode::Unenforced => tracing::warn!(
             "human gate outwardHeldForApproval is declared but the guard has no approval flow \
              to hold outward writes for: not enforced here"
         ),
-        Gate::Declared(declared) => tracing::info!("human gate {} enforced", declared.as_str()),
+        GateMode::Enforced => {
+            tracing::info!("human gate {} enforced", policy.name().unwrap_or_default());
+        }
     }
     Arc::new(policy)
+}
+
+fn gate_rules(path: &std::path::Path) -> anyhow::Result<RuleBook> {
+    if !path.is_file() {
+        return RuleBook::builtin();
+    }
+    RuleBook::with_file(&std::fs::read_to_string(path)?)
 }
 
 /// Builds the TLS injector over the rule set. Returns `None` (passthrough)
@@ -397,6 +439,32 @@ async fn await_upstream(what: &str, target: &ServerTarget) -> (bool, String) {
     }
 }
 
+/// A gateway is only ever started behind the proxy token: without it any
+/// worker that reaches this pod would act with this dispatch's machine key.
+fn spawn_gateway(
+    args: &Args,
+    auth: &GuardAuth,
+    dispatch: Option<&DispatchIdentity>,
+) -> anyhow::Result<()> {
+    let Some(addr) = args.server_gateway_listen.clone() else { return Ok(()) };
+    let token = auth
+        .proxy_token()
+        .ok_or_else(|| anyhow::anyhow!("--server-gateway-listen needs --auth-token-file"))?;
+    let Some((target, key)) =
+        dispatch.and_then(|d| d.machine_key().map(|k| (d.config.server.clone(), k.to_owned())))
+    else {
+        tracing::warn!("no redeemed dispatch identity: the cctui server gateway stays closed");
+        return Ok(());
+    };
+    let injector = Arc::new(ServerInjector::gateway(target, key, token)?);
+    tokio::spawn(async move {
+        if let Err(e) = gateway::serve(&addr, injector).await {
+            tracing::error!("cctui server gateway exited: {e}");
+        }
+    });
+    Ok(())
+}
+
 fn main() -> anyhow::Result<()> {
     let args = Args::parse();
     let rt = tokio::runtime::Runtime::new()?;
@@ -429,6 +497,10 @@ async fn run(args: Args) -> anyhow::Result<()> {
         args.policy
     );
 
+    let auth = Arc::new(GuardAuth::load(
+        args.auth_token_file.as_deref(),
+        args.control_token_file.as_deref(),
+    )?);
     let rules = build_rules(&args)?;
     let dispatch = if let Some(config) = dispatch_config(&args)? {
         match await_upstream("cctui server", &config.server).await {
@@ -447,6 +519,8 @@ async fn run(args: Args) -> anyhow::Result<()> {
         .map(|(target, key)| ServerInjector::new(target, key, ca.clone()))
         .transpose()?
         .map(Arc::new);
+    let ca_pem = ca.as_ref().map(|c| c.ca_pem().to_owned());
+    spawn_gateway(&args, &auth, dispatch.as_deref())?;
     let inject_hosts: Vec<String> = rules.iter().map(|r| r.host.clone()).collect();
     let gate = build_gate(&args);
     let injection = build_injection(&args, rules, ca, gate.clone())?;
@@ -460,16 +534,20 @@ async fn run(args: Args) -> anyhow::Result<()> {
         tracing::warn!("failed to load initial policy (deny-all until fixed): {e}");
     }
 
-    // Hot-reload via mtime poll.
-    tokio::spawn(policy.clone().watch(Duration::from_secs(1)));
+    tokio::spawn(policy.clone().watch(Duration::from_millis(100)));
 
-    // Health endpoint.
     {
-        let policy = policy.clone();
         let addr = args.health_listen.clone();
-        let dispatch = dispatch.clone();
+        let state = Arc::new(health::Health {
+            policy: policy.clone(),
+            dispatch: dispatch.clone(),
+            auth: auth.clone(),
+            ca_pem,
+            policy_path: PathBuf::from(&args.policy),
+            private_allow_path: args.private_allow_file.clone(),
+        });
         tokio::spawn(async move {
-            if let Err(e) = health::serve(&addr, policy, dispatch).await {
+            if let Err(e) = health::serve(&addr, state).await {
                 tracing::error!("health server exited: {e}");
             }
         });
@@ -485,12 +563,13 @@ async fn run(args: Args) -> anyhow::Result<()> {
             listener.serve_until(shutdown, drain).await?;
         }
         Mode::Forward => {
-            if server.is_some() {
+            if server.is_some() && args.server_gateway_listen.is_none() {
                 tracing::warn!("forward mode does not inject the dispatch machine key");
             }
             let listener = ForwardListener::bind(&args.listen, policy, injection, private)
                 .await?
-                .with_gate(gate);
+                .with_gate(gate)
+                .with_auth(auth);
             tracing::info!("forward proxy listening on {}", args.listen);
             listener.serve_until(shutdown, drain).await?;
         }
@@ -570,6 +649,14 @@ mod tests {
     }
 
     #[test]
+    fn a_gateway_never_opens_without_the_proxy_token() {
+        let args = parse(&["--server-gateway-listen", "0.0.0.0:15003"]);
+        let err = spawn_gateway(&args, &GuardAuth::default(), None).unwrap_err();
+        assert!(err.to_string().contains("--auth-token-file"), "{err}");
+        assert!(spawn_gateway(&parse(&[]), &GuardAuth::default(), None).is_ok());
+    }
+
+    #[test]
     fn engines_require_role_with_addr() {
         let args = parse(&["--vault-addr", "http://vault:8200"]);
         assert!(build_engines(&args).unwrap_err().to_string().contains("--vault-role"));
@@ -634,11 +721,29 @@ mod tests {
     #[test]
     fn human_gate_flags_parse_and_default_open() {
         let args = parse(&[]);
-        assert_eq!(build_gate(&args).gate(), Gate::Open);
+        assert_eq!(args.gate_rules, PathBuf::from("/etc/guard-proxy/gates.json"));
+        assert_eq!(build_gate(&args).mode(), GateMode::Open);
         let args = parse(&["--human-gate", "draftPrOnly", "--protected-branches", "release,dev"]);
-        assert_eq!(build_gate(&args).gate(), Gate::Declared(HumanGate::DraftPrOnly));
+        assert_eq!(build_gate(&args).name(), Some("draftPrOnly"));
         assert_eq!(args.protected_branches, vec!["release", "dev"]);
-        assert_eq!(build_gate(&parse(&["--human-gate", "bogus"])).gate(), Gate::Unparseable);
+        assert_eq!(build_gate(&parse(&["--human-gate", "bogus"])).mode(), GateMode::Unparseable);
+    }
+
+    #[test]
+    fn gate_rules_file_adds_gates_and_refuses_everything_when_it_does_not_parse() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("gates.json");
+        std::fs::write(&path, r#"{"gates": {"reviewer": {"extends": "draftPrOnly"}}}"#).unwrap();
+        let file = path.to_str().unwrap();
+        let gate = build_gate(&parse(&["--gate-rules", file, "--human-gate", "reviewer"]));
+        assert_eq!((gate.mode(), gate.name()), (GateMode::Enforced, Some("reviewer")));
+        std::fs::write(&path, "{").unwrap();
+        let gated = ["--gate-rules", file, "--human-gate", "noPush"];
+        for argv in [&gated[..2], &gated[..]] {
+            let gate = build_gate(&parse(argv));
+            assert_eq!(gate.mode(), GateMode::Unparseable, "{argv:?}");
+            assert!(gate.refuse_connection("registry.npmjs.org", false).is_some(), "{argv:?}");
+        }
     }
 
     fn test_secrets() -> Arc<SecretSource> {

@@ -7,13 +7,41 @@ its feature file, not by a separate binary.
 
 ## Crates
 
-- `cctui-server-core`: identity, provider accounts, gateway, targets, launch,
-  policy, run lifecycle and their persistence. It does not depend on the
-  workspace and compiles and tests on its own, without search, image codecs,
-  WebAuthn or plugin startup.
-- `cctui-server-workspace`: interactive HTTP/WebSocket handlers, application
-  state, workspace storage and the full-host assembly, built on core.
-- `cctui-server`: the executable; it starts the workspace host.
+- `cctui-server-kernel`: the delivery bus, auth and route authorization,
+  configuration, errors, the schema runner, adapter normalization, outbound
+  HTTP, lifecycle events, the session registry and pending commands, the
+  token/session/spawn-capability stores, peer delivery and rate limits, the
+  `core` schema stream, and the types other domains bind against
+  (`accounts_types`, `sessions_types`, `extras_types`, `dispatch_types`, `blobs_types`, `notify_types`, `search_types`, `search_text`). It depends on no other server crate; domain
+  crates reach the host through `KernelContext` and their own context traits.
+- `cctui-server-accounts`: identity, provider accounts and credentials, pools,
+  usage, limit resets, passkeys and the provider gateway, with their HTTP
+  handlers. It depends only on the kernel and reaches the host through
+  `AccountsHost` and the account context traits.
+- `cctui-server-dispatch`: dispatchers and dispatch records, dispatch policy,
+  worker identity, machine launches and enrollment, child sessions and their
+  limits, and the dispatcher/manifest targets, with their HTTP handlers. It
+  depends only on the kernel and reaches the host through `DispatchCore` and
+  the `hooks` traits (accounts, sessions, notify, presence).
+- `cctui-server-extras`: Langfuse tracing, storage stats, plugins and their
+  proxy, skills, previews, WS presence, rooms and the cctuiverse federation
+  with peer messaging, with their HTTP handlers. It depends only on the kernel
+  and reaches the host through `ExtrasContext` and the `hooks` traits
+  (sessions, blobs).
+- `cctui-server-notify`: notifications (store, routing, in-app, ntfy, email and
+  Web Push channels, producers, expiry, retention), the session user-action
+  list, with their HTTP handlers. It depends only on the kernel and reaches the
+  host through `NotifyContext` and the `hooks` traits (sessions, dispatch).
+- `cctui-server-sessions`: the session domain: daemon transport, ingest and
+  reconcile, run lifecycle, spawn and child sessions, follow-ups, keep-alive,
+  presets, the inbox and scheduled messages, webhooks, context and the
+  session HTTP/WebSocket handlers. It depends only on the kernel and reaches
+  the host through `SessionsContext` and the `ports` traits (accounts, blobs,
+  dispatch, extras, notify, search, host).
+- `cctui-server`: the host and the executable. It owns application state
+  (`AppState`, with the execution caches in `CoreState`), implements every
+  domain context, mounts the route tables, runs the `workspace` schema stream
+  and holds the cross-domain contract tests.
 
 Workers, dispatchers, the daemon and the TUI are the same for every
 installation.
@@ -49,8 +77,11 @@ See [features](features.md) for the file format and what each feature carries.
 ## Database
 
 The schema is split into packages, each a forward-only stream of numbered SQL
-files under `crates/<package>/schema/`, registered in that crate's `schema.rs`:
-`core` in `cctui-server-core` and `workspace` in `cctui-server-workspace`. The
+files under `crates/<package>/schema/`, registered in that crate's `schema.rs`
+(or `schema/<stream>/`, registered in `src/schema/<stream>.rs`): `core` in
+`cctui-server-kernel` (`schema/core/`), `workspace` in `cctui-server`
+and `workspace_search` in `cctui-server-search`, run by
+the shared runner in `cctui-server-kernel`. The
 legacy `migrations/` stream is frozen at 191; `scripts/check-migrations.sh`
 rejects collisions.
 

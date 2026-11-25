@@ -4,14 +4,14 @@
 //! label stays client-side.
 
 use serde::{Deserialize, Serialize};
-#[cfg(feature = "ts")]
+#[cfg(test)]
 use ts_rs::TS;
 
 use crate::models::SessionEndReason;
 
 /// Colour tier for an end badge.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 #[serde(rename_all = "snake_case")]
 pub enum EndTone {
     #[default]
@@ -29,7 +29,7 @@ pub const BADGE_DETAIL_MAX: usize = 48;
 ///
 /// Neither client hardcodes the tone rules.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct EndReasonInfo {
     pub reason: SessionEndReason,
     pub tone: EndTone,

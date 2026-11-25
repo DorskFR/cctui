@@ -94,7 +94,7 @@
 				data-journey="quick"
 				data-journey-key={q.id}
 				pressed={quickOn(view.msgFilter, q.id)}
-				style={`${CTL};--toggle-accent: ${QUICK_TINT[q.id]}${quickPartial(view.msgFilter, q.id) ? ';border-style:dashed' : ''}`}
+				style={`${CTL};--accent: ${QUICK_TINT[q.id]}${quickPartial(view.msgFilter, q.id) ? ';border-style:dashed' : ''}`}
 				title={quickTitle(q.id)}
 				onclick={() => toggleQuick(q.id)}
 			>
@@ -128,7 +128,8 @@
 		{#if hasFeature('auto_approve')}
 			<Toggle
 				pressed={autoApprove}
-				style={`${CTL};--toggle-accent: var(--warn)`}
+				tone="warn"
+				style={CTL}
 				title={m.conversation_auto_approve_title()}
 				aria-label={m.conversation_auto_approve_aria()}
 				onclick={ontoggleAuto}

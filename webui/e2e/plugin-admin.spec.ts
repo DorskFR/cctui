@@ -124,7 +124,7 @@ test.describe('plugins page (admin)', () => {
 			{ id: 'demo', name: 'Demo', description: 'd', version: '0.0.1', source: 'installed', enabled: false },
 			{ id: 'local', name: 'Local', description: 'l', version: '0.0.2', source: 'directory', enabled: true }
 		]);
-		await page.goto('/settings/plugins');
+		await page.goto('/settings/instance');
 		const group = page.locator('[data-journey="plugins-admin"]');
 		await expect(group).toBeVisible();
 		await expect(row(page, 'demo')).toContainText('0.0.1');
@@ -157,8 +157,9 @@ test.describe('plugins page (admin)', () => {
 		await expect(row(page, 'fromurl')).toHaveCount(0);
 		expect(state.calls).toContain('DELETE /api/v1/admin/plugins/fromurl');
 
-		await page.goto('/settings/instance');
-		await expect(page.locator('[data-journey="plugins-admin"]')).toHaveCount(0);
+		await page.goto('/settings/plugins');
+		await expect(page.locator('[data-settings-page="plugins"] [data-journey="plugins-admin"]')).toHaveCount(0);
+		await expect(page.locator('[data-journey="plugins-admin"]')).not.toBeVisible();
 	});
 
 	test('users only see instance-enabled plugins, with the form behind their own switch', async ({ page }) => {
@@ -179,8 +180,15 @@ test.describe('plugins page (admin)', () => {
 		await sw.click();
 		await expect(sw).toBeChecked();
 		await expect(page.locator('[data-journey="plugin-config"]')).toHaveCount(1);
+		const saved = page.waitForResponse(
+			(r) =>
+				r.url().includes('/api/v1/settings') &&
+				r.request().method() === 'PUT' &&
+				(r.request().postDataJSON() as { data: { pluginsEnabled?: Record<string, boolean> } }).data
+					.pluginsEnabled?.demo === false
+		);
 		await sw.click();
 		await expect(sw).not.toBeChecked();
-		await page.waitForTimeout(1500);
+		await saved;
 	});
 });

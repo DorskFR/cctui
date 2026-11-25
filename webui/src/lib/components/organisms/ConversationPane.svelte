@@ -1,7 +1,13 @@
 <script lang="ts">
 	import { untrack } from 'svelte';
+	import { replaceState } from '$app/navigation';
+	import { page } from '$app/state';
 	import type { SessionListItem } from '@bindings/SessionListItem';
 	import type { AgentEvent } from '@bindings/AgentEvent';
+	import type { FollowupReason } from '@bindings/FollowupReason';
+	import type { FollowupResponse } from '@bindings/FollowupResponse';
+	import type { FollowupFailed, SessionSuperseded } from '#lib/ws/frames.ts';
+	import { sessionHref } from '#lib/sessionFailureToast.ts';
 	import { ws } from '#lib/ws.svelte.ts';
 	import {
 		endpoints,
@@ -55,12 +61,21 @@
 	import { SessionActions } from './conversation/sessionActions.svelte';
 	import { EarlierPages } from './conversation/earlierPages.svelte';
 	import { LineRenderer } from './conversation/lineRender.svelte';
+	import { FollowupLine } from './conversation/followupLine.svelte';
+	import {
+		PENDING_MARK_KEY,
+		anchorFor,
+		generationEvents,
+		instructionEvent,
+		markerLine,
+		ownLines,
+		stripFirstTurn
+	} from './conversation/threadView';
 	import { MessagePins } from './conversation/messagePins.svelte';
 	import { BookmarkSaver } from './conversation/bookmarkSave.svelte';
 	import { guardEscape } from './conversation/escapeGuard';
 	import { livenessClass } from './conversation/liveness';
 	import { ownsSession } from './conversation/ownership';
-	import { useOwnerHideMenu } from '#lib/ownerHideMenu.svelte.ts';
 	import { notify } from '#lib/notify.svelte.ts';
 	import type { ConversationChrome } from './conversation/chrome';
 	import { m } from '#lib/paraglide/messages.js';
@@ -74,7 +89,7 @@
 	import { ttsMime } from '#lib/voice/mime.ts';
 
 	let {
-		session,
+		session: opened,
 		onclose,
 		highlight = [],
 		focusSeq = null,
@@ -109,6 +124,28 @@
 		onmaximize?: () => void;
 	} = $props();
 
+	// The pane follows its follow-up line: header, composer and stream target
+	// the line's head, whichever generation was opened.
+	const line = new FollowupLine({
+		thread: (sid, opts) => endpoints.threadConversation(sid, opts),
+		tree: (sid) => endpoints.sessionThread(sid),
+		session: (sid) => endpoints.session(sid)
+	});
+	const session = $derived(
+		line.headId && line.headId !== opened.id ? (line.head ?? opened) : opened
+	);
+	// Moves only when the opened session leaves the line, so a head swap keeps
+	// scroll, render window and panes.
+	let viewKey = $state(untrack(() => opened.id));
+	$effect(() => {
+		const sid = opened.id;
+		if (!untrack(() => line.members.has(sid))) viewKey = sid;
+	});
+	$effect(() => {
+		void viewKey;
+		untrack(() => void line.open(opened));
+	});
+
 	const id = $derived(session.id);
 	const archived = $derived(session.status === 'archived');
 	const me = useMe();
@@ -117,11 +154,8 @@
 		() => me.data?.role === 'admin' && !!me.data?.user_id && hasFeature('machine_spawn')
 	);
 	const owned = $derived(ownsSession(me.data, myMachines.data, session.machine_id));
-	const ownerMenu = useOwnerHideMenu(
-		() => session,
-		() => me.data
-	);
 	const needsInput = $derived(session.attention === 'needs_input' && !archived);
+	const waitingSince = $derived(session.last_message_at ? Date.parse(session.last_message_at) : null);
 	const showStatusBadge = $derived(session.status === 'new' || session.status === 'archived');
 	const qc = useQueryClient();
 
@@ -216,6 +250,13 @@
 	// dropped so a refetch and an optimistic reply's persisted form never
 	// render twice.
 	const events: AgentEvent[] = $derived(mergeEventSources(history.data ?? [], earlier.pages, stream.live));
+	// The thread above the head shows only once the head reaches its first event.
+	const headComplete = $derived(!earlier.canFetch && (history.data !== undefined || line.fresh));
+	const threadShown = $derived(line.active && headComplete);
+	const renderEvents = $derived.by(() => {
+		if (line.headGen < 2) return events;
+		return headComplete ? generationEvents(events, line.headMark) : stripFirstTurn(events, null);
+	});
 
 	// Opened from a search hit: land centred on it instead of the tail.
 	$effect(() => {
@@ -240,7 +281,8 @@
 		// The find bar owns the highlight once it is open, so the /sessions-search
 		// terms and a refined in-conversation query never fight over it.
 		highlight: () => (search.open ? search.terms : highlight),
-		events: () => events,
+		events: () => renderEvents,
+		prior: () => (threadShown ? line.segments : []),
 		scheduledTurns: () => scheduledTurnMap,
 		pending: () => stream.pendingReplies,
 		failed: () => stream.failedReplies,
@@ -248,7 +290,20 @@
 		askPreamble: () => stream.ask?.preamble,
 		planPreamble: () => stream.plan?.preamble
 	});
-	const lines = $derived(renderer.lines);
+	const headLines = $derived(ownLines(renderer.lines, id, line.headGen));
+	const pendingLines = $derived.by(() => {
+		const mark = line.pending;
+		if (!mark) return [];
+		const ev = instructionEvent(mark);
+		const own = ev ? renderer.segmentLines({ sessionId: PENDING_MARK_KEY, events: [ev] }) : [];
+		return [markerLine(mark), ...own.map((l) => ({ ...l, key: `${PENDING_MARK_KEY}:${l.key}` }))];
+	});
+	const lines = $derived([
+		...renderer.priorLines,
+		...(threadShown && line.headGen >= 2 && line.headMark ? [markerLine(line.headMark)] : []),
+		...headLines,
+		...pendingLines
+	]);
 	function revealHead(categories: MsgCategory[]): void {
 		const msgFilter = { ...view.msgFilter };
 		for (const c of categories) msgFilter[c] = true;
@@ -270,9 +325,9 @@
 	// Reset to bottom + sticky when switching sessions — except when opened on a
 	// search hit, which must land mid-transcript and stay there.
 	$effect(() => {
-		void id;
-		if (focusSeq == null) scroll.resetForSession();
-		else scroll.unstick();
+		void viewKey;
+		if (focusSeq == null) untrack(() => scroll.resetForSession());
+		else untrack(() => scroll.unstick());
 	});
 	// Keep pinned to the bottom while the composer grows. Re-runs when
 	// the scroller / textarea attach (the controller reads both reactively).
@@ -302,14 +357,17 @@
 	$effect(() => {
 		if (!stream.working) untrack(() => search.turnEnded());
 	});
-	// A session switch drops the older pages and hit cursor and closes a stale
-	// terminal pane.
+	// Older pages and search hits belong to one session; the terminal and
+	// plugin panes survive a head swap.
 	$effect(() => {
 		void id;
 		earlier.reset();
 		search.reset();
+	});
+	$effect(() => {
+		void viewKey;
 		terminalOpen = false;
-		plugins.close();
+		untrack(() => plugins.close());
 	});
 
 	// Opened from the /sessions search: the bar starts filled with those terms
@@ -351,7 +409,7 @@
 	const forkable = $derived(canFork && harnessCaps.fork && !archived);
 	const forkSelect = new ForkSelection();
 	function forkSelection() {
-		const range = forkSelect.range(lines);
+		const range = forkSelect.range(headLines);
 		if (range.length === 0) return;
 		fork.openExtract({ mode: 'selected', anchor_message_id: null, selected_message_ids: range });
 	}
@@ -446,6 +504,73 @@
 	}
 	const canTerminal = $derived(harnessCaps.live_view && hasFeature('terminal'));
 
+	function swapHead(ev: SessionSuperseded) {
+		if (!line.supersede(ev, { session, events, complete: headComplete })) return;
+		if (ev.archive_error)
+			toasts.error(m.composer_followup_archive_failed({ error: ev.archive_error }));
+		if (chrome !== 'tile')
+			replaceState(sessionHref(ev.to), { ...page.state, spawned: ev.to } as App.PageState);
+	}
+	function followupFailed(ev: FollowupFailed) {
+		if (!line.fail(ev)) return;
+		toasts.error(m.followup_thread_failed({ error: ev.error }));
+		composer?.restoreDraft(ev.instruction);
+	}
+	$effect(() => {
+		const sid = id;
+		const offSwap = ws.onSuperseded(sid, (ev) => untrack(() => swapHead(ev)));
+		const offFail = ws.onFollowupFailed(sid, (ev) => untrack(() => followupFailed(ev)));
+		return () => {
+			offSwap();
+			offFail();
+		};
+	});
+	function followupStarted(res: FollowupResponse, instruction: string, reason: FollowupReason) {
+		line.begin(res, instruction, reason);
+		if (res.state !== 'registered' || !res.to) return;
+		swapHead({
+			followup_id: res.followup_id,
+			from: res.from,
+			to: res.to,
+			reason,
+			instruction,
+			archived: true,
+			archive_error: null,
+			at: new Date().toISOString()
+		});
+	}
+
+	let anchor = $state<{ key: string; tick: number } | null>(null);
+	let anchorTick = 0;
+	/** Page in what lies between the tail and `target`, then scroll to it. */
+	async function landOn(target: string) {
+		if (target === id) {
+			scroll.jumpToBottom();
+			return;
+		}
+		await line.ready;
+		const isRoot = target === line.rootId;
+		for (let i = 0; i < 50 && earlier.canFetch; i++) await earlier.fetchEarlier();
+		for (let i = 0; i < 50 && line.canFetchOlder && (isRoot || !anchorFor(lines, target, line.rootId)); i++)
+			await line.fetchOlder();
+		const key = anchorFor(lines, target, line.rootId);
+		if (key) anchor = { key, tick: ++anchorTick };
+	}
+	function openGeneration(sessionId: string): boolean {
+		if (!line.members.has(sessionId)) return false;
+		void landOn(sessionId);
+		return true;
+	}
+	let landed: string | null = null;
+	$effect(() => {
+		const target = line.target;
+		if (!target || history.data === undefined) return;
+		const token = `${viewKey}|${target}`;
+		if (landed === token) return;
+		landed = token;
+		void untrack(() => landOn(target));
+	});
+
 </script>
 
 <div class="conv-pane" data-chrome={chrome}>
@@ -514,7 +639,7 @@
 				onDeleteLabel={actions.deleteLabel}
 				onsetroom={hasFeature('rooms') ? setRoom : undefined}
 				onclearroom={hasFeature('rooms') ? clearRoom : undefined}
-				ownerItems={ownerMenu.items}
+				onthreadjump={openGeneration}
 			/>
 
 			{#if chrome !== 'tile'}
@@ -552,11 +677,14 @@
 				{stream}
 				{scroll}
 				sessionId={id}
+				{viewKey}
 				{lines}
-				isLoading={history.isLoading}
-				canFetchOlder={earlier.canFetch}
-				fetchingOlder={earlier.fetching}
-				onfetcholder={earlier.fetchEarlier}
+				isLoading={history.isLoading && lines.length === 0}
+				canFetchOlder={earlier.canFetch || (threadShown && line.canFetchOlder)}
+				fetchingOlder={earlier.fetching || line.fetching}
+				onfetcholder={earlier.canFetch ? earlier.fetchEarlier : line.fetchOlder}
+				{anchor}
+				onopengeneration={(sid) => void openGeneration(sid)}
 				headHidden={renderer.headHidden}
 				onrevealhead={revealHead}
 				{archived}
@@ -581,7 +709,7 @@
 				{speakingKey}
 			/>
 
-			<ActivityBanner {stream} {archived} />
+			<ActivityBanner {stream} {archived} {needsInput} {waitingSince} />
 			<AutoArchiveNotice {session} onpin={organising ? () => togglePin(session) : undefined} />
 
 			{#if liveVoice.active}
@@ -601,12 +729,13 @@
 				onvoicelive={caps.live ? toggleLiveVoice : undefined}
 				{supportsAttachments}
 				{scroll}
-				onsend={(body) => stream.sendBody(body)}
+				onsend={(body, dictated, followup) => stream.sendBody(body, dictated, followup)}
 				stageFiles={(files) => actions.stageFiles(id, files)}
 				onNewFromScript={() => onNewFromScript?.(session)}
 				onFork={canFork ? fork.openDialog : undefined}
 				onFollowup={canFollowup ? followup : undefined}
 				onResume={canFork ? sa.resume : undefined}
+				onfollowupstarted={followupStarted}
 				compact={chrome === 'tile'}
 			/>
 			</Dropzone>

@@ -151,6 +151,15 @@ enum Cmd {
         #[command(subcommand)]
         cmd: ServiceCmd,
     },
+    /// Mask secrets in this machine's Claude Code transcripts with the
+    /// built-in detectors and print a JSON report (fingerprints, never
+    /// values). Codex rollouts are scanned, never rewritten; a live session's
+    /// file is never rewritten.
+    ScrubTranscripts {
+        /// Report what would change without writing anything.
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Expose a local dev server (127.0.0.1:<port>) as a preview URL through
     /// the cctui server, owner-only. Run from inside an agent session.
     Preview {
@@ -263,7 +272,7 @@ where
             Ok(v) => return Some(Ok(v)),
             Err(err) if err.downcast_ref::<AuthRejected>().is_some() => return Some(Err(err)),
             Err(err) => {
-                tracing::warn!(%err, retry_in = ?backoff.peek(), "daemon_auth failed; retrying");
+                tracing::warn!(err = format!("{err:#}"), retry_in = ?backoff.peek(), "daemon_auth failed; retrying");
                 if !backoff.sleep(shutdown).await {
                     return None;
                 }
@@ -547,6 +556,7 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
         },
         Cmd::Status => print_status(&path),
         Cmd::Preview { cmd } => run_preview(cmd),
+        Cmd::ScrubTranscripts { dry_run } => scrub_transcripts(dry_run),
         Cmd::AskHook { event, sock, deny } => cctui_daemon::askhook::run(&event, &sock, deny),
         Cmd::McpAgent { session, sock, tools } => {
             cctui_daemon::mcp::run_offering(&session, &sock, tools.as_deref())
@@ -562,13 +572,20 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
     }
 }
 
+fn scrub_transcripts(dry_run: bool) -> anyhow::Result<()> {
+    use cctui_daemon::transcript_scrub::{Mode, scrub_machine};
+    let report = scrub_machine(if dry_run { Mode::DryRun } else { Mode::Apply });
+    println!("{}", serde_json::to_string_pretty(&report)?);
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use std::time::{Duration, Instant};
 
     use super::*;
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn auth_retry_returns_promptly_on_shutdown() {
         let shutdown = CancellationToken::new();
         let cancel = shutdown.clone();

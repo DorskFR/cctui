@@ -4,12 +4,12 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-#[cfg(feature = "ts")]
+#[cfg(test)]
 use ts_rs::TS;
 
 /// Per-key exposure policy. Ordered least → most restrictive for display.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 #[serde(rename_all = "lowercase")]
 pub enum Policy {
     /// Good per-account toggle candidate; low blast radius.
@@ -24,7 +24,7 @@ pub enum Policy {
 
 /// Where a key's definition comes from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 #[serde(rename_all = "lowercase")]
 pub enum Source {
     /// Present in the vendored JSON schema (types/enums/defaults come from it).
@@ -35,7 +35,7 @@ pub enum Source {
 
 /// A single `settings.json` top-level key, enriched from the schema where possible.
 #[derive(Debug, Clone, Serialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct SettingKey {
     /// Top-level key name (e.g. `"model"`, `"disableBundledSkills"`).
     pub name: String,
@@ -61,7 +61,7 @@ pub struct SettingKey {
 
 /// Control shape for a curated env var in the account-settings editor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 #[serde(rename_all = "lowercase")]
 pub enum EnvKind {
     /// Present as `"1"` / absent (a boolean switch).
@@ -77,7 +77,7 @@ pub enum EnvKind {
 
 /// A curated environment variable exposed as an account default.
 #[derive(Debug, Clone, Serialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct EnvVar {
     /// Variable name (e.g. `"ANTHROPIC_MODEL"`).
     pub name: String,
@@ -104,7 +104,7 @@ pub struct EnvVar {
 
 /// A named bundle of settings + env applied together (e.g. "Quiet defaults").
 #[derive(Debug, Clone, Serialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct Preset {
     /// Stable id (e.g. `"quiet-defaults"`).
     pub id: String,

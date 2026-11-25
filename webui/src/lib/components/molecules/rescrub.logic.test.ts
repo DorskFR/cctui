@@ -1,15 +1,21 @@
 import { describe, expect, it } from "vitest";
 import {
   rescrubCategoryRows,
+  rescrubHasFindings,
   rescrubIdentifierWarnings,
   rescrubIsRunning,
+  rescrubLocal,
+  rescrubMachineLine,
   rescrubProgress,
   rescrubSampleLines,
   rescrubScopeSince,
   rescrubSettleNotice,
 } from "./rescrub.logic";
+import type { LocalTranscriptsScan } from "@bindings/LocalTranscriptsScan";
+import type { MachineTranscriptScan } from "@bindings/MachineTranscriptScan";
 import type { PrivacyScanJob } from "@bindings/PrivacyScanJob";
 import type { ScanCategory } from "@bindings/ScanCategory";
+import type { TranscriptAuditReport } from "@bindings/TranscriptAuditReport";
 
 const NOW = new Date("2026-09-08T12:00:00.000Z");
 
@@ -35,6 +41,7 @@ const job = (over: Partial<PrivacyScanJob> = {}): PrivacyScanJob => ({
   error: null,
   created_at: NOW.toISOString(),
   finished_at: null,
+  local_transcripts: null,
   ...over,
 });
 
@@ -126,5 +133,108 @@ describe("rescrubSettleNotice", () => {
   it("does not toast a watched dry run or a cancelled apply", () => {
     expect(rescrubSettleNotice(job({ status: "completed" }), "job-1")).toBeNull();
     expect(rescrubSettleNotice(job({ status: "cancelled", dry_run: false }), "job-1")).toBeNull();
+  });
+});
+
+const machine = (over: Partial<MachineTranscriptScan> = {}): MachineTranscriptScan => ({
+  machine_id: "m-1",
+  machine_name: "laptop",
+  state: "pending",
+  reason: null,
+  detail: null,
+  report: null,
+  ...over,
+});
+
+const local = (over: Partial<LocalTranscriptsScan> = {}): LocalTranscriptsScan => ({
+  machines: [],
+  categories: [],
+  substitutions: 0,
+  files_changed: 0,
+  ...over,
+});
+
+describe("local transcripts", () => {
+  it("is absent from a database-only job", () => {
+    expect(rescrubLocal(job())).toBeNull();
+    expect(rescrubLocal(null)).toBeNull();
+  });
+
+  it("counts local findings when the stored messages are clean", () => {
+    expect(rescrubHasFindings(job({ substitutions: 0 }))).toBe(false);
+    const withLocal = job({ substitutions: 0, local_transcripts: local({ substitutions: 2 }) });
+    expect(rescrubHasFindings(withLocal)).toBe(true);
+    expect(rescrubLocal(withLocal)?.substitutions).toBe(2);
+  });
+
+  const report = (over: Partial<TranscriptAuditReport> = {}): TranscriptAuditReport => ({
+    dry_run: false,
+    files_scanned: 40,
+    files_changed: 3,
+    files_read_only: 0,
+    files_live: 1,
+    files_busy: 0,
+    files_failed: 0,
+    lines_changed: 5,
+    lines_unfit: 0,
+    substitutions: 6,
+    values_left: 0,
+    open_files_unknown: false,
+    by_category: { github_token: 6 },
+    samples: {},
+    ...over,
+  });
+
+  it("reports a scanned machine's totals", () => {
+    expect(rescrubMachineLine(machine({ state: "scanned", report: report() }))).toEqual({
+      kind: "scanned",
+      files: 40,
+      values: 6,
+      changed: 3,
+      dryRun: false,
+      notes: [{ kind: "live", count: 1 }],
+    });
+  });
+
+  it("counts only masked values and lists what stays on disk", () => {
+    const left = report({
+      files_changed: 0,
+      substitutions: 0,
+      values_left: 4,
+      lines_unfit: 1,
+      files_read_only: 2,
+      files_live: 0,
+      files_busy: 1,
+    });
+    const line = rescrubMachineLine(machine({ state: "scanned", report: left }));
+    expect(line.kind === "scanned" && line.values).toBe(0);
+    expect(line.kind === "scanned" && line.notes).toEqual([
+      { kind: "left", count: 4 },
+      { kind: "unfit", count: 1 },
+      { kind: "read_only", count: 2 },
+      { kind: "busy", count: 1 },
+    ]);
+  });
+
+  it("says when a machine cannot tell which files are open", () => {
+    const unknown = report({ open_files_unknown: true, files_live: 40, files_changed: 0 });
+    const line = rescrubMachineLine(machine({ state: "scanned", report: unknown }));
+    expect(line.kind === "scanned" && line.notes).toEqual([
+      { kind: "open_unknown" },
+      { kind: "live", count: 40 },
+    ]);
+  });
+
+  it("never shows an unscanned machine as clean", () => {
+    expect(rescrubMachineLine(machine())).toEqual({ kind: "pending" });
+    expect(
+      rescrubMachineLine(machine({ state: "not_scanned", reason: "offline" })),
+    ).toEqual({ kind: "not_scanned", reason: "offline", detail: null });
+    expect(
+      rescrubMachineLine(machine({ state: "not_scanned", reason: "failed", detail: "disk" })),
+    ).toEqual({ kind: "not_scanned", reason: "failed", detail: "disk" });
+    expect(rescrubMachineLine(machine({ state: "scanned", report: null })).kind).toBe(
+      "not_scanned",
+    );
   });
 });

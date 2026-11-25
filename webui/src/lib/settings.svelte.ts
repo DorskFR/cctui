@@ -26,6 +26,8 @@ import {
   type FollowupWhenCold,
 } from "./followup";
 import { isPluginId } from "./plugins/discovery";
+import { clampAutoFollowup, DEFAULT_AUTO_FOLLOWUP } from "./autoFollowup";
+import type { AutoFollowupSetting } from "@bindings/AutoFollowupSetting";
 import {
   latestDirFor,
   latestEntryFor,
@@ -54,7 +56,6 @@ const SAVE_DEBOUNCE_MS = 400;
 export interface SessionListSettings {
   sort: "activity" | "created" | "name";
   sortDir: SortDir;
-  view: "list" | "card";
   density: "compact" | "normal";
   section: string;
   labelFilter: string[];
@@ -185,9 +186,8 @@ export function clampSpawnDockSide(v: unknown): SpawnDockSide {
 
 // Horizontal placement of the toast stack (the "Archived" confirmation and
 // friends). Centered by default, which is where the stack has always been;
-// `left`/`right` pin it to that edge with the same gutter the centered stack
-// keeps on a narrow viewport. Purely presentational, so it lives entirely in
-// the webui: the value drives the `data-toast-pos` attribute on the Toaster host.
+// `left`/`right` pin it to that edge. Purely presentational, so it lives
+// entirely in the webui: the value is the Toaster's `position`.
 export const DISPATCH_ARCHIVE_GRACE_DEFAULT = 180;
 export const DISPATCH_ARCHIVE_GRACE_MAX = 3600;
 
@@ -507,6 +507,8 @@ export interface VoiceSettings {
   inputMode: VoiceInputMode;
   autoSend: boolean;
   bargeIn: boolean;
+  /** How long after the user stops talking a held live reply starts. */
+  replyDelayMs: number;
   spokenStyle: VoiceSpokenStyle;
   /** Read a summary of long messages instead of all of them. */
   summarizeLong: boolean;
@@ -519,13 +521,17 @@ export const DEFAULT_VOICE: VoiceSettings = {
   inputMode: "push",
   autoSend: false,
   bargeIn: false,
+  replyDelayMs: 1000,
   spokenStyle: "brief",
   summarizeLong: true,
 };
 
+export const MAX_REPLY_DELAY_MS = 5000;
+
 export function mergeVoice(v: Partial<VoiceSettings> | undefined): VoiceSettings {
   const raw = v ?? {};
   const speed = Number(raw.speed);
+  const replyDelayMs = Number(raw.replyDelayMs);
   const id = (v: unknown) => typeof v === "string" ? v.trim() : "";
   const voice = id(raw.voice);
   const micId = id(raw.micId);
@@ -543,6 +549,10 @@ export function mergeVoice(v: Partial<VoiceSettings> | undefined): VoiceSettings
     inputMode: raw.inputMode === "handsfree" ? "handsfree" : "push",
     autoSend: raw.autoSend === true,
     bargeIn: raw.bargeIn === true,
+    replyDelayMs:
+      Number.isInteger(replyDelayMs) && replyDelayMs >= 0 && replyDelayMs <= MAX_REPLY_DELAY_MS
+        ? replyDelayMs
+        : DEFAULT_VOICE.replyDelayMs,
     spokenStyle:
       raw.spokenStyle === "normal" || raw.spokenStyle === "verbose"
         ? raw.spokenStyle
@@ -574,6 +584,10 @@ export interface SettingsState {
   // clamps and syncs to the daemon via Reconcile.
   secretScrubEnabled: boolean;
   secretScrubPatterns: SecretScrubPattern[];
+  // Opt-ins on top of the base scrub: the gateway masks secrets in outbound
+  // API requests; the daemon masks the harness's own local transcripts.
+  secretScrubOutbound: boolean;
+  secretScrubLocalTranscripts: boolean;
   // Prefix auto-generated session names with an emoji. Top-level so it
   // serializes as `data.sessionEmojiPrefix`, which the server reads while it
   // persists the name the agent reported (cctui does not generate the name
@@ -583,6 +597,7 @@ export interface SettingsState {
   // session stuck on an "API Error: Connection lost mid-response" with a
   // "continue" reply (1, 5 then 10 minutes) when this is on.
   autoResumeOnConnectionLoss: boolean;
+  autoFollowup: AutoFollowupSetting;
   // Server-read: archive a dispatched session once its run ends, after the
   // grace, unless its worker profile is listed.
   dispatchAutoArchive: boolean;
@@ -615,7 +630,6 @@ const DEFAULTS: SettingsState = {
   sessionList: {
     sort: "activity",
     sortDir: DEFAULT_SORT_DIR,
-    view: "list",
     density: "normal",
     section: "",
     labelFilter: [],
@@ -642,8 +656,11 @@ const DEFAULTS: SettingsState = {
   whipStopPhrases: { mode: DEFAULT_WHIP_MODE, phrases: [], guidance: "" },
   secretScrubEnabled: true,
   secretScrubPatterns: [],
+  secretScrubOutbound: false,
+  secretScrubLocalTranscripts: false,
   sessionEmojiPrefix: false,
   autoResumeOnConnectionLoss: false,
+  autoFollowup: DEFAULT_AUTO_FOLLOWUP,
   dispatchAutoArchive: true,
   dispatchAutoArchiveGraceSecs: DISPATCH_ARCHIVE_GRACE_DEFAULT,
   dispatchAutoArchiveKeepProfiles: [],
@@ -669,6 +686,15 @@ const DEFAULTS: SettingsState = {
 // than becoming undefined. One level of nesting covers the catalogue shape.
 // Stale keys in an older blob (e.g. a retired setting) are simply not copied
 // over, and get pruned on the next save.
+// The list view is the toolbar's own (`cctui_list_view`); a stored copy was never read.
+function withoutRetiredListKeys(
+  sl: Partial<SessionListSettings> | undefined,
+): Partial<SessionListSettings> {
+  if (!sl) return {};
+  const { view: _view, ...rest } = sl as Partial<SessionListSettings> & { view?: unknown };
+  return rest;
+}
+
 export function mergeDefaults(
   partial: Partial<SettingsState> | null | undefined,
 ): SettingsState {
@@ -676,7 +702,7 @@ export function mergeDefaults(
   return {
     sessionList: {
       ...DEFAULTS.sessionList,
-      ...p.sessionList ?? {},
+      ...withoutRetiredListKeys(p.sessionList),
       // Clamp so a stale/unknown stored value renders as the default column
       // width rather than an invalid CSS length.
       width: clampSessionListWidth(p.sessionList?.width),
@@ -724,8 +750,11 @@ export function mergeDefaults(
     whipStopPhrases: mergeWhipStopPhrases(p.whipStopPhrases),
     secretScrubEnabled: p.secretScrubEnabled !== false,
     secretScrubPatterns: mergeSecretScrubPatterns(p.secretScrubPatterns),
+    secretScrubOutbound: p.secretScrubOutbound === true,
+    secretScrubLocalTranscripts: p.secretScrubLocalTranscripts === true,
     sessionEmojiPrefix: p.sessionEmojiPrefix === true,
     autoResumeOnConnectionLoss: p.autoResumeOnConnectionLoss === true,
+    autoFollowup: clampAutoFollowup(p.autoFollowup),
     dispatchAutoArchive: p.dispatchAutoArchive !== false,
     dispatchAutoArchiveGraceSecs: clampDispatchArchiveGrace(
       p.dispatchAutoArchiveGraceSecs,
@@ -854,6 +883,7 @@ class Settings {
       } catch {
         this.state = mergeDefaults(null);
       }
+      notify.applyPersisted(this.state.display.notifyEnabled, this.state.notifications.sound);
       const flush = () => this.flush();
       window.addEventListener("pagehide", flush);
       window.addEventListener("focus", () => this.resync());
@@ -1126,10 +1156,21 @@ class Settings {
     this.persist();
   }
 
-  /** Record the notifier's current enabled state after a header/panel toggle
-   *  (whose async permission prompt the caller owns). */
-  recordNotifyEnabled() {
-    this.setDisplay({ notifyEnabled: notify.enabled });
+  /** `display.notifyEnabled` is the one stored value: every toggle goes
+   *  through here, and only a granted permission stores `true`. */
+  async setNotifyEnabled(on: boolean): Promise<boolean> {
+    if (on) {
+      const ok = await notify.enable();
+      this.setDisplay({ notifyEnabled: ok });
+      return ok;
+    }
+    notify.disable();
+    this.setDisplay({ notifyEnabled: false });
+    return true;
+  }
+
+  get notifyEnabled(): boolean {
+    return this.state.display.notifyEnabled && notify.enabled;
   }
 
   private applyDisplay() {
@@ -1182,6 +1223,24 @@ class Settings {
     return this.state.secretScrubPatterns;
   }
 
+  setSecretScrubOutbound(on: boolean) {
+    this.state.secretScrubOutbound = on;
+    this.persist();
+  }
+
+  get secretScrubOutbound(): boolean {
+    return this.state.secretScrubOutbound;
+  }
+
+  setSecretScrubLocalTranscripts(on: boolean) {
+    this.state.secretScrubLocalTranscripts = on;
+    this.persist();
+  }
+
+  get secretScrubLocalTranscripts(): boolean {
+    return this.state.secretScrubLocalTranscripts;
+  }
+
   // Emoji prefix on agent-generated session names. Applied server-side when
   // the name lands, so it shows up everywhere the name does (list, cards,
   // notifications), not just in this browser.
@@ -1200,6 +1259,14 @@ class Settings {
   }
   get autoResumeOnConnectionLoss(): boolean {
     return this.state.autoResumeOnConnectionLoss;
+  }
+
+  get autoFollowup(): AutoFollowupSetting {
+    return this.state.autoFollowup;
+  }
+  setAutoFollowup(patch: Partial<AutoFollowupSetting>) {
+    this.state.autoFollowup = clampAutoFollowup({ ...this.state.autoFollowup, ...patch });
+    this.persist();
   }
 
   setDispatchAutoArchive(on: boolean) {
@@ -1267,8 +1334,7 @@ class Settings {
   }
 
   // Horizontal placement of the toast stack. Clamped on read so a blob written
-  // by another build can never feed an unknown value to the `data-toast-pos`
-  // attribute (which would leave the stack with no placement rule at all).
+  // by another build can never feed the Toaster an unknown `position`.
   setToastPosition(pos: ToastPosition) {
     this.state.toastPosition = pos;
     this.persist();

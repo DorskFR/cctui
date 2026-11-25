@@ -22,7 +22,11 @@ export function navItems(gates: NavGates = {}): NavItemSpec[] {
 			: []),
 		{ href: '/accounts', label: m.nav_accounts(), iconName: 'key-round' },
 		...(hasFeature('automation')
-			? [{ href: '/inbox', label: m.nav_inbox(), iconName: 'mail' as const }]
+			? [
+					{ href: '/inbox', label: m.nav_inbox(), iconName: 'mail' as const },
+					{ href: '/schedules', label: m.nav_schedules(), iconName: 'calendar' as const },
+					{ href: '/webhooks', label: m.nav_webhooks(), iconName: 'link' as const }
+				]
 			: []),
 		...(hasFeature('plugins') ? (gates.pages ?? []) : []),
 		{ href: '/settings', label: m.nav_settings(), iconName: 'settings' }

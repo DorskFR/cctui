@@ -3,27 +3,27 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-#[cfg(feature = "ts")]
+#[cfg(test)]
 use ts_rs::TS;
 
 use crate::api::uploads::UploadCaps;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct SettingsPayload {
     pub version: i32,
     pub data: Value,
     /// Opaque marker of the stored row this copy was read from. A `PUT` carrying
     /// one is refused with `409` once another write has landed since.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(feature = "ts", ts(optional))]
+    #[cfg_attr(test, ts(optional))]
     pub revision: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS))]
+#[cfg_attr(test, derive(TS))]
 #[serde(rename_all = "lowercase")]
-#[cfg_attr(feature = "ts", ts(export))]
+#[cfg_attr(test, ts(export))]
 pub enum SettingSource {
     Settings,
     Env,
@@ -33,7 +33,7 @@ pub enum SettingSource {
 /// Default `CctuiAgent` limits; `null` fields are unset at that layer, and an
 /// unset `max_children` or `max_tree_budget_usd` in `effective` means unlimited.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 #[allow(clippy::struct_field_names)]
 pub struct SpawnDefaults {
     #[serde(default)]
@@ -45,7 +45,7 @@ pub struct SpawnDefaults {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 #[allow(clippy::struct_field_names)]
 pub struct SpawnDefaultsSources {
     pub max_children: SettingSource,
@@ -54,7 +54,7 @@ pub struct SpawnDefaultsSources {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct SpawnDefaultsInfo {
     /// The values new sessions get; `null` = unlimited.
     pub effective: SpawnDefaults,
@@ -65,7 +65,7 @@ pub struct SpawnDefaultsInfo {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct UpstreamHostsInfo {
     /// The saved, editable entries.
     pub hosts: Vec<String>,
@@ -78,36 +78,54 @@ pub struct UpstreamHostsInfo {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct UpstreamHostsRequest {
     /// `null` clears the saved list; env and managed hosts stay allowed.
     pub hosts: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct UploadCapsInfo {
     pub effective: UploadCaps,
     pub defaults: UploadCaps,
     /// `settings` once an admin saved a value, else `default`.
     pub source: SettingSource,
     /// The router's boot-time ceiling; a saved total cap must stay under it.
-    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    #[cfg_attr(test, ts(type = "number"))]
     pub body_limit_bytes: u64,
     /// Env var that sets `body_limit_bytes` (restart required).
     pub body_limit_env: &'static str,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct UploadCapsRequest {
     /// `null` clears the saved caps, restoring the built-in defaults.
     pub caps: Option<UploadCaps>,
 }
 
+/// How long the event log is kept, `GET /admin/instance/event-retention`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(TS), ts(export))]
+pub struct EventRetentionInfo {
+    /// Days of events kept; `0` keeps them forever.
+    pub days: u32,
+    pub default_days: u32,
+    /// `settings` once an admin saved a value, else `default`.
+    pub source: SettingSource,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[cfg_attr(test, derive(TS), ts(export))]
+pub struct EventRetentionRequest {
+    /// `null` clears the saved value, restoring the default.
+    pub days: Option<u32>,
+}
+
 /// Non-secret part of the `speech` instance setting.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 #[serde(default)]
 pub struct SpeechConfig {
     pub enabled: bool,
@@ -143,31 +161,39 @@ impl Default for SpeechConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct SpeechSettingsInfo {
     pub config: SpeechConfig,
     /// Whether an API key is stored; the key itself is never returned.
     pub has_key: bool,
     /// `settings` once an admin saved a value, else `default`.
     pub source: SettingSource,
+    /// Opaque marker of the stored row this copy was read from, empty when
+    /// nothing is saved.
+    pub revision: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct SpeechSettingsRequest {
     pub config: SpeechConfig,
+    /// The `revision` the form was loaded from. The save is refused with `409`
+    /// once another write has landed since; `null` overwrites unconditionally.
+    #[serde(default)]
+    #[cfg_attr(test, ts(optional))]
+    pub revision: Option<String>,
     /// A new key to store; `null` keeps the current one.
     #[serde(default)]
-    #[cfg_attr(feature = "ts", ts(optional))]
+    #[cfg_attr(test, ts(optional))]
     pub api_key: Option<String>,
     /// Drops the stored key.
     #[serde(default)]
-    #[cfg_attr(feature = "ts", ts(optional))]
+    #[cfg_attr(test, ts(optional))]
     pub clear_key: Option<bool>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct SpeechCatalog {
     pub models: Vec<String>,
     /// The models the service tags as speech-to-text; empty when it tags none.
@@ -181,7 +207,7 @@ pub struct SpeechCatalog {
 // Independent capability flags on a wire shape mirrored to TS, not a state machine.
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct VoiceConfigInfo {
     pub enabled: bool,
     /// Speech-to-text is available: dictation and voice mode can listen.
@@ -198,30 +224,30 @@ pub struct VoiceConfigInfo {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct VoiceSpeakRequest {
     pub text: String,
     /// Read a summary of long text instead of all of it.
     #[serde(default)]
-    #[cfg_attr(feature = "ts", ts(optional))]
+    #[cfg_attr(test, ts(optional))]
     pub summarize: Option<bool>,
     #[serde(default)]
-    #[cfg_attr(feature = "ts", ts(optional))]
+    #[cfg_attr(test, ts(optional))]
     pub voice: Option<String>,
     #[serde(default)]
-    #[cfg_attr(feature = "ts", ts(optional))]
+    #[cfg_attr(test, ts(optional))]
     pub speed: Option<f32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct VoiceTranscript {
     pub text: String,
 }
 
 /// `GET /voice/voices`: the voices the speech service offers.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct VoiceVoices {
     pub voices: Vec<String>,
 }

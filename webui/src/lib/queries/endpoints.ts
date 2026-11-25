@@ -39,6 +39,8 @@ import type { SpawnRequest } from "@bindings/SpawnRequest";
 import type { ContextItem } from "@bindings/ContextItem";
 import type { ContextItemSpec } from "@bindings/ContextItemSpec";
 import type { UpdateContextItemRequest } from "@bindings/UpdateContextItemRequest";
+import type { BulkContextUpdate } from "@bindings/BulkContextUpdate";
+import type { BulkContextResponse } from "@bindings/BulkContextResponse";
 import type { ResolvedContextResponse } from "@bindings/ResolvedContextResponse";
 import type { SessionContextResponse } from "@bindings/SessionContextResponse";
 import type { AttachContextRequest } from "@bindings/AttachContextRequest";
@@ -52,6 +54,10 @@ import type { ForkRequest } from "@bindings/ForkRequest";
 import type { ForkResponse } from "@bindings/ForkResponse";
 import type { BriefResponse } from "@bindings/BriefResponse";
 import type { SessionThreadResponse } from "@bindings/SessionThreadResponse";
+import type { AutoFollowupOverride } from "@bindings/AutoFollowupOverride";
+import type { FollowupRequest } from "@bindings/FollowupRequest";
+import type { FollowupResponse } from "@bindings/FollowupResponse";
+import type { ThreadConversationPage } from "@bindings/ThreadConversationPage";
 import type { StageFilesResponse } from "@bindings/StageFilesResponse";
 import type { DispatchRequest } from "@bindings/DispatchRequest";
 import type { DispatchResponse } from "@bindings/DispatchResponse";
@@ -123,6 +129,14 @@ import type { CreateBookmark } from "@bindings/CreateBookmark";
 import type { UpdateBookmark } from "@bindings/UpdateBookmark";
 import { SYSTEM_MACHINE_KINDS } from "./keys";
 import type { InboxEvent } from "./inbox";
+import type { LaunchPreset } from "@bindings/LaunchPreset";
+import type { LaunchPresetRequest } from "@bindings/LaunchPresetRequest";
+import type { PresetRun } from "@bindings/PresetRun";
+import type { RepeatDraftRequest } from "@bindings/RepeatDraftRequest";
+import type { Webhook } from "@bindings/Webhook";
+import type { WebhookRequest } from "@bindings/WebhookRequest";
+import type { WebhookSecret } from "@bindings/WebhookSecret";
+import type { WebhookDelivery } from "@bindings/WebhookDelivery";
 import type {
   AccountProvider,
   AccountUsage,
@@ -297,6 +311,37 @@ export const endpoints = {
   deleteBookmark: (id: string) =>
     api.del<void>(path("delete_bookmarks_by_id", { id })),
   inboxEvents: () => api.get<InboxEvent[]>(path("get_inbox_events")),
+  inboxLaneEvents: (lane: string) =>
+    api.get<InboxEvent[]>(path("get_inbox_events"), { lane }),
+  presets: () => api.get<LaunchPreset[]>(path("get_presets")),
+  createPreset: (body: LaunchPresetRequest) =>
+    api.post<LaunchPreset>(path("post_presets"), body),
+  updatePreset: (id: string, body: LaunchPresetRequest) =>
+    api.put<LaunchPreset>(path("put_presets_by_id", { id }), body),
+  deletePreset: (id: string) =>
+    api.del<void>(path("delete_presets_by_id", { id })),
+  /** Replace the files every run of the preset gets; none clears them. */
+  setPresetFiles: (id: string, files: File[]) => {
+    const form = new FormData();
+    for (const f of files) form.append("files", f, f.name);
+    return api.putForm<LaunchPreset>(path("put_presets_by_id_attachments", { id }), form);
+  },
+  /** Turn a draft into a repeating schedule; the draft row is removed. */
+  scheduleDraftRepeat: (sessionId: string, body: RepeatDraftRequest) =>
+    api.post<LaunchPreset>(path("post_sessions_by_id_schedule_repeat", { id: sessionId }), body),
+  runPreset: (id: string) =>
+    api.post<PresetRun>(path("post_presets_by_id_run", { id }), {}),
+  webhooks: () => api.get<Webhook[]>(path("get_webhooks")),
+  createWebhook: (body: WebhookRequest) =>
+    api.post<WebhookSecret>(path("post_webhooks"), body),
+  updateWebhook: (id: string, body: WebhookRequest) =>
+    api.put<Webhook>(path("put_webhooks_by_id", { id }), body),
+  deleteWebhook: (id: string) =>
+    api.del<void>(path("delete_webhooks_by_id", { id })),
+  rotateWebhookSecret: (id: string) =>
+    api.post<WebhookSecret>(path("post_webhooks_by_id_secret", { id }), {}),
+  webhookDeliveries: (id: string) =>
+    api.get<WebhookDelivery[]>(path("get_webhooks_by_id_deliveries", { id })),
   cancelInboxEvent: (id: string) =>
     api.del<void>(path("delete_inbox_events_by_id", { id })),
   retryInboxEvent: (id: string) =>
@@ -347,6 +392,9 @@ export const endpoints = {
   updateContextItem: (id: string, body: UpdateContextItemRequest) =>
     api.patch<ContextItem>(`/context/${id}`, body),
   deleteContextItem: (id: string) => api.del<void>(`/context/${id}`),
+  /** One match edit over many items; each answers for itself. */
+  bulkUpdateContext: (body: BulkContextUpdate) =>
+    api.patch<BulkContextResponse>("/context", body),
   /** The rules a spawn into these coordinates gets, and the memories it
    * pre-checks. Empty values are left out of the query. */
   resolveContext: (q: Record<string, string>) =>
@@ -404,6 +452,7 @@ export const endpoints = {
     cursor: string | null,
     signal?: AbortSignal,
     showHidden?: boolean,
+    excludeDispatched?: boolean,
   ) =>
     api.get<SessionListResponse>(
       "/sessions/search",
@@ -411,6 +460,7 @@ export const endpoints = {
         q: q || undefined,
         include_archived: includeArchived || undefined,
         show_hidden: showHidden || undefined,
+        exclude_dispatched: excludeDispatched || undefined,
         limit,
         offset: cursor ? undefined : offset,
         cursor: cursor ?? undefined,
@@ -444,6 +494,21 @@ export const endpoints = {
       after: opts?.after,
       order: opts?.order,
     }),
+  /** The follow-up line ending at `id`, root first, newest page first: pass
+   *  `next_cursor` back as `cursor` for the entries before it. */
+  threadConversation: (id: string, opts?: { limit?: number; cursor?: string }) =>
+    api.get<ThreadConversationPage>(`/sessions/${id}/conversation`, {
+      thread: 1,
+      limit: opts?.limit,
+      cursor: opts?.cursor,
+    }),
+  /** Follow `id` up server-side: collect, spawn, archive once registered.
+   *  The same `idempotency_key` again answers the same op. */
+  followup: (id: string, body: FollowupRequest) =>
+    api.post<FollowupResponse>(`/sessions/${id}/followup`, body),
+  /** Both fields null clears this session's override. */
+  setAutoFollowup: (id: string, body: AutoFollowupOverride) =>
+    api.put<SessionListItem>(`/sessions/${id}/auto-followup`, body),
   /** Find-in-conversation hit list for ONE session, oldest → newest. The
    *  server is the source of truth for the total: the DOM only holds the
    *  currently paged window. */
@@ -481,8 +546,10 @@ export const endpoints = {
     api.post<NotificationTransition>(path("post_notifications_by_id_read", { id })),
   actNotification: (id: string, body: NotificationActRequest) =>
     api.post<NotificationTransition>(path("post_notifications_by_id_act", { id }), body),
-  dismissNotification: (id: string) =>
-    api.post<NotificationTransition>(path("post_notifications_by_id_dismiss", { id })),
+  dismissNotification: (id: string, confirm = false) =>
+    api.post<NotificationTransition>(
+      path("post_notifications_by_id_dismiss", { id }) + (confirm ? "?confirm=true" : ""),
+    ),
   readAllNotifications: () =>
     api.post<NotificationReadAll>(path("post_notifications_read_all")),
   notificationSettings: () =>
@@ -606,10 +673,13 @@ export const endpoints = {
     api.post<ForkResponse>(`/sessions/${sessionId}/fork`, body),
   sessionThread: (sessionId: string) =>
     api.get<SessionThreadResponse>(path("get_sessions_by_id_thread", { id: sessionId })),
-  brief: (sessionId: string, maxBytes?: number) =>
-    api.get<BriefResponse>(
-      `/sessions/${sessionId}/brief${maxBytes ? `?max_bytes=${maxBytes}` : ""}`,
-    ),
+  brief: (sessionId: string, maxBytes?: number, opts: { chain?: boolean } = {}) => {
+    const q = new URLSearchParams();
+    if (maxBytes) q.set("max_bytes", String(maxBytes));
+    if (opts.chain) q.set("chain", "1");
+    const qs = q.toString();
+    return api.get<BriefResponse>(`/sessions/${sessionId}/brief${qs ? `?${qs}` : ""}`);
+  },
   resume: (sessionId: string) =>
     api.post<void>(`/sessions/${sessionId}/resume`, {}),
   /** Rebind one of a session's per-family gateway bindings.
@@ -621,9 +691,9 @@ export const endpoints = {
     api.post<void>(`/sessions/${sessionId}/switch-account`, { account }),
   sessionBindings: (sessionId: string) =>
     api.get<SessionBinding[]>(`/sessions/${sessionId}/bindings`),
-  /** Launch a draft session: env is entered fresh here (never stored
-   *  in the draft), account gateway tokens minted server-side at dispatch. The
-   *  draft row is removed and a live session is born from the daemon. */
+  /** Launch a draft session: `env` wins over the draft's sealed env per name,
+   *  account gateway tokens minted server-side at dispatch. The draft row is
+   *  removed and a live session is born from the daemon. */
   launchDraft: (sessionId: string, env: Record<string, string> = {}) =>
     api.post<SpawnResponse>(`/sessions/${sessionId}/launch`, { env }),
   /** Queue a draft to launch at `launchAt` (RFC3339, at most 30 days out),

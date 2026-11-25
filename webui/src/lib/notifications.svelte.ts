@@ -19,7 +19,7 @@ export interface NotificationApi {
 	list(q: { state: 'open'; limit: number; before?: string }): Promise<NotificationList>;
 	read(id: string): Promise<NotificationTransition>;
 	act(id: string, body: NotificationActRequest): Promise<NotificationTransition>;
-	dismiss(id: string): Promise<NotificationTransition>;
+	dismiss(id: string, confirm?: boolean): Promise<NotificationTransition>;
 	readAll(): Promise<NotificationReadAll>;
 }
 
@@ -27,7 +27,7 @@ const http: NotificationApi = {
 	list: (q) => endpoints.notifications(q),
 	read: (id) => endpoints.readNotification(id),
 	act: (id, body) => endpoints.actNotification(id, body),
-	dismiss: (id) => endpoints.dismissNotification(id),
+	dismiss: (id, confirm) => endpoints.dismissNotification(id, confirm),
 	readAll: () => endpoints.readAllNotifications()
 };
 
@@ -84,17 +84,65 @@ export function stateLabel(n: Notice): string | undefined {
 		: m.notif_state({ decision });
 }
 
+export const DISPATCH_FAILED = 'dispatch_failed';
+export const REDISPATCH = 'redispatch';
+export const DETAILS = 'details';
+
+/** The failure record a dispatch notice stands for. */
+export function failedDispatchOf(n: Notice): string | null {
+	return n.kind === DISPATCH_FAILED && n.subject_kind === 'dispatch' && n.subject_id
+		? n.subject_id
+		: null;
+}
+
+export const failureHref = (record: string) =>
+	`/dispatch-failures?record=${encodeURIComponent(record)}`;
+
+/** Where a notice opens: its session at the message that raised it, else its failure record. */
+export function noticeHref(n: Notice): string | undefined {
+	if (n.session_id) {
+		const q = new URLSearchParams({ session: n.session_id });
+		if (n.anchor_seq != null) q.set('seq', String(n.anchor_seq));
+		return `/sessions?${q}`;
+	}
+	const record = failedDispatchOf(n);
+	return record ? failureHref(record) : undefined;
+}
+
+/** Answered here, not by the server: re-run the dispatch, or read its failure record. */
+function dispatchActions(n: Notice): NotificationAction[] {
+	if (!failedDispatchOf(n)) return [];
+	return [
+		{ id: REDISPATCH, label: m.dispatch_failed_rerun(), variant: 'primary' },
+		{ id: DETAILS, label: m.notif_action_details() }
+	];
+}
+
+/** Still waiting on a decision, read or not. */
+export function needsAnswer(n: Notice): boolean {
+	return !stateLabel(n) && noticeActions(n).length > 0;
+}
+
+function itemText(n: Notice, needs: boolean): string | undefined {
+	if (!needs) return n.body ?? undefined;
+	const lead = m.notifications_needs_answer();
+	return n.body ? `${lead} · ${n.body}` : lead;
+}
+
 export function toItem(n: Notice): NotificationData {
 	const state = stateLabel(n);
+	const needs = needsAnswer(n);
 	return {
 		id: n.id,
 		title: n.title,
-		text: n.body ?? undefined,
+		text: itemText(n, needs),
 		time: n.created_at,
+		icon: needs ? 'help' : undefined,
 		tone: tone(n.severity),
 		unread: isUnread(n),
 		state,
-		actions: state ? [] : noticeActions(n)
+		actions: state ? [] : [...noticeActions(n), ...dispatchActions(n)],
+		href: noticeHref(n)
 	};
 }
 
@@ -182,9 +230,10 @@ export class NotificationStore {
 		}
 	}
 
-	async dismiss(id: string): Promise<DismissOutcome> {
+	/** `confirm` expires a notice a run still waits on, instead of refusing it. */
+	async dismiss(id: string, confirm = false): Promise<DismissOutcome> {
 		try {
-			this.upsert((await this.#api.dismiss(id)).notification);
+			this.upsert((await this.#api.dismiss(id, confirm)).notification);
 			return 'dismissed';
 		} catch (e) {
 			return e instanceof ApiError && e.status === 409 ? 'blocking' : 'failed';

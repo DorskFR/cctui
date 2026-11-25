@@ -188,13 +188,82 @@ fn is_interpreter(tok: &str) -> bool {
     base.starts_with("python") || matches!(base, "perl" | "ruby" | "node")
 }
 
-/// True when a segment hides an arbitrary command from phrase matching —
-/// command or process substitution, heredocs, an indirection helper (`bash
-/// -c`, `eval`, `xargs`, `python -c`), config-injecting git options, or a
-/// risky `NAME=value` prefix — so only an explicit `Bash`/`*` grant, not a
-/// phrase, may clear it.
+const REDIRECT_TARGET_END: &[char] = &[';', '|', '&', '<', '>', '(', ')'];
+
+fn redirect_target(chars: &[char], mut i: usize) -> (String, bool, usize) {
+    if matches!(chars.get(i), Some('>' | '|')) {
+        i += 1;
+    }
+    let dup = chars.get(i) == Some(&'&');
+    if dup {
+        i += 1;
+    }
+    while chars.get(i).copied().is_some_and(char::is_whitespace) {
+        i += 1;
+    }
+    let mut target = String::new();
+    let mut quote = None;
+    while let Some(&c) = chars.get(i) {
+        match quote {
+            Some(q) if c == q => quote = None,
+            None if c == '\'' || c == '"' => quote = Some(c),
+            None if c.is_whitespace() || REDIRECT_TARGET_END.contains(&c) => break,
+            None if c == '\\' => {
+                if let Some(&next) = chars.get(i + 1) {
+                    target.push(next);
+                }
+                i += 1;
+            }
+            Some(_) | None => target.push(c),
+        }
+        i += 1;
+    }
+    (target, dup, i)
+}
+
+fn is_harmless_redirect_target(target: &str, dup: bool) -> bool {
+    let is_fd = !target.is_empty() && target.chars().all(|c| c.is_ascii_digit());
+    target == "/dev/null" || (dup && (target == "-" || is_fd))
+}
+
+fn has_file_output_redirect(seg: &str) -> bool {
+    let chars: Vec<char> = seg.chars().collect();
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        if c == '\\' && !in_single {
+            i += 2;
+            continue;
+        }
+        if c == '\'' && !in_double {
+            in_single = !in_single;
+        } else if c == '"' && !in_single {
+            in_double = !in_double;
+        } else if c == '>' && !in_single && !in_double {
+            let (target, dup, next) = redirect_target(&chars, i + 1);
+            if !is_harmless_redirect_target(&target, dup) {
+                return true;
+            }
+            i = next;
+            continue;
+        }
+        i += 1;
+    }
+    false
+}
+
+/// True when a segment hides an arbitrary command or effect from phrase
+/// matching — command or process substitution, heredocs, an output
+/// redirection to a file, an indirection helper (`bash -c`, `eval`, `xargs`,
+/// `python -c`), config-injecting git options, or a risky `NAME=value`
+/// prefix — so only an explicit `Bash`/`*` grant, not a phrase, may clear it.
 pub(crate) fn segment_needs_bash_grant(seg: &str) -> bool {
     if ["$(", "`", "<<", "<(", ">("].iter().any(|m| seg.contains(*m)) {
+        return true;
+    }
+    if has_file_output_redirect(seg) {
         return true;
     }
     let toks =
@@ -387,7 +456,7 @@ pub fn check_rules(
             if guarded && segment_needs_bash_grant(&seg) && !grants_full_bash(&allowed) {
                 return (
                     false,
-                    "shell substitution/indirection requires 'Bash' in the allowed list"
+                    "shell substitution/indirection/redirection requires 'Bash' in the allowed list"
                         .to_string(),
                 );
             }
@@ -565,6 +634,54 @@ mod tests {
     fn heredoc_needs_bash_grant() {
         assert!(!bash("cat <<EOF\ngit push\nEOF", &["cat"], &[]).0);
         assert!(bash("cat <<EOF", &["Bash"], &[]).0);
+    }
+
+    #[test]
+    fn output_redirect_to_file_needs_bash_grant() {
+        let read_only = ["cat", "git log", "rg"];
+        for cmd in [
+            "cat x.ts>y.ts",
+            "cat x.ts > y.ts",
+            "cat x 1>y",
+            "cat x 2>err.log",
+            "cat x &>y",
+            "cat x >>y",
+            "cat x >> y",
+            "cat x >| y",
+            "cat x >&y",
+            "cat x <>y",
+            "cat x >\"$HOME/f\"",
+            "git log > /workspace/f",
+            "git log>/workspace/f",
+            "cat x >/dev/null >y",
+            "cat x 2>&1 >y",
+            "rg '>' f >out",
+        ] {
+            assert!(!bash(cmd, &read_only, &[]).0, "{cmd} must be refused");
+            assert!(bash(cmd, &["Bash"], &[]).0, "{cmd} must pass with Bash");
+        }
+    }
+
+    #[test]
+    fn harmless_or_quoted_redirects_stay_allowed() {
+        let read_only = ["cat", "git log", "rg", "make"];
+        for cmd in [
+            "cat x >/dev/null",
+            "cat x > /dev/null",
+            "cat x 2>/dev/null",
+            "cat x &>/dev/null",
+            "cat x >>'/dev/null'",
+            "make 2>&1",
+            "make >&2",
+            "make 2>&-",
+            "rg '>' file",
+            "rg \">\" file",
+            "rg \\> file",
+            "git log --format='a>b'",
+            "git log --format=\"%h>%s\"",
+        ] {
+            assert!(bash(cmd, &read_only, &[]).0, "{cmd} must stay allowed");
+        }
     }
 
     #[test]

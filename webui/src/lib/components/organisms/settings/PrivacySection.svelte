@@ -3,7 +3,7 @@
 	// scrubbing; the textarea holds one extra regex per line, layered on the
 	// daemon's compiled defaults. A line that does not compile is flagged here and
 	// withheld from the save; the server stays authoritative (Rust regex syntax).
-	import { Button, Callout, Switch, Text, Textarea } from '@dorsk/tsumikit';
+	import { Button, Callout, Checkbox, Switch, Text, Textarea } from '@dorsk/tsumikit';
 	import { parseScrubPatterns } from './scrub-patterns';
 	import DetectorList from '#lib/components/molecules/DetectorList.svelte';
 	import RescrubPanel from '#lib/components/molecules/RescrubPanel.svelte';
@@ -14,6 +14,8 @@
 	import { m } from '#lib/paraglide/messages.js';
 
 	const scrubEnabled = $derived(settings.secretScrubEnabled);
+	const optInHelp = (help: string) =>
+		scrubEnabled ? help : `${help} ${m.settings_redaction_opt_in_needs_base()}`;
 	// The draft holds what was typed, including a line that doesn't compile: only
 	// the valid lines are handed to the store, so one bad pattern can't make every
 	// later settings save fail.
@@ -49,6 +51,34 @@
 			<Switch
 				bind:checked={() => scrubEnabled, (v) => settings.setSecretScrubEnabled(v)}
 				label={m.settings_redaction_enable_label()}
+			/>
+		</SettingRow>
+		<SettingRow
+			label={m.settings_redaction_outbound_label()}
+			help={optInHelp(m.settings_redaction_outbound_help())}
+			disabled={!scrubEnabled}
+			server
+		>
+			<Checkbox
+				data-journey="redact-outbound"
+				label={m.settings_redaction_outbound_label()}
+				disabled={!scrubEnabled}
+				checked={scrubEnabled && settings.secretScrubOutbound}
+				onchange={(e) => settings.setSecretScrubOutbound((e.currentTarget as HTMLInputElement).checked)}
+			/>
+		</SettingRow>
+		<SettingRow
+			label={m.settings_redaction_local_transcripts_label()}
+			help={optInHelp(m.settings_redaction_local_transcripts_help())}
+			disabled={!scrubEnabled}
+			server
+		>
+			<Checkbox
+				data-journey="redact-local-transcripts"
+				label={m.settings_redaction_local_transcripts_label()}
+				disabled={!scrubEnabled}
+				checked={scrubEnabled && settings.secretScrubLocalTranscripts}
+				onchange={(e) => settings.setSecretScrubLocalTranscripts((e.currentTarget as HTMLInputElement).checked)}
 			/>
 		</SettingRow>
 		<SettingRow

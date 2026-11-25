@@ -1,7 +1,13 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { Notification as Notice } from '@bindings/Notification';
 import { ApiError } from './api';
-import { NotificationStore, toItem, type NotificationApi } from './notifications.svelte';
+import {
+	NotificationStore,
+	needsAnswer,
+	noticeHref,
+	toItem,
+	type NotificationApi
+} from './notifications.svelte';
 
 function notice(id: string, over: Partial<Notice> = {}): Notice {
 	return {
@@ -208,9 +214,50 @@ describe('notification store', () => {
 		expect(store.unread).toBe(0);
 	});
 
+	it('read-all leaves answerable notices read but still asking', async () => {
+		const read = [
+			notice('n1', { state: 'read' }),
+			notice('n2', { state: 'read', kind: 'outcome_result', actions: [], body: null })
+		];
+		const api = fakeApi({
+			readAll: vi.fn(async () => ({ read: 2, unread: 0 })),
+			list: vi.fn(async () => ({ notifications: read, unread: 0, has_more: false }))
+		});
+		const store = new NotificationStore(api);
+		store.setUnread(2);
+		await store.readAll();
+		expect(api.readAll).toHaveBeenCalledOnce();
+		expect(store.unread).toBe(0);
+		const item = (id: string) => toItem(store.items.find((n) => n.id === id)!);
+		const [ask, info] = [item('n1'), item('n2')];
+		expect(ask).toMatchObject({ unread: false, text: 'Needs an answer · ship it', icon: 'help' });
+		expect(ask.state).toBeUndefined();
+		expect(ask.actions?.map((a) => a.id)).toEqual(['approve', 'reject']);
+		expect(info).toMatchObject({ unread: false, text: undefined, icon: undefined });
+		expect(info.actions).toEqual([]);
+	});
+
+	it('a notice needs an answer only while it is open and offers actions', () => {
+		expect(needsAnswer(notice('n1'))).toBe(true);
+		expect(needsAnswer(notice('n1', { state: 'read', body: null }))).toBe(true);
+		expect(toItem(notice('n1', { state: 'read', body: null })).text).toBe('Needs an answer');
+		expect(needsAnswer(notice('n1', { actions: [] }))).toBe(false);
+		expect(needsAnswer(notice('n1', { state: 'acted', decision: 'approve' }))).toBe(false);
+		expect(needsAnswer(notice('n1', { state: 'expired' }))).toBe(false);
+		expect(
+			needsAnswer(notice('n1', { kind: 'dispatch_failed', subject_kind: 'dispatch', subject_id: 'r', actions: [] }))
+		).toBe(false);
+	});
+
 	it('maps a record onto the kit item', () => {
 		const item = toItem(notice('n1', { severity: 'critical' }));
-		expect(item).toMatchObject({ id: 'n1', title: 'notice n1', text: 'ship it', unread: true });
+		expect(item).toMatchObject({
+			id: 'n1',
+			title: 'notice n1',
+			text: 'Needs an answer · ship it',
+			icon: 'help',
+			unread: true
+		});
 		expect(item.tone).toBe('danger');
 		expect(item.state).toBeUndefined();
 		expect(item.actions?.map((a) => [a.id, a.variant, a.requiresConfirm])).toEqual([
@@ -218,5 +265,47 @@ describe('notification store', () => {
 			['reject', 'danger', true]
 		]);
 		expect(toItem(notice('n2', { state: 'read', actions: 'junk' })).actions).toEqual([]);
+	});
+});
+
+describe('notice targets', () => {
+	const failure = (over: Partial<Notice> = {}) =>
+		notice('n1', {
+			kind: 'dispatch_failed',
+			session_id: null,
+			subject_kind: 'dispatch',
+			subject_id: 'd-1',
+			actions: [],
+			...over
+		});
+
+	it('opens the session at the message that raised the notice', () => {
+		expect(noticeHref(notice('n1', { anchor_seq: 42 }))).toBe('/sessions?session=s-1&seq=42');
+		expect(toItem(notice('n1', { anchor_seq: 42 })).href).toBe('/sessions?session=s-1&seq=42');
+	});
+
+	it('opens the session alone when no message is anchored', () => {
+		expect(noticeHref(notice('n1'))).toBe('/sessions?session=s-1');
+		expect(noticeHref(notice('n1', { anchor_seq: null }))).toBe('/sessions?session=s-1');
+	});
+
+	it('opens the failure record of a dispatch that never registered', () => {
+		expect(noticeHref(failure())).toBe('/dispatch-failures?record=d-1');
+		expect(noticeHref(failure({ session_id: 'd-1' })), 'a registered one opens itself').toBe(
+			'/sessions?session=d-1'
+		);
+	});
+
+	it('offers no target, so no open affordance, when the notice has none', () => {
+		const bare = notice('n1', { session_id: null, kind: 'system_alert' });
+		expect(noticeHref(bare)).toBeUndefined();
+		expect(toItem(bare).href).toBeUndefined();
+		expect(noticeHref(failure({ subject_kind: 'user_action' }))).toBeUndefined();
+	});
+
+	it('a failed dispatch offers re-dispatch and details until it is closed', () => {
+		expect(toItem(failure()).actions?.map((a) => a.id)).toEqual(['redispatch', 'details']);
+		expect(toItem(notice('n2', { kind: 'system_alert', actions: [] })).actions).toEqual([]);
+		expect(toItem(failure({ state: 'resolved', decision: 'dismissed' })).actions).toEqual([]);
 	});
 });

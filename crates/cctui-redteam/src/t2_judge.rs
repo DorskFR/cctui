@@ -247,7 +247,7 @@ pub fn cli_judge(
     dir: &Path,
     version: &str,
     expect_version: Option<&str>,
-) -> anyhow::Result<Verdict> {
+) -> anyhow::Result<T2Summary> {
     let plan: T2Plan = serde_json::from_str(&std::fs::read_to_string(plan_path)?)
         .with_context(|| format!("parse {}", plan_path.display()))?;
     let cfg = T2Config::load(config)?;
@@ -287,7 +287,7 @@ pub fn cli_judge(
         record.contained_cells,
         record.cells
     );
-    Ok(summary.verdict)
+    Ok(summary)
 }
 
 #[cfg(test)]

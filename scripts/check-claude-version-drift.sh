@@ -1,13 +1,12 @@
 #!/usr/bin/env bash
-# CLAUDE_CODE_VERSION is a FLOOR, not an exact pin: derived images (the harbor
-# worker bake) refetch the harness, so the repo cannot promise which build ships
-# — only that it is never older than the declared version. `latest`/`stable`
-# would make even that promise meaningless, so a floor must stay a concrete
-# x.y.z.
+# CLAUDE_CODE_VERSION (deploy/examples/worker-agents/Dockerfile) is a FLOOR,
+# not an exact pin: derived images refetch the harness, so the repo cannot
+# promise which build ships, only that it is never older than the declared
+# version. `latest`/`stable` would void even that, so a floor stays x.y.z.
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-dockerfile="${1:-$repo_root/deploy/worker.Dockerfile}"
+dockerfile="${1:-$repo_root/deploy/examples/worker-agents/Dockerfile}"
 
 fail() { echo "::error::$*" >&2; exit 1; }
 
@@ -57,4 +56,4 @@ if at_least "$floor" "$upstream"; then
 fi
 
 echo "::notice::Claude Code floor $floor is behind upstream latest $upstream."
-echo "Raise ARG CLAUDE_CODE_VERSION in deploy/worker.Dockerfile when workers must not run anything older."
+echo "Raise ARG CLAUDE_CODE_VERSION in deploy/examples/worker-agents/Dockerfile when workers must not run anything older."

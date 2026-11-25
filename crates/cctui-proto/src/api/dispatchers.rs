@@ -6,13 +6,13 @@
 /// and set otherwise — so the one-control UI can express "bind this pool, drop the account" in a
 /// single call.
 #[derive(Debug, serde::Deserialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export))]
 pub struct RenameDispatcher {
     pub name: String,
     #[serde(default)]
-    #[cfg_attr(feature = "ts", ts(type = "string | null", optional))]
+    #[cfg_attr(test, ts(type = "string | null", optional))]
     pub default_account: Option<String>,
     #[serde(default)]
-    #[cfg_attr(feature = "ts", ts(type = "string | null", optional))]
+    #[cfg_attr(test, ts(type = "string | null", optional))]
     pub default_pool: Option<String>,
 }

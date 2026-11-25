@@ -12,15 +12,22 @@
 	import SettingRow from './SettingRow.svelte';
 	import { useRescrub } from '#lib/queries/settings.ts';
 	import { toasts } from '#lib/toast.svelte.ts';
+	import { settings } from '#lib/settings.svelte.ts';
 	import { m } from '#lib/paraglide/messages.js';
 	import type { PrivacyScanJob } from '@bindings/PrivacyScanJob';
+	import type { ScanCategory } from '@bindings/ScanCategory';
 	import {
 		rescrubCategoryRows,
+		rescrubHasFindings,
 		rescrubIdentifierWarnings,
 		rescrubIsRunning,
+		rescrubLocal,
+		rescrubMachineLine,
 		rescrubProgress,
 		rescrubScopeSince,
 		rescrubSettleNotice,
+		type RescrubMachineLine,
+		type RescrubMachineNote,
 		type RescrubScope
 	} from './rescrub.logic';
 
@@ -37,8 +44,48 @@
 	const categories = $derived(rescrubCategoryRows(job));
 	const warnings = $derived(rescrubIdentifierWarnings(job));
 	const preview = $derived(
-		job?.status === 'completed' && job.dry_run && job.substitutions > 0 ? job : null
+		job?.status === 'completed' && job.dry_run && rescrubHasFindings(job) ? job : null
 	);
+	const local = $derived(rescrubLocal(job));
+
+	function machineText(line: RescrubMachineLine): string {
+		if (line.kind === 'pending') return m.settings_rescrub_local_pending();
+		if (line.kind === 'scanned') {
+			const counts = { files: line.files, values: line.values, changed: line.changed };
+			return line.dryRun
+				? m.settings_rescrub_local_scanned(counts)
+				: m.settings_rescrub_local_scrubbed(counts);
+		}
+		switch (line.reason) {
+			case 'offline':
+				return m.settings_rescrub_local_offline();
+			case 'outdated':
+				return m.settings_rescrub_local_outdated();
+			case 'timeout':
+				return m.settings_rescrub_local_timeout();
+			case 'cancelled':
+				return m.settings_rescrub_local_cancelled();
+			case 'failed':
+				return m.settings_rescrub_local_failed({ error: line.detail ?? '' });
+		}
+	}
+
+	function noteText(note: RescrubMachineNote): string {
+		switch (note.kind) {
+			case 'open_unknown':
+				return m.settings_rescrub_local_open_unknown();
+			case 'left':
+				return m.settings_rescrub_local_left({ count: note.count });
+			case 'unfit':
+				return m.settings_rescrub_local_unfit({ count: note.count });
+			case 'read_only':
+				return m.settings_rescrub_local_read_only({ count: note.count });
+			case 'live':
+				return m.settings_rescrub_local_live({ count: note.count });
+			case 'busy':
+				return m.settings_rescrub_local_busy({ count: note.count });
+		}
+	}
 
 	const scopeOptions = $derived([
 		{ value: 'all', label: m.settings_rescrub_scope_all() },
@@ -139,6 +186,10 @@
 			</Button>
 		</div>
 
+		{#if settings.secretScrubOutbound}
+			<Text size="sm" tone="muted">{m.settings_rescrub_outbound_note()}</Text>
+		{/if}
+
 		{#if running && job}
 			<Progress
 				block
@@ -173,7 +224,7 @@
 			<Button onclick={dismiss}>{m.common_close()}</Button>
 		{/if}
 
-		{#if job?.status === 'completed' && job.dry_run && job.substitutions === 0}
+		{#if job?.status === 'completed' && job.dry_run && !rescrubHasFindings(job)}
 			<EmptyState size="compact" title={m.settings_rescrub_empty()} />
 			<Button onclick={dismiss}>{m.common_close()}</Button>
 		{/if}
@@ -191,26 +242,7 @@
 					{m.settings_rescrub_identifier_body({ categories: warnings.join(', ') })}
 				</Callout>
 			{/if}
-			<ul class="categories">
-				{#each categories as cat (cat.category)}
-					<li class="category">
-						<div class="head">
-							<Text size="sm" weight="semibold" as="span">{cat.category}</Text>
-							<Text size="sm" tone="muted" as="span">
-								{m.settings_rescrub_matches({ count: cat.count })}
-							</Text>
-						</div>
-						<ul class="samples">
-							{#each cat.samples as sample, i (i)}
-								<li>
-									<code class="match">{sample.text}</code>
-									<code class="context">{sample.context}</code>
-								</li>
-							{/each}
-						</ul>
-					</li>
-				{/each}
-			</ul>
+			{@render categoryList(categories)}
 			<div class="controls">
 				<Button tone="warn" onclick={() => (confirming = true)}>
 					{m.settings_rescrub_apply({ count: preview.rows_changed })}
@@ -218,8 +250,60 @@
 				<Button tone="neutral" onclick={dismiss}>{m.common_cancel()}</Button>
 			</div>
 		{/if}
+
+		{#if local}
+			<section class="local">
+				<Text size="sm" weight="semibold">{m.settings_rescrub_local_title()}</Text>
+				<Text size="xs" tone="muted">{m.settings_rescrub_local_help()}</Text>
+				{#if local.machines.length === 0}
+					<Text size="sm" tone="muted">{m.settings_rescrub_local_none()}</Text>
+				{/if}
+				<ul class="machines">
+					{#each local.machines as machine (machine.machine_id)}
+						{@const line = rescrubMachineLine(machine)}
+						<li class="machine">
+							<Text size="sm" weight="semibold" as="span">{machine.machine_name}</Text>
+							<Text size="sm" tone={line.kind === 'not_scanned' ? 'warn' : 'muted'} as="span">
+								{machineText(line)}
+							</Text>
+							{#if line.kind === 'scanned'}
+								{#each line.notes as note (note.kind)}
+									<Text size="xs" tone="faint" as="span">{noteText(note)}</Text>
+								{/each}
+							{/if}
+						</li>
+					{/each}
+				</ul>
+				{#if !running && local.categories.length > 0}
+					{@render categoryList(local.categories)}
+				{/if}
+			</section>
+		{/if}
 	</div>
 </SettingRow>
+
+{#snippet categoryList(rows: ScanCategory[])}
+	<ul class="categories">
+		{#each rows as cat (cat.category)}
+			<li class="category">
+				<div class="head">
+					<Text size="sm" weight="semibold" as="span">{cat.category}</Text>
+					<Text size="sm" tone="muted" as="span">
+						{m.settings_rescrub_matches({ count: cat.count })}
+					</Text>
+				</div>
+				<ul class="samples">
+					{#each cat.samples as sample, i (i)}
+						<li>
+							<code class="match">{sample.text}</code>
+							<code class="context">{sample.context}</code>
+						</li>
+					{/each}
+				</ul>
+			</li>
+		{/each}
+	</ul>
+{/snippet}
 
 <ConfirmModal
 	bind:open={confirming}
@@ -244,7 +328,19 @@
 		align-items: center;
 		gap: var(--sp-2);
 	}
+	.local {
+		display: flex;
+		flex-direction: column;
+		gap: var(--sp-2);
+	}
+	.machine {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: baseline;
+		gap: var(--sp-2);
+	}
 	.categories,
+	.machines,
 	.samples {
 		list-style: none;
 		margin: 0;

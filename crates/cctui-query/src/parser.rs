@@ -8,7 +8,7 @@ enum Tok {
     And,
     Or,
     Not,
-    Text(String),
+    Text(String, bool),
     Field { field: String, op: OpCode, values: Vec<String> },
 }
 
@@ -146,9 +146,9 @@ fn split_values(word: &Word) -> Vec<String> {
     values.into_iter().map(|v| v.trim().to_string()).filter(|v| !v.is_empty()).collect()
 }
 
-fn push_text(out: &mut Vec<Tok>, joined: String) {
+fn push_text(out: &mut Vec<Tok>, joined: String, phrase: bool) {
     if !joined.trim().is_empty() {
-        out.push(Tok::Text(joined));
+        out.push(Tok::Text(joined, phrase));
     }
 }
 
@@ -166,14 +166,14 @@ fn strip_negation(word: &Word) -> Option<Word> {
 
 fn classify_word(word: &Word, out: &mut Vec<Tok>) {
     if word.fully_quoted() {
-        return push_text(out, word.joined());
+        return push_text(out, word.joined(), true);
     }
     if let Some(plain) = word.plain() {
         match plain {
             "and" | "AND" | "+" | "&&" => return out.push(Tok::And),
             "or" | "OR" | "||" => return out.push(Tok::Or),
             "not" | "NOT" => return out.push(Tok::Not),
-            "-" => return out.push(Tok::Text(plain.to_string())),
+            "-" => return out.push(Tok::Text(plain.to_string(), false)),
             _ => {}
         }
     }
@@ -197,7 +197,7 @@ fn classify_word(word: &Word, out: &mut Vec<Tok>) {
         out.push(Tok::Field { field, op, values: split_values(&value) });
         return;
     }
-    push_text(out, word.joined());
+    push_text(out, word.joined(), word.segs.iter().any(|(_, quoted)| *quoted));
 }
 
 /// Group raw tokens, assembling tsumikit `field in (v1, v2)` lists into a
@@ -367,7 +367,7 @@ impl Parser {
                     return inner;
                 }
                 Tok::RParen => return None,
-                Tok::Text(t) => return Some(Node::Text { value: t }),
+                Tok::Text(value, phrase) => return Some(Node::Text { value, phrase }),
                 Tok::Field { field, op, values } => return Some(field_leaf(&field, op, values)),
                 Tok::And | Tok::Or | Tok::Not => {}
             }

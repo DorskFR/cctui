@@ -224,6 +224,18 @@ tui = "waived"
 reason = "administration, spawn drafts, profiles, bookmarks and dispatch live in the webui; the TUI keeps the operator loop"
 
 [[route]]
+id = "get_admin_instance_event_retention"
+# GET /admin/instance/event-retention — Read or set how many days of events are kept (admin).
+tui = "waived"
+reason = "administration, spawn drafts, profiles, bookmarks and dispatch live in the webui; the TUI keeps the operator loop"
+
+[[route]]
+id = "put_admin_instance_event_retention"
+# PUT /admin/instance/event-retention — Read or set how many days of events are kept (admin).
+tui = "waived"
+reason = "administration, spawn drafts, profiles, bookmarks and dispatch live in the webui; the TUI keeps the operator loop"
+
+[[route]]
 id = "get_admin_instance_upload_caps"
 # GET /admin/instance/upload-caps — Read or set the per-upload file count and size caps (admin).
 tui = "waived"
@@ -234,6 +246,36 @@ id = "put_admin_instance_upload_caps"
 # PUT /admin/instance/upload-caps — Read or set the per-upload file count and size caps (admin).
 tui = "waived"
 reason = "administration, spawn drafts, profiles, bookmarks and dispatch live in the webui; the TUI keeps the operator loop"
+
+[[route]]
+id = "get_admin_storage"
+# GET /admin/storage — Database, per-session and tool-output sizes, and the tool-output lifecycle (admin).
+tui = "waived"
+reason = "admin storage sizes and the tool-output lifecycle are a webui-only admin page; the TUI keeps the operator loop"
+
+[[route]]
+id = "put_admin_storage_lifecycle"
+# PUT /admin/storage/lifecycle — Set the tool-output lifecycle rules; none keeps everything (admin).
+tui = "waived"
+reason = "admin storage sizes and the tool-output lifecycle are a webui-only admin page; the TUI keeps the operator loop"
+
+[[route]]
+id = "post_admin_storage_lifecycle_preview"
+# POST /admin/storage/lifecycle/preview — Estimate the rows and bytes a tool-output lifecycle rule set would free (admin).
+tui = "waived"
+reason = "admin storage sizes and the tool-output lifecycle are a webui-only admin page; the TUI keeps the operator loop"
+
+[[route]]
+id = "get_admin_redteam"
+# GET /admin/redteam — The latest red-team T2 and T3 run per reported version, with escapes (admin).
+tui = "waived"
+reason = "red-team results are a webui-only admin page; the TUI keeps the operator loop"
+
+[[route]]
+id = "post_redteam_runs"
+# POST /redteam/runs — Record a red-team T2 or T3 run result.
+tui = "waived"
+reason = "posted by the red-team runner in CI, never by an interactive client"
 
 [[route]]
 id = "get_admin_harness_autoupdate"
@@ -357,15 +399,21 @@ reason = "administration, spawn drafts, profiles, bookmarks and dispatch live in
 
 [[route]]
 id = "get_context"
-# GET /context — List the caller's context items, or create one.
+# GET /context — List the caller's context items, create one, or edit the match of many at once.
 tui = "handled"
 module = "app/context_items.rs"
 
 [[route]]
 id = "post_context"
-# POST /context — List the caller's context items, or create one.
+# POST /context — List the caller's context items, create one, or edit the match of many at once.
 tui = "waived"
 reason = "creating an item means writing a body, scope and match filter: a form the webui editor owns, not a keystroke"
+
+[[route]]
+id = "patch_context"
+# PATCH /context — List the caller's context items, create one, or edit the match of many at once.
+tui = "waived"
+reason = "a bulk match edit picks many items and machines at once: the webui multi-select owns it, not a keystroke"
 
 [[route]]
 id = "get_context_resolve"
@@ -1141,6 +1189,12 @@ tui = "waived"
 reason = "administration, spawn drafts, profiles, bookmarks and dispatch live in the webui; the TUI keeps the operator loop"
 
 [[route]]
+id = "post_sessions_by_id_schedule_repeat"
+# POST /sessions/{id}/schedule-repeat — Turn a draft session into a repeating schedule.
+tui = "waived"
+reason = "administration, spawn drafts, profiles, bookmarks and dispatch live in the webui; the TUI keeps the operator loop"
+
+[[route]]
 id = "post_sessions_by_id_cancel_launch"
 # POST /sessions/{id}/cancel-launch — Cancel a draft session's queued launch.
 tui = "waived"
@@ -1343,6 +1397,18 @@ id = "get_sessions_by_id_thread"
 # GET /sessions/{id}/thread — List the follow-up thread a session belongs to, oldest first.
 tui = "waived"
 reason = "follow-up thread navigation lives in the webui drawer header"
+
+[[route]]
+id = "post_sessions_by_id_followup"
+# POST /sessions/{id}/followup — Continue a session in a new one and swap it in once it registers.
+tui = "waived"
+reason = "follow-ups are started from the webui composer and inbox presets"
+
+[[route]]
+id = "put_sessions_by_id_auto_followup"
+# PUT /sessions/{id}/auto-followup — Set or clear a session's auto follow-up override.
+tui = "waived"
+reason = "the auto follow-up override is set from the webui session menu"
 
 [[route]]
 id = "post_sessions_by_id_fork"
@@ -1603,6 +1669,66 @@ tui = "waived"
 reason = "launch presets are automation configuration for the inbox; the TUI keeps the operator loop"
 
 [[route]]
+id = "put_presets_by_id_attachments"
+# PUT /presets/{id}/attachments — Replace the files every run of a launch preset gets.
+tui = "waived"
+reason = "launch presets are automation configuration for the inbox; the TUI keeps the operator loop"
+
+[[route]]
+id = "post_presets_by_id_run"
+# POST /presets/{id}/run — Run a launch preset now, whatever its schedule.
+tui = "waived"
+reason = "launch presets are automation configuration for the inbox; the TUI keeps the operator loop"
+
+[[route]]
+id = "post_hooks_by_id"
+# POST /hooks/{id} — Deliver a signed webhook: its HMAC is the only credential.
+tui = "waived"
+reason = "the webhook receiver is called by third-party senders, never by a cctui client"
+
+[[route]]
+id = "get_webhooks"
+# GET /webhooks — List your inbound webhooks, or create one and read its secret once.
+tui = "waived"
+reason = "inbound webhooks are automation configuration for the inbox; the TUI keeps the operator loop"
+
+[[route]]
+id = "post_webhooks"
+# POST /webhooks — List your inbound webhooks, or create one and read its secret once.
+tui = "waived"
+reason = "inbound webhooks are automation configuration for the inbox; the TUI keeps the operator loop"
+
+[[route]]
+id = "get_webhooks_by_id"
+# GET /webhooks/{id} — Read, replace or delete one inbound webhook.
+tui = "waived"
+reason = "inbound webhooks are automation configuration for the inbox; the TUI keeps the operator loop"
+
+[[route]]
+id = "put_webhooks_by_id"
+# PUT /webhooks/{id} — Read, replace or delete one inbound webhook.
+tui = "waived"
+reason = "inbound webhooks are automation configuration for the inbox; the TUI keeps the operator loop"
+
+[[route]]
+id = "delete_webhooks_by_id"
+# DELETE /webhooks/{id} — Read, replace or delete one inbound webhook.
+tui = "waived"
+reason = "inbound webhooks are automation configuration for the inbox; the TUI keeps the operator loop"
+
+[[route]]
+id = "post_webhooks_by_id_secret"
+# POST /webhooks/{id}/secret — Replace a webhook's signing secret and read the new one once.
+tui = "waived"
+reason = "inbound webhooks are automation configuration for the inbox; the TUI keeps the operator loop"
+
+[[route]]
+id = "get_webhooks_by_id_deliveries"
+# GET /webhooks/{id}/deliveries — A webhook's delivery log: dispatched, duplicate, rejected, rate limited.
+tui = "waived"
+reason = "inbound webhooks are automation configuration for the inbox; the TUI keeps the operator loop"
+
+[[route]]
 id = "post_inbox_events"
 # POST /inbox/events — Queue an event into a session's inbox lane, deduplicated by source id.
 tui = "waived"
@@ -1688,7 +1814,7 @@ reason = "Web Push subscribes a browser through its service worker; a terminal h
 
 [[route]]
 id = "post_notifications_read_all"
-# POST /notifications/read-all — Mark every unread notification without actions read.
+# POST /notifications/read-all — Mark every unread notification read.
 tui = "handled"
 module = "app/notifications.rs"
 
@@ -1706,7 +1832,7 @@ module = "app/notifications.rs"
 
 [[route]]
 id = "post_notifications_by_id_dismiss"
-# POST /notifications/{id}/dismiss — Dismiss a notification; refused for a blocking approval.
+# POST /notifications/{id}/dismiss — Dismiss a notification; one a run waits on needs confirm=true and expires.
 tui = "handled"
 module = "app/notifications.rs"
 
@@ -1997,6 +2123,16 @@ module = "app/notifications.rs"
 name = "event"
 tui = "waived"
 reason = "the TUI has no event log view; the list refresh carries status"
+
+[[ws_event]]
+name = "session_superseded"
+tui = "waived"
+reason = "the list refresh carries the new session and drops the archived one"
+
+[[ws_event]]
+name = "followup_failed"
+tui = "waived"
+reason = "follow-ups are started from the webui, which reports the failure"
 
 [[ws_event]]
 name = "heartbeat"

@@ -66,7 +66,7 @@
 		// Room = a field on the session: pick one (by id or by name) or clear it.
 		onsetroom,
 		onclearroom,
-		ownerItems = []
+		onthreadjump
 	}: {
 		session: SessionListItem;
 		archived: boolean;
@@ -117,7 +117,8 @@
 		onDeleteLabel?: (labelId: string) => void | Promise<void>;
 		onsetroom?: (sessionId: string, pick: { id: string } | { name: string }) => void;
 		onclearroom?: (sessionId: string) => void;
-		ownerItems?: MenuItem[];
+		/** Scrolls to a session of the shown thread; false when it is not in it. */
+		onthreadjump?: (sessionId: string) => boolean;
 	} = $props();
 
 	// Label picker is interactive only when an attach handler is wired in.
@@ -167,9 +168,9 @@
 	// One square per density for every control in the bar, so they share a
 	// height and a top edge whatever chrome or glyph they carry.
 	const box: 'sm' | 'md' = $derived(collapsed ? 'sm' : 'md');
-	// Popover-backed triggers (text size, ⋯) wear the chip chrome through the
-	// kit's published trigger properties; IconButton gets it from `chip`.
-	const CHIP_CHROME = '--pop-trigger-border: var(--border-strong); --pop-trigger-bg: var(--surface)';
+	// Popover-backed triggers (text size, ⋯) wear the chip chrome inline;
+	// IconButton gets it from `chip`.
+	const CHIP_CHROME = 'border-color: var(--border-strong); background: var(--surface)';
 
 	const overflowItems = $derived<MenuItem[]>([
 		...(collapsed
@@ -264,8 +265,7 @@
 					}
 				]
 			: []),
-		...(followupItem && !settings.preferFollowupOverFork ? [followupItem] : []),
-		...ownerItems
+		...(followupItem && !settings.preferFollowupOverFork ? [followupItem] : [])
 	]);
 
 	// Window-level so the chords work wherever focus sits, including the
@@ -435,7 +435,16 @@
 		</div>
 	{/if}
 	{#if !compact}
-		<HeaderMeta {session} {archived} {isCodexSession} {showStatusBadge} {box} {onsetmodel} {onfork} />
+		<HeaderMeta
+			{session}
+			{archived}
+			{isCodexSession}
+			{showStatusBadge}
+			{box}
+			{onsetmodel}
+			{onfork}
+			{onthreadjump}
+		/>
 	{/if}
 </div>
 
@@ -498,11 +507,9 @@
 		padding: var(--sp-1) var(--sp-2);
 	}
 	/* `chip` and `box` disagree in the kit: `.btn-chip:has(> svg:only-child)`
-	   takes its width from `--box-lg`, at a higher specificity than `.btn-box`
-	   takes its width from `--btn-box`, so a chip action renders `--box-lg`
-	   wide and `--btn-box` tall — 40x36, wider than the popover triggers that
-	   size themselves from `--pop-box`. Pinning `--box-lg` to the row's own box
-	   scale makes the kit's own rule produce the square `box` asks for. */
+	   takes its width from `--box-lg` and outranks `.btn-box-*`, so a chip
+	   action renders `--box-lg` wide and `box` tall. Pinning `--box-lg` to the
+	   row's box scale makes it the square `box` asks for. */
 	.dbar {
 		--box-lg: var(--box-md);
 	}

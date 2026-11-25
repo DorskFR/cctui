@@ -1,6 +1,6 @@
 <script lang="ts">
 	// Composer voice entry points: the mic dictates into the draft (tap to
-	// start, tap to send, or hold to talk), the toggle, shown only with
+	// start, tap to send, or hold while speaking to talk), the toggle, shown only with
 	// `ontogglelive`, talks with the session hands-free. While recording, a
 	// large stop target sits above the composer.
 	import { Button, IconButton, Toggle } from '@dorsk/tsumikit';
@@ -28,7 +28,7 @@
 		micId: settings.voice.micId,
 		language: settings.voice.language === 'auto' ? undefined : settings.voice.language
 	}));
-	const gesture = new TapHold();
+	const gesture = new TapHold(() => dictation.heard);
 	let recording = $state(false);
 	let busy = $state(false);
 	let startedAt = $state(0);
@@ -42,7 +42,7 @@
 
 	/** A long press must reach the gesture, not pan the page or open a menu. */
 	const micStyle = $derived(
-		`touch-action: none; user-select: none; -webkit-touch-callout: none;${recording ? ' --btn-on: var(--danger);' : ''}`
+		`touch-action: none; user-select: none; -webkit-touch-callout: none;${recording ? ' --accent: var(--danger);' : ''}`
 	);
 
 	const timer = $derived.by(() => {
@@ -111,6 +111,17 @@
 		dictation.cancel();
 	}
 
+	function capturePointer(e: PointerEvent): boolean {
+		const el = e.currentTarget;
+		if (!(el instanceof Element) || typeof el.setPointerCapture !== 'function') return false;
+		try {
+			el.setPointerCapture(e.pointerId);
+			return true;
+		} catch {
+			return false;
+		}
+	}
+
 	function onkey(e: KeyboardEvent) {
 		if (e.key !== 'Enter' && e.key !== ' ') return;
 		e.preventDefault();
@@ -132,11 +143,13 @@
 		oncontextmenu={(e: MouseEvent) => e.preventDefault()}
 		onpointerdown={(e: PointerEvent) => {
 			e.preventDefault();
-			if (armed()) act(gesture.down(Date.now()));
+			if (!armed()) return;
+			act(gesture.down(Date.now()));
+			if (capturePointer(e)) gesture.capture();
 		}}
 		onpointerup={() => act(gesture.up(Date.now()))}
 		onpointercancel={() => act(gesture.up(Date.now()))}
-		onpointerleave={() => act(gesture.up(Date.now()))}
+		onpointerleave={() => act(gesture.leave(Date.now()))}
 		onkeydown={onkey}
 	/>
 	{#if ontogglelive}

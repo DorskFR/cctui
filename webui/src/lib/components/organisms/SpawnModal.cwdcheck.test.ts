@@ -115,17 +115,27 @@ describe("SpawnModal working directory existence check", () => {
       throw new ApiError(404, "cannot resolve /nope: No such file or directory (os error 2)");
     });
     await open("/nope");
-    expect(machineDirs).toHaveBeenCalledWith("m-uuid-1", "/nope");
-    expect(text()).toContain(NOT_FOUND);
-    expect(spawnButton().disabled).toBe(true);
+    await vi.waitFor(
+      () => {
+        expect(machineDirs).toHaveBeenCalledWith("m-uuid-1", "/nope");
+        expect(text()).toContain(NOT_FOUND);
+        expect(spawnButton().disabled).toBe(true);
+      },
+      { timeout: 3000 },
+    );
   });
 
   it("enables Launch for a directory that exists", async () => {
     await open("/w");
-    expect(machineDirs).toHaveBeenCalledWith("m-uuid-1", "/w");
+    await vi.waitFor(
+      () => {
+        expect(machineDirs).toHaveBeenCalledWith("m-uuid-1", "/w");
+        expect(spawnButton().disabled).toBe(false);
+      },
+      { timeout: 3000 },
+    );
     expect(text()).not.toContain(NOT_FOUND);
     expect(text()).not.toContain(OFFLINE);
-    expect(spawnButton().disabled).toBe(false);
   });
 
   it("only warns, without blocking, when the machine is offline", async () => {

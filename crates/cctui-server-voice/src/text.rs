@@ -1,0 +1,631 @@
+//! Text shaping for speech: markdown stripping, sentence splitting, the
+//! spoken-style wrapper, and the WAV container the STT upstream expects.
+
+use cctui_proto::injected::SESSION_CONTEXT;
+use cctui_proto::voice::SpokenStyle;
+
+/// Longer sentences are cut at a space so one TTS request stays short.
+const MAX_SENTENCE_CHARS: usize = 300;
+/// Streamed sentences shorter than this wait to be spoken with the next one.
+const MIN_STREAMED_CHARS: usize = 40;
+/// Words whose trailing period does not end a sentence.
+const ABBREVIATIONS: [&str; 10] =
+    ["e.g", "i.e", "etc", "vs", "cf", "mr", "mrs", "ms", "dr", "approx"];
+pub const UTTERANCE_SAMPLE_RATE: u32 = 16_000;
+/// Lines of the agents' status protocol: shown in the reply, never spoken.
+const STATUS_PREFIXES: [&str; 3] = ["result:", "needs input:", "failed:"];
+
+fn is_status_line(line: &str) -> bool {
+    let plain: String = line.chars().filter(|&c| !matches!(c, '*' | '_' | '`')).collect();
+    let plain = plain.trim_start().to_ascii_lowercase();
+    STATUS_PREFIXES.iter().any(|p| plain.starts_with(p))
+}
+
+fn is_rule(line: &str) -> bool {
+    let t = line.trim();
+    t.len() >= 3 && t.chars().all(|c| c == '-' || c == '*' || c == '_' || c == ' ')
+}
+
+fn strip_inline(line: &str) -> String {
+    let mut out = String::with_capacity(line.len());
+    let mut rest = line;
+    while !rest.is_empty() {
+        if let Some(after) = rest.strip_prefix("![").or_else(|| rest.strip_prefix('['))
+            && let Some(close) = after.find("](")
+            && !after[..close].contains(']')
+            && let Some(end) = after[close..].find(')')
+        {
+            out.push_str(&after[..close]);
+            rest = &after[close + end + 1..];
+            continue;
+        }
+        if rest.starts_with("http://") || rest.starts_with("https://") {
+            let end = rest.find(char::is_whitespace).unwrap_or(rest.len());
+            rest = &rest[end..];
+            continue;
+        }
+        if let Some(after) = rest.strip_prefix('<')
+            && after.starts_with(|c: char| c.is_ascii_alphabetic() || c == '/')
+            && let Some(end) = after.find('>')
+        {
+            rest = &after[end + 1..];
+            continue;
+        }
+        let c = rest.chars().next().unwrap_or_default();
+        if matches!(c, '*' | '_' | '`' | '~') {
+            rest = &rest[c.len_utf8()..];
+            continue;
+        }
+        out.push(c);
+        rest = &rest[c.len_utf8()..];
+    }
+    out
+}
+
+fn strip_line_prefix(line: &str) -> &str {
+    let t = line.trim_start();
+    let t = t.trim_start_matches('#');
+    let t = t.trim_start_matches('>').trim_start();
+    let t = t
+        .strip_prefix("- ")
+        .or_else(|| t.strip_prefix("* "))
+        .or_else(|| t.strip_prefix("+ "))
+        .unwrap_or(t);
+    let digits = t.chars().take_while(char::is_ascii_digit).count();
+    if digits > 0
+        && let Some(after) =
+            t[digits..].strip_prefix(". ").or_else(|| t[digits..].strip_prefix(") "))
+    {
+        return after;
+    }
+    t.strip_prefix("[ ] ").or_else(|| t.strip_prefix("[x] ")).unwrap_or(t)
+}
+
+/// Prose only: fenced code, tables, rules and link targets are dropped,
+/// emphasis and list/heading markers are unwrapped.
+///
+/// Paragraph breaks become newlines so the splitter treats them as sentence
+/// ends.
+#[must_use]
+pub fn strip_markdown(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut in_fence = false;
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+            in_fence = !in_fence;
+            continue;
+        }
+        if in_fence || trimmed.starts_with('|') || is_rule(trimmed) {
+            continue;
+        }
+        if trimmed.is_empty() {
+            if !out.ends_with('\n') && !out.is_empty() {
+                out.push('\n');
+            }
+            continue;
+        }
+        let body = strip_line_prefix(line);
+        let block = body.len() != line.trim_start().len();
+        let plain = strip_inline(body).split_whitespace().collect::<Vec<_>>().join(" ");
+        if plain.is_empty() {
+            continue;
+        }
+        if !out.is_empty() && !out.ends_with('\n') {
+            out.push(' ');
+        }
+        out.push_str(&plain);
+        if block {
+            out.push('\n');
+        }
+    }
+    out.trim().to_owned()
+}
+
+fn is_abbreviation(text: &str, dot: usize) -> bool {
+    let word = text[..dot].rsplit(|c: char| c.is_whitespace() || c == '(').next().unwrap_or("");
+    ABBREVIATIONS.iter().any(|a| word.eq_ignore_ascii_case(a))
+}
+
+/// Byte offset just past the first sentence end in `text`, if one is complete:
+/// terminal punctuation (plus closing quotes or emphasis) followed by
+/// whitespace, or a newline.
+fn sentence_end(text: &str) -> Option<usize> {
+    let mut chars = text.char_indices().peekable();
+    while let Some((i, c)) = chars.next() {
+        if c == '\n' {
+            return Some(i + 1);
+        }
+        if !matches!(c, '.' | '!' | '?' | '…') || (c == '.' && is_abbreviation(text, i)) {
+            continue;
+        }
+        let mut end = i + c.len_utf8();
+        while let Some(&(j, n)) = chars.peek() {
+            if !matches!(n, '.' | '!' | '?' | '…' | '"' | '\'' | ')' | '*' | '_' | '”' | '’')
+            {
+                break;
+            }
+            end = j + n.len_utf8();
+            chars.next();
+        }
+        match chars.peek() {
+            Some(&(_, n)) if n.is_whitespace() => return Some(end),
+            Some(_) => {}
+            None => return None,
+        }
+    }
+    None
+}
+
+fn cut_long(sentence: &str, out: &mut Vec<String>) {
+    let mut rest = sentence.trim();
+    while rest.chars().count() > MAX_SENTENCE_CHARS {
+        let limit = rest.char_indices().nth(MAX_SENTENCE_CHARS).map_or(rest.len(), |(i, _)| i);
+        let head = &rest[..limit];
+        let cut =
+            head.rfind([',', ';', ':']).map(|i| i + 1).or_else(|| head.rfind(' ')).unwrap_or(limit);
+        let (a, b) = rest.split_at(cut);
+        if !a.trim().is_empty() {
+            out.push(a.trim().to_owned());
+        }
+        rest = b.trim();
+    }
+    if !rest.is_empty() {
+        out.push(rest.to_owned());
+    }
+}
+
+/// Sentences of plain text, in order, each short enough for one TTS call.
+#[must_use]
+pub fn split_sentences(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut rest = text;
+    while let Some(end) = sentence_end(rest) {
+        cut_long(&rest[..end], &mut out);
+        rest = &rest[end..];
+    }
+    cut_long(rest, &mut out);
+    out
+}
+
+fn ends_a_clause(text: &str) -> bool {
+    let core = text.trim_end_matches(['"', '\'', ')', '*', '_', '”', '’']);
+    core.ends_with(['.', '!', '?', '…', ',', ';', ':'])
+        && !(core.ends_with('.') && is_abbreviation(core, core.len() - 1))
+}
+
+/// `text` ends in a separator the next delta may continue: "3." of "3.5",
+/// "1," of "1,000".
+fn ends_mid_number(text: &str) -> bool {
+    let mut tail = text.chars().rev();
+    matches!(tail.next(), Some('.' | ',')) && tail.next().is_some_and(|c| c.is_ascii_digit())
+}
+
+/// How much of a paused stream's `text` can be spoken without cutting a word:
+/// up to its last sentence or clause end or newline, else up to its last
+/// space when the run is too long for one TTS request.
+fn pause_cut(text: &str) -> usize {
+    let trimmed = text.trim_end();
+    let open = trimmed.len() == text.len() && ends_mid_number(text);
+    if (ends_a_clause(trimmed) && !open) || text[trimmed.len()..].contains('\n') {
+        return text.len();
+    }
+    let boundary = text
+        .char_indices()
+        .rev()
+        .find(|&(i, c)| c == '\n' || (c.is_whitespace() && ends_a_clause(&text[..i])))
+        .map(|(i, c)| i + c.len_utf8());
+    match boundary {
+        Some(end) => end,
+        None if text.chars().count() > MAX_SENTENCE_CHARS => {
+            text.rfind(char::is_whitespace).unwrap_or(0)
+        }
+        None => 0,
+    }
+}
+
+fn fences_closed(text: &str) -> bool {
+    ["```", "~~~"].into_iter().all(|m| text.matches(m).count() % 2 == 0)
+}
+
+/// Accumulates streamed markdown and yields sentences as they complete, so
+/// speech can start before the block ends.
+///
+/// Text inside an open code fence is held back until the fence closes, and
+/// a sentence under [`MIN_STREAMED_CHARS`] waits for the next one.
+#[derive(Debug, Default)]
+pub struct SentenceBuffer {
+    raw: String,
+    /// Complete sentences too short to speak alone yet.
+    held: String,
+    /// The text taken so far stopped inside a line.
+    mid_line: bool,
+    /// That line is a status line.
+    in_status: bool,
+}
+
+impl SentenceBuffer {
+    pub fn push(&mut self, delta: &str) {
+        self.raw.push_str(delta);
+    }
+
+    #[cfg(test)]
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.raw.trim().is_empty() && self.held.is_empty()
+    }
+
+    /// `text` without its status lines, continuing the line the last call
+    /// stopped in.
+    fn without_status(&mut self, text: &str) -> String {
+        let mut out = String::with_capacity(text.len());
+        for line in text.split_inclusive('\n') {
+            if !self.mid_line {
+                self.in_status = is_status_line(line);
+            }
+            self.mid_line = !line.ends_with('\n');
+            if !self.in_status {
+                out.push_str(line);
+            }
+        }
+        out
+    }
+
+    /// Where an open code fence starts, or the end of the buffer.
+    fn scan_end(&self) -> usize {
+        ["```", "~~~"]
+            .into_iter()
+            .filter(|m| self.raw.matches(m).count() % 2 == 1)
+            .filter_map(|m| self.raw.rfind(m))
+            .min()
+            .unwrap_or(self.raw.len())
+    }
+
+    /// Text a [`Self::pause`] would speak.
+    #[must_use]
+    pub fn has_pending(&self) -> bool {
+        !self.held.is_empty() || !self.raw[..self.pause_end()].trim().is_empty()
+    }
+
+    fn pause_end(&self) -> usize {
+        pause_cut(&self.raw[..self.scan_end()])
+    }
+
+    /// Every sentence that is complete so far; the tail stays buffered.
+    pub fn drain(&mut self) -> Vec<String> {
+        let scan_end = self.scan_end();
+        let (mut at, mut cut) = (0, 0);
+        while let Some(end) = sentence_end(&self.raw[at..scan_end]) {
+            at += end;
+            if fences_closed(&self.raw[..at]) {
+                cut = at;
+            }
+        }
+        let head: String = self.raw.drain(..cut).collect();
+        let head = self.without_status(&head);
+        let mut out = Vec::new();
+        for sentence in split_sentences(&strip_markdown(&head)) {
+            if !self.held.is_empty() {
+                self.held.push(' ');
+            }
+            self.held.push_str(&sentence);
+            if self.held.chars().count() >= MIN_STREAMED_CHARS {
+                out.push(std::mem::take(&mut self.held));
+            }
+        }
+        out
+    }
+
+    /// Everything buffered outside an open code fence up to its last clause
+    /// end: the stream paused, and an unfinished word or clause waits for
+    /// more text or the turn end.
+    pub fn pause(&mut self) -> Vec<String> {
+        let head: String = self.raw.drain(..self.pause_end()).collect();
+        let head = self.without_status(&head);
+        self.after_held(split_sentences(&strip_markdown(&head)))
+    }
+
+    /// Everything buffered, complete or not.
+    pub fn flush(&mut self) -> Vec<String> {
+        let raw = std::mem::take(&mut self.raw);
+        let raw = self.without_status(&raw);
+        self.mid_line = false;
+        self.in_status = false;
+        self.after_held(split_sentences(&strip_markdown(&raw)))
+    }
+
+    fn after_held(&mut self, sentences: Vec<String>) -> Vec<String> {
+        let held = std::mem::take(&mut self.held);
+        if held.is_empty() {
+            return sentences;
+        }
+        std::iter::once(held).chain(sentences).collect()
+    }
+
+    pub fn clear(&mut self) {
+        self.raw.clear();
+        self.held.clear();
+        self.mid_line = false;
+        self.in_status = false;
+    }
+}
+
+const fn style_words(style: SpokenStyle) -> &'static str {
+    match style {
+        SpokenStyle::Brief => "one to three short sentences",
+        SpokenStyle::Normal => "a few short sentences",
+        SpokenStyle::Verbose => "as much detail as needed, in short spoken sentences",
+    }
+}
+
+/// The message the session receives for a spoken utterance: the transcript
+/// behind a session-context block that asks for a reply fit to be read aloud.
+#[must_use]
+pub fn spoken_prompt(transcript: &str, style: Option<SpokenStyle>) -> String {
+    let body = style.map_or_else(
+        || "The user spoke this message aloud.".to_owned(),
+        |s| {
+            format!(
+                "The user spoke this message aloud and will hear your reply through \
+                 text-to-speech. Answer in {}: plain conversational prose, no markdown, \
+                 no headings, no lists, no tables, no code.",
+                style_words(s)
+            )
+        },
+    );
+    format!("<{SESSION_CONTEXT} voice=\"spoken\">\n{body}\n</{SESSION_CONTEXT}>\n\n{transcript}")
+}
+
+/// A 16-bit little-endian mono PCM buffer in a RIFF/WAVE container.
+#[must_use]
+pub fn pcm16_to_wav(pcm: &[u8], sample_rate: u32) -> Vec<u8> {
+    let data_len = u32::try_from(pcm.len()).unwrap_or(u32::MAX);
+    let mut out = Vec::with_capacity(44 + pcm.len());
+    out.extend_from_slice(b"RIFF");
+    out.extend_from_slice(&(36 + data_len).to_le_bytes());
+    out.extend_from_slice(b"WAVEfmt ");
+    out.extend_from_slice(&16u32.to_le_bytes());
+    out.extend_from_slice(&1u16.to_le_bytes());
+    out.extend_from_slice(&1u16.to_le_bytes());
+    out.extend_from_slice(&sample_rate.to_le_bytes());
+    out.extend_from_slice(&(sample_rate * 2).to_le_bytes());
+    out.extend_from_slice(&2u16.to_le_bytes());
+    out.extend_from_slice(&16u16.to_le_bytes());
+    out.extend_from_slice(b"data");
+    out.extend_from_slice(&data_len.to_le_bytes());
+    out.extend_from_slice(pcm);
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn markdown_is_reduced_to_prose() {
+        let md = "# Title\n\nSome **bold** and _em_ with `code` and a [link](https://x.y/z).\n\n\
+                  ```rust\nfn main() {}\n```\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\n\
+                  - first item\n- second item\n\n---\n\n1. one\n2. two\n\nSee https://example.com now.";
+        let plain = strip_markdown(md);
+        assert_eq!(
+            plain,
+            "Title\nSome bold and em with code and a link.\nfirst item\nsecond item\none\ntwo\nSee now."
+        );
+    }
+
+    #[test]
+    fn html_tags_and_quotes_are_unwrapped() {
+        assert_eq!(strip_markdown("> quoted <b>bold</b> text"), "quoted bold text");
+        assert_eq!(strip_markdown("a < b and c > d"), "a < b and c > d");
+    }
+
+    #[test]
+    fn sentences_split_on_terminal_punctuation_and_newlines() {
+        assert_eq!(
+            split_sentences("Hello there! How are you? Fine. Version 3.5 works.\nNext line"),
+            vec!["Hello there!", "How are you?", "Fine.", "Version 3.5 works.", "Next line"]
+        );
+        assert_eq!(
+            split_sentences("She said \"go.\" Then left…  Done"),
+            vec!["She said \"go.\"", "Then left…", "Done"]
+        );
+        assert!(split_sentences("   \n\n ").is_empty());
+    }
+
+    #[test]
+    fn long_sentences_are_cut_at_a_clause() {
+        let long = format!("{}, and then more words follow here.", "word ".repeat(70).trim());
+        let parts = split_sentences(&long);
+        assert!(parts.len() >= 2, "{parts:?}");
+        assert!(parts.iter().all(|p| p.chars().count() <= MAX_SENTENCE_CHARS));
+        assert_eq!(parts.concat().replace(' ', ""), long.replace(' ', ""));
+    }
+
+    const LONG_A: &str = "The first sentence is long enough to speak.";
+    const LONG_B: &str = "The second one is also long enough to go.";
+
+    #[test]
+    fn buffer_yields_complete_sentences_and_holds_open_fences() {
+        let mut buf = SentenceBuffer::default();
+        buf.push(&format!("{LONG_A} Sec"));
+        assert_eq!(buf.drain(), vec![LONG_A]);
+        buf.push("ond one is also long enough to go now! ```rust\nlet x = 1. ");
+        assert_eq!(buf.drain(), vec!["Second one is also long enough to go now!"]);
+        buf.push(&format!("\n```\n{LONG_B} tail"));
+        assert_eq!(buf.drain(), vec![LONG_B]);
+        assert_eq!(buf.flush(), vec!["tail"]);
+        assert!(buf.is_empty());
+    }
+
+    #[test]
+    fn buffer_holds_open_tilde_fences() {
+        let mut buf = SentenceBuffer::default();
+        buf.push(&format!("{LONG_A}\n~~~\ncode line one.\n"));
+        assert_eq!(buf.drain(), vec![LONG_A]);
+        buf.push(&format!("more code.\n~~~\n{LONG_B} tail"));
+        assert_eq!(buf.drain(), vec![LONG_B]);
+    }
+
+    #[test]
+    fn a_fence_closer_streamed_without_its_newline_still_closes() {
+        let mut buf = SentenceBuffer::default();
+        buf.push(&format!("{LONG_A}\n```\ncode line.\n```"));
+        assert_eq!(buf.drain(), vec![LONG_A]);
+        buf.push(&format!("\n{LONG_B} tail"));
+        assert_eq!(buf.drain(), vec![LONG_B]);
+        assert_eq!(buf.flush(), vec!["tail"]);
+    }
+
+    #[test]
+    fn short_streamed_sentences_wait_for_the_next_one() {
+        let mut buf = SentenceBuffer::default();
+        buf.push("Sure. Okay. ");
+        assert!(buf.drain().is_empty());
+        assert!(buf.has_pending());
+        buf.push(&format!("{LONG_A} Done. "));
+        assert_eq!(buf.drain(), vec![format!("Sure. Okay. {LONG_A}")]);
+        assert_eq!(buf.flush(), vec!["Done."]);
+    }
+
+    #[test]
+    fn abbreviations_and_decimals_do_not_end_a_sentence() {
+        assert_eq!(
+            split_sentences("Use a tool, e.g. a hammer. Or i.e. this one vs. that. Done"),
+            vec!["Use a tool, e.g. a hammer.", "Or i.e. this one vs. that.", "Done"]
+        );
+        let mut buf = SentenceBuffer::default();
+        buf.push("Version 3.");
+        assert!(buf.drain().is_empty());
+        buf.push("5 shipped with a few fixes, e.g. ");
+        assert!(buf.drain().is_empty());
+        buf.push("the voice one. Next");
+        assert_eq!(buf.drain(), vec!["Version 3.5 shipped with a few fixes, e.g. the voice one."]);
+    }
+
+    #[test]
+    fn a_pause_speaks_the_tail_but_not_an_open_fence() {
+        let mut buf = SentenceBuffer::default();
+        buf.push("Short. And a half");
+        assert!(buf.drain().is_empty());
+        assert_eq!(buf.pause(), vec!["Short."]);
+        assert!(!buf.has_pending(), "an unfinished clause waits");
+        assert_eq!(buf.flush(), vec!["And a half"]);
+        buf.push("See https://example.com/x for it:\n```sh\nrm -rf build.\n");
+        assert_eq!(buf.pause(), vec!["See for it:"]);
+        assert!(!buf.has_pending(), "an open fence is not pending speech");
+        buf.push("```\nAfter the code.");
+        assert_eq!(buf.pause(), vec!["After the code."]);
+    }
+
+    #[test]
+    fn a_pause_never_cuts_a_word() {
+        let mut buf = SentenceBuffer::default();
+        buf.push("Bl");
+        assert!(buf.drain().is_empty());
+        assert!(!buf.has_pending());
+        assert!(buf.pause().is_empty());
+        buf.push("ue.");
+        assert!(buf.drain().is_empty());
+        assert!(buf.has_pending());
+        assert_eq!(buf.pause(), vec!["Blue."]);
+        assert!(buf.flush().is_empty());
+
+        buf.push("A");
+        assert!(buf.pause().is_empty());
+        buf.push(" fox");
+        assert!(buf.pause().is_empty());
+        assert_eq!(buf.flush(), vec!["A fox"]);
+    }
+
+    #[test]
+    fn a_pause_cuts_at_the_last_clause_end() {
+        let mut buf = SentenceBuffer::default();
+        buf.push("First, you open the fi");
+        assert_eq!(buf.pause(), vec!["First,"]);
+        buf.push("le and save it. Then");
+        assert_eq!(buf.pause(), vec!["you open the file and save it."]);
+        buf.push(" done\n");
+        assert_eq!(buf.pause(), vec!["Then done"]);
+    }
+
+    #[test]
+    fn a_pause_holds_a_number_or_abbreviation_the_next_delta_may_continue() {
+        let mut buf = SentenceBuffer::default();
+        buf.push("Done. Version 3.");
+        assert_eq!(buf.pause(), vec!["Done."]);
+        buf.push("5 shipped.");
+        assert_eq!(buf.pause(), vec!["Version 3.5 shipped."]);
+        buf.push("Use a tool, e.g. a hamm");
+        assert_eq!(buf.pause(), vec!["Use a tool,"]);
+        buf.push("er.");
+        assert_eq!(buf.pause(), vec!["e.g. a hammer."]);
+        buf.push("It costs 1,");
+        assert!(buf.pause().is_empty());
+        buf.push("000 now. ");
+        assert_eq!(buf.pause(), vec!["It costs 1,000 now."]);
+    }
+
+    #[test]
+    fn a_long_pause_without_a_clause_end_cuts_at_a_space() {
+        let words = "word ".repeat(70);
+        let mut buf = SentenceBuffer::default();
+        buf.push(&format!("{words}unfini"));
+        let spoken = buf.pause();
+        assert_eq!(spoken.concat().replace(' ', ""), words.replace(' ', ""));
+        buf.push("shed.");
+        assert_eq!(buf.pause(), vec!["unfinished."]);
+    }
+
+    #[test]
+    fn a_bracket_before_a_link_is_kept_as_text() {
+        assert_eq!(strip_markdown("a[0] and [x](u) done"), "a[0] and x done");
+    }
+
+    #[test]
+    fn status_lines_are_never_spoken() {
+        let mut buf = SentenceBuffer::default();
+        buf.push(&format!("{LONG_A}\n\nresult: Explained it. In two"));
+        assert_eq!(buf.drain(), vec![LONG_A]);
+        buf.push(&format!(
+            " sentences.\n  **Needs input:** a token.\n{LONG_B}\n_FAILED:_ no.\nBye"
+        ));
+        assert_eq!(buf.drain(), vec![LONG_B]);
+        assert_eq!(buf.flush(), vec!["Bye"]);
+        buf.push("The result: is spoken mid-line.\nresult: but not here");
+        assert_eq!(buf.flush(), vec!["The result: is spoken mid-line."]);
+        buf.push("Next block.");
+        assert_eq!(buf.flush(), vec!["Next block."]);
+    }
+
+    #[test]
+    fn buffer_treats_bold_closers_as_part_of_the_sentence() {
+        let mut buf = SentenceBuffer::default();
+        buf.push("**Done, and the whole build is green again.** Next");
+        assert_eq!(buf.drain(), vec!["Done, and the whole build is green again."]);
+        assert_eq!(buf.flush(), vec!["Next"]);
+    }
+
+    #[test]
+    fn spoken_prompt_wraps_the_transcript() {
+        let p = spoken_prompt("what time is it", Some(SpokenStyle::Brief));
+        assert!(p.starts_with("<cctui-session-context voice=\"spoken\">\n"));
+        assert!(p.contains("one to three short sentences"));
+        assert!(p.ends_with("</cctui-session-context>\n\nwhat time is it"));
+        let bare = spoken_prompt("hi", None);
+        assert!(!bare.contains("text-to-speech"));
+        assert!(bare.ends_with("\n\nhi"));
+        assert!(cctui_proto::injected::is_spoken_prompt(&p));
+        assert!(cctui_proto::injected::is_spoken_prompt(&bare));
+    }
+
+    #[test]
+    fn wav_header_describes_mono_16bit() {
+        let wav = pcm16_to_wav(&[1, 0, 2, 0], 16_000);
+        assert_eq!(wav.len(), 48);
+        assert_eq!(&wav[..4], b"RIFF");
+        assert_eq!(&wav[8..16], b"WAVEfmt ");
+        assert_eq!(u32::from_le_bytes(wav[24..28].try_into().unwrap()), 16_000);
+        assert_eq!(u16::from_le_bytes(wav[34..36].try_into().unwrap()), 16);
+        assert_eq!(u32::from_le_bytes(wav[40..44].try_into().unwrap()), 4);
+    }
+}

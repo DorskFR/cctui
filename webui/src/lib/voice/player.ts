@@ -51,6 +51,7 @@ export class SpeechPlayer {
 	private current: AudioLike | null = null;
 	private currentUrl: string | null = null;
 	private unlocked = false;
+	private held = false;
 	private readonly idleListeners = new Set<(idle: boolean) => void>();
 	private readonly opts: PlayerOptions;
 
@@ -95,7 +96,13 @@ export class SpeechPlayer {
 		this.open = null;
 		if (!line || line.lineId !== lineId || !line.chunks.length) return;
 		this.queue.push(new Blob(line.chunks as BlobPart[], { type: this.opts.mime() }));
-		if (!this.current) this.next();
+		if (!this.current && !this.held) this.next();
+	}
+
+	/** Held lines queue up without starting; what already plays goes on. */
+	hold(on: boolean) {
+		this.held = on;
+		if (!on && !this.current && this.queue.length) this.next();
 	}
 
 	/** Drop everything queued and stop what is playing. */
@@ -110,7 +117,7 @@ export class SpeechPlayer {
 	}
 
 	private next() {
-		const blob = this.queue.shift();
+		const blob = this.held ? undefined : this.queue.shift();
 		if (!blob) {
 			this.current = null;
 			this.releaseUrl();

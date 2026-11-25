@@ -5,7 +5,7 @@ contract, deterministic probes, oracle, sink, and the T1 docker job) are
 done. Phase 3 (canaries, DNS sink, generated targets, the T2 nightly and its
 release gate script) and Phase 4 (adversarial agents, injection fixtures,
 judge, budgets and T3) are implemented; their first live runs are pending.
-Phase 5 (webui reporting) is pending.
+Phase 5 (webui reporting) is done.
 
 ## Goal
 
@@ -182,9 +182,11 @@ crates/cctui-redteam runner: the probe contract and oracle, the sink listener
                      (its `sink` subcommand), and `judge`, which fuses probe
                      output with sink hits and writes
                      .qa/redteam/<run>/report.{json,md}; `dns-sink`; and `t2`
-                     (plan, targets, judge) for live-deployment runs.
+                     (plan, targets, judge) for live-deployment runs; `publish`
+                     posts each T2/T3 result to the server.
   ci/                the T1 docker orchestration (run-t1.sh + worker-harness.sh)
-                     and T2 (run-t2.sh, t2-hook.sh, t2-sweep.sh, t2.example.json)
+                     and T2 (run-t2.sh, t2-hook.sh, t2-sweep.sh, t2.example.json);
+                     run-report.fixture.json pins the posted result shape
 ```
 
 Probes are mounted as an `/opt/worker-entrypoint.d/` hook. They run after the
@@ -224,8 +226,8 @@ merges. The probe fails first and passes with the fix.
 1. **Invariant tests (T0)** — *done*. Each Phase-1 finding landed with its
    in-process unit test; the surviving invariants are covered by the existing
    suites in `cctui-guard-proxy`, `cctui-supervisor`, `cctui-proto`
-   (`worker_env`), `cctui-daemon` (`agenttool`, `harden`), `cctui-server-core`
-   (`auth`, dispatch identity) and `cctui-orchestrator` (`validate`).
+   (`worker_env`), `cctui-daemon` (`agenttool`, `harden`), `cctui-server-kernel`
+   (`auth`), `cctui-server-dispatch` (dispatch identity) and `cctui-orchestrator` (`validate`).
 2. **Probe harness and T1** — *done*. The probe contract (`redteam/probes/`),
    the oracle and sink (`crates/cctui-redteam`), and the docker job
    (`.github/workflows/redteam.yml`, driving `redteam/ci/run-t1.sh`). A ratchet
@@ -249,8 +251,18 @@ merges. The probe fails first and passes with the fix.
    claude-code and opencode only: OpenAI models refuse them at the provider
    layer, so the codex lane runs the INJ and JUDGE scenarios, and a refusal is
    recorded as `refused`.
-5. **Reporting**: a matrix view in the webui; `escaped` results filed
-   automatically to a private tracker.
+5. **Reporting** — *done*. At the end of a run, `t2 judge` and `t3 run` post
+   a result record to `POST /api/v1/redteam/runs` with the run's own key
+   (dispatch scope): version, tier, T3 lane and model, verdict per cell and
+   per probe, sink-hit counts, run notes, timestamps and the CI run link. The
+   record carries no probe detail, sink peer or canary token. A refused post
+   is logged (a warning annotation in CI) and leaves the run's exit code
+   alone. The server keeps the newest 200 runs per tier and lane, bounds a
+   record to 256 KiB, and serves `GET /api/v1/admin/redteam` (admin only,
+   `observability` feature): the latest T2 run and the latest T3 run per lane
+   for each recently reported version. Settings → Instance → Red-team results
+   shows them, escaped probes first. Escapes are not filed to a tracker
+   automatically; an operator files them from that view.
 
 ## Non-goals
 

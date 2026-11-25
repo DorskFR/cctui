@@ -9,4 +9,8 @@ actions: JsonValue,
 /**
  * `pending` | `delivered` | `read` | `acted` | `resolved` | `expired`.
  */
-state: string, repeat_count: number, decision: string | null, decision_note: string | null, acted_channel: string | null, acted_by: string | null, resolved_reason: string | null, created_at: string, updated_at: string, read_at: string | null, acted_at: string | null, resolved_at: string | null, expires_at: string | null, };
+state: string, repeat_count: number, decision: string | null, decision_note: string | null, acted_channel: string | null, acted_by: string | null, resolved_reason: string | null, created_at: string, updated_at: string, read_at: string | null, acted_at: string | null, resolved_at: string | null, expires_at: string | null, 
+/**
+ * The `stream_events` id of the message that raised it.
+ */
+anchor_seq?: number | null, };

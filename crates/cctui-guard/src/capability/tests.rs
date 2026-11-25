@@ -147,7 +147,10 @@ fn golden_grant_list_compiles_to_policy_json() {
     let reg = registry(&[(TICKET_REGISTRY, "--capabilities")]);
     let _engine = engine_for(&dir, GRANT_PROMPT, &reg);
     let written = std::fs::read_to_string(dir.path().join("policy.json")).unwrap();
-    assert_eq!(written, GOLDEN_POLICY);
+    let mut doc: serde_json::Value = serde_json::from_str(&written).unwrap();
+    let generation = doc.as_object_mut().unwrap().remove("generation");
+    assert!(generation.and_then(|g| g.as_u64()).is_some_and(|g| g > 0), "{written}");
+    assert_eq!(serde_json::to_string_pretty(&doc).unwrap(), GOLDEN_POLICY);
 }
 
 #[test]

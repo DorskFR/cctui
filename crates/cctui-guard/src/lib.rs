@@ -15,6 +15,7 @@ pub mod exec;
 pub mod ir;
 pub mod lint;
 pub mod parser;
+pub mod proxy_sync;
 pub mod resolve;
 pub mod rules;
 pub mod server;

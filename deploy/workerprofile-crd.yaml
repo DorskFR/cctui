@@ -1624,9 +1624,10 @@ spec:
               exposure:
                 description: |-
                   Rule of Two exposure of the agent this profile runs. An unattended agent
-                  holding all three needs a [`human_gate`](Self::human_gate); admission
-                  refuses the profile's pods otherwise. Unset admits with an "exposure
-                  undeclared" warning.
+                  holding all three needs a [`human_gate`](Self::human_gate) when the
+                  orchestrator requires one (`CCTUI_ORCH_REQUIRE_HUMAN_GATE`); admission
+                  then refuses the profile's pods otherwise. Unset admits with an
+                  "exposure undeclared" warning.
                 nullable: true
                 properties:
                   outward:
@@ -1963,18 +1964,25 @@ spec:
                       type: object
                     nullable: true
                     type: array
+                  placement:
+                    description: |-
+                      `sidecar` (unset) runs the guard-proxy beside the worker behind
+                      `net-init`; `pod` runs it as a per-dispatch pod the worker reaches
+                      through a Service, with no `net-init` and no `NET_ADMIN`. `pod` needs
+                      `posture: nonroot`.
+                    enum:
+                    - sidecar
+                    - pod
+                    - null
+                    nullable: true
+                    type: string
                 type: object
               humanGate:
                 description: |-
                   The human step that bounds this profile's outward actions: `noPush`
                   (the worker cannot push), `draftPrOnly` (it only opens draft PRs a human
-                  promotes) or `outwardHeldForApproval` (outward writes wait for a human
-                  approval).
-                enum:
-                - noPush
-                - draftPrOnly
-                - outwardHeldForApproval
-                - null
+                  promotes), `outwardHeldForApproval` (outward writes wait for a human
+                  approval) or a gate the operator's guard rules define.
                 nullable: true
                 type: string
               image:

@@ -3,6 +3,9 @@ name = "cctui-clientcore"
 version.workspace = true
 edition.workspace = true
 
+[lib]
+doctest = false
+
 [lints]
 workspace = true
 

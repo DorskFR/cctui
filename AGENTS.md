@@ -12,10 +12,43 @@ that you are blocked.
 
 ## Repo layout
 
-- `crates/cctui-server` — the full distribution's binary entry point.
-- `crates/cctui-server-workspace` — the interactive HTTP/WebSocket handlers,
-  application state, workspace storage and full-host assembly.
-- `crates/cctui-server-core` — shared execution services and persistence.
+- `crates/cctui-server` — the server host and binary: application state
+  (`AppState`, `CoreState`), every domain context implementation, route tables,
+  the daemon peer transport, the `workspace` schema stream, full-host assembly
+  and the cross-domain contract tests.
+- `crates/cctui-server-dispatch` — dispatchers, dispatch records and policy,
+  worker identity, machine launches, child sessions and their limits, execution
+  targets and their routes; reaches the host through `DispatchCore` and the
+  `hooks` traits, depends only on the kernel.
+- `crates/cctui-server-accounts` — identity, provider accounts, credentials,
+  usage, passkeys and the provider gateway with their routes; reaches the host
+  through `AccountsHost`, depends only on the kernel.
+- `crates/cctui-server-kernel` — foundations every server crate shares (bus,
+  auth/authz, config, errors, schema runner, lifecycle events, session registry,
+  pending commands, shared stores, peer delivery and rate limits, the `core`
+  schema stream and the shared account, session, presence and notification types); depends on
+  no other server crate.
+- `crates/cctui-server-search` — transcript search index, backfill and its
+  `workspace_search` schema stream; depends only on the kernel.
+- `crates/cctui-server-blobs` — content-addressed blob store, its HTTP routes,
+  image externalization and the blob/image backfills; depends only on the kernel.
+- `crates/cctui-server-voice` — live voice socket, `/voice/*` routes and the
+  speech client; reaches sessions through `VoiceContext`, depends only on the kernel.
+- `crates/cctui-server-extras` — Langfuse tracing, storage stats and lifecycle,
+  plugins (registry, archives, catalog, settings, host tokens, store, proxy and
+  routes), skills, previews, WS presence, rooms and the cctuiverse federation
+  with peer messaging; reaches the host through `ExtrasContext` and its `hooks`
+  traits (sessions, blobs), depends only on the kernel.
+- `crates/cctui-server-notify` — notifications (store, routing, channels: in-app,
+  ntfy, email, Web Push; producers, expiry, retention), their routes and the
+  session user-action list; reaches the host through `NotifyContext` and its
+  `hooks` traits (sessions, dispatch), depends only on the kernel.
+- `crates/cctui-server-sessions` — sessions: daemon transport and ingest,
+  lifecycle, spawn and child sessions, follow-ups, keep-alive, presets, the
+  inbox and scheduled messages, hooks, context, settings and the session
+  routes; reaches the host through `SessionsContext` and its `ports` traits
+  (accounts, blobs, dispatch, extras, notify, search, host), depends only on
+  the kernel.
 - `crates/cctui-daemon` — long-lived per-machine daemon that spawns/observes sessions.
 - `crates/cctui-admin`, `crates/cctui-proto` — share the workspace version.
 - `crates/cctui-tui` — the terminal client (`cctui`). Maintained; see
@@ -176,7 +209,7 @@ it runs the operator's own command, verifies the served version, and rolls back
 on failure. No model, no account, the same bytes every release. The contract and
 per-platform recipes live in [docs/update-hook.md](./docs/update-hook.md); the
 code is `crates/cctui-daemon/src/updatehook.rs` and
-`crates/cctui-server-workspace/src/routes/update_hook.rs`.
+`crates/cctui-server/src/routes/update_hook.rs`.
 
 Don't teach the server how any deployment updates. There are as many answers as
 there are installations, and the operator already knows theirs.
@@ -192,7 +225,7 @@ it must **never run on a small model**:
   variant.
 
 The floor lives in `launch_profile()` in
-`crates/cctui-server-workspace/src/routes/self_update.rs`. **Raise it whenever a newer
+`crates/cctui-server/src/routes/self_update.rs`. **Raise it whenever a newer
 generation replaces those names** — treat it as part of any model-catalog bump,
 and never lower it to save cost.
 

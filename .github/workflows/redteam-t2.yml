@@ -72,6 +72,7 @@ jobs:
           REDTEAM_BIN: ${{ github.workspace }}/target/debug/cctui-redteam
           REDTEAM_T2_EXPECT_VERSION: ${{ inputs.expect_version }}
           REDTEAM_T2_KEEP_DIR: ${{ vars.REDTEAM_T2_KEEP_DIR }}
+          REDTEAM_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: bash redteam/ci/run-t2.sh "$RUNNER_TEMP/redteam-t2"
 
       - name: Name the gate record by version

@@ -18,7 +18,7 @@ use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use cctui_proto::api::context::{
     ContextMatch, ContextToolEntry, ContextToolRequest, ContextToolResponse,
@@ -35,6 +35,7 @@ use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, DuplexStream, Lines};
 use tokio::net::UnixStream;
 use tokio::sync::oneshot;
+use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
 use crate::childwatch::{Assessment, WatchHandle, snippet};
@@ -273,6 +274,12 @@ fn parse_peer_history(args: &Value) -> Result<CallKind, String> {
     }
     if let Some(format) = string_arg(args, "format") {
         query.push(("format", format.to_ascii_lowercase()));
+    }
+    if args.get("thread").and_then(Value::as_bool) == Some(true) {
+        query.push(("thread", "1".to_owned()));
+        if let Some(cursor) = string_arg(args, "cursor") {
+            query.push(("cursor", cursor));
+        }
     }
     Ok(CallKind::PeerHistory { query })
 }
@@ -818,7 +825,10 @@ const fn showed_activity(snap: &crate::childwatch::ChildSnapshot) -> bool {
         || snap.last_tool.is_some()
         || snap.status_line.is_some()
         || snap.blocked.is_some()
+        || snap.saw_events()
 }
+
+const QUIET_BUT_ALIVE: &str = "no observable activity, process alive";
 
 async fn follow_child_with(
     handle: &WatchHandle,
@@ -837,17 +847,19 @@ async fn follow_child_with(
         let Some(snap) = handle.snapshot() else {
             return FollowResult::Superseded;
         };
-        match snap.assess(now) {
+        match snap.assess(now.into_std()) {
             Assessment::Finished(outcome) => return FollowResult::Finished(outcome),
             Assessment::Running(line) => {
-                if now.duration_since(started) >= silent_grace && !showed_activity(&snap) {
+                let silent = now.duration_since(started) >= silent_grace && !showed_activity(&snap);
+                if silent && !snap.process_alive(now.into_std()) {
                     return FollowResult::Error(json!({
                         "ok": false,
                         "error": format!(
                             "child agent {} produced no activity within {}s of being prompted — \
-                             no model call, no output and no error, so it almost certainly died \
-                             at startup (auth, budget or rate-limit rejection). Not waiting out \
-                             the {}s timeout; check the child session in cctui.",
+                             no model call, no output, no error and no live process listed, so \
+                             it almost certainly died at startup (auth, budget or rate-limit \
+                             rejection). Not waiting out the {}s timeout; check the child \
+                             session in cctui.",
                             snap.local_id.as_deref().unwrap_or(child_id),
                             silent_grace.as_secs(),
                             timeout.as_secs(),
@@ -863,6 +875,7 @@ async fn follow_child_with(
                 if proto >= 2 && !relay_gone && now.duration_since(last_progress) >= PROGRESS_EVERY
                 {
                     last_progress = now;
+                    let line = if silent { format!("{QUIET_BUT_ALIVE} · {line}") } else { line };
                     let frame = json!({
                         "progress": format!(
                             "[{}s] {} · child session {}",
@@ -1056,6 +1069,9 @@ fn render_user_action_result(v: &Value) -> String {
 fn render_context_entry(e: &ContextToolEntry) -> String {
     let state = if e.enabled { "enabled" } else { "disabled" };
     let mut line = format!("{} ({}) — {} · v{} · {state}", e.name, e.kind, e.title, e.version);
+    if let Some(summary) = e.match_summary.as_deref() {
+        let _ = write!(line, " · match: {summary}");
+    }
     if e.pending {
         line.push_str(" · pending approval");
     }
@@ -2392,6 +2408,20 @@ mod tests {
     }
 
     #[test]
+    fn a_context_entry_renders_the_filter_the_server_summarized() {
+        let mut scoped = entry("wt", "rule");
+        scoped.match_summary = Some("machines=dev1 (3d3d04a3…), paths=/w/repo".to_owned());
+        let mut any = entry("ops", "memory");
+        any.match_summary = Some("everywhere".to_owned());
+        let r = ContextToolResponse { items: vec![scoped, any], ..ContextToolResponse::default() };
+        assert_eq!(
+            render_context_result("list", &r),
+            "wt (rule) — wt title · v2 · enabled · match: machines=dev1 (3d3d04a3…), paths=/w/repo\n\
+             ops (memory) — ops title · v2 · enabled · match: everywhere"
+        );
+    }
+
+    #[test]
     fn a_context_save_says_whether_it_is_live_or_awaiting_approval() {
         let saved = ContextToolResponse {
             item: Some(entry("ops", "memory")),
@@ -2692,7 +2722,7 @@ mod tests {
         assert!(silent["result"].as_str().unwrap().contains("without producing any output"));
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn follow_child_streams_progress_then_final_result() {
         let watch = std::sync::Arc::new(crate::childwatch::ChildWatch::default());
         let handle = watch.register("child-1");
@@ -2726,7 +2756,7 @@ mod tests {
         assert!(frame["result"].as_str().unwrap().starts_with("all done"));
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn a_follow_up_queued_behind_a_peer_turn_returns_its_own_turns_answer() {
         let msg = |role: &str, text: &str, stop: Option<&str>| {
             cctui_proto::adapter::AdapterEvent::Message {
@@ -2762,7 +2792,7 @@ mod tests {
         assert!(frame["result"].as_str().unwrap().starts_with("QA turn done"), "{frame}");
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn follow_waits_out_a_background_task_and_returns_the_self_started_turns_answer() {
         use cctui_proto::adapter::AdapterEvent;
         let msg = |role: &str, text: &str, stop: Option<&str>| AdapterEvent::Message {
@@ -2820,7 +2850,7 @@ mod tests {
         assert!(text.starts_with("build passed: all green"), "{text}");
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn follow_keeps_waiting_through_narration_and_returns_the_real_answer() {
         // acceptance: the live failure — narration was returned while the child
         // kept working. The follow must hold until the model says end_turn.
@@ -2872,7 +2902,7 @@ mod tests {
         assert!(!text.contains("Sanity-checking"), "narration must never be the answer: {text}");
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn follow_returns_the_answer_of_a_child_that_self_reports_blocked() {
         // acceptance: the follow window must not be waited out by a child whose
         // answer ended in a question, which leaves its job state `blocked`.
@@ -2917,7 +2947,7 @@ mod tests {
         assert!(frame["result"].as_str().unwrap().starts_with("which skill did you mean?"));
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn follow_child_times_out_with_a_follow_up_hint() {
         let watch = std::sync::Arc::new(crate::childwatch::ChildWatch::default());
         let handle = watch.register("child-1");
@@ -2946,7 +2976,7 @@ mod tests {
         assert!(out.is_empty(), "proto 1 must never receive progress frames");
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn a_silent_child_fails_fast_instead_of_waiting_out_the_timeout() {
         let watch = std::sync::Arc::new(crate::childwatch::ChildWatch::default());
         let handle = watch.register("child-1");
@@ -2972,7 +3002,64 @@ mod tests {
         assert!(text.contains("died at startup"), "{text}");
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
+    async fn a_live_hookless_child_with_no_events_is_followed_not_declared_dead() {
+        let watch = std::sync::Arc::new(crate::childwatch::ChildWatch::default());
+        let handle = watch.register_follow_up("child-1", "run the release");
+        let roster = watch.clone();
+        let poller = tokio::spawn(async move {
+            loop {
+                roster.note_alive(&["child-1"]);
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        });
+        let mut out: Vec<u8> = Vec::new();
+        let frame = follow_result_to_frame(
+            follow_child_with(
+                &handle,
+                "child-1",
+                Duration::from_millis(500),
+                Duration::from_millis(10),
+                2,
+                &mut out,
+            )
+            .await,
+        );
+        poller.abort();
+        assert_eq!(frame["ok"], json!(false));
+        let text = frame["error"].as_str().unwrap();
+        assert!(!text.contains("died"), "a live process is never reported dead: {text}");
+        assert!(text.contains("NOT A CRASH"), "{text}");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn transcript_growth_behind_a_pending_follow_up_keeps_the_follow_alive() {
+        let watch = std::sync::Arc::new(crate::childwatch::ChildWatch::default());
+        let handle = watch.register_follow_up("child-1", "run the release");
+        watch.observe(&cctui_proto::adapter::AdapterEvent::Message {
+            local_id: "child-1".into(),
+            payload: json!({ "role": "assistant", "text": "baking the image" }),
+            turn_id: None,
+        });
+        let mut out: Vec<u8> = Vec::new();
+        let frame = follow_result_to_frame(
+            follow_child_with(
+                &handle,
+                "child-1",
+                Duration::from_millis(500),
+                Duration::from_millis(10),
+                2,
+                &mut out,
+            )
+            .await,
+        );
+        assert_eq!(frame["ok"], json!(false));
+        let text = frame["error"].as_str().unwrap();
+        assert!(!text.contains("died"), "{text}");
+        assert!(text.contains("NOT A CRASH"), "{text}");
+    }
+
+    #[tokio::test(start_paused = true)]
     async fn a_child_that_showed_activity_is_never_failed_fast() {
         let watch = std::sync::Arc::new(crate::childwatch::ChildWatch::default());
         let handle = watch.register("child-1");
@@ -3003,7 +3090,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn a_crashed_child_returns_before_the_timeout() {
         let watch = std::sync::Arc::new(crate::childwatch::ChildWatch::default());
         let handle = watch.register("child-1");
@@ -3104,7 +3191,7 @@ mod tests {
             reason: cctui_proto::adapter::EndReason::Completed,
         });
         let snap = handle.snapshot().unwrap();
-        let Assessment::Finished(outcome) = snap.assess(Instant::now()) else {
+        let Assessment::Finished(outcome) = snap.assess(std::time::Instant::now()) else {
             panic!("ended child must be finished");
         };
         assert!(outcome.tail_is_thinking);
@@ -3126,7 +3213,7 @@ mod tests {
             reason: cctui_proto::adapter::EndReason::Completed,
         });
         let snap = handle.snapshot().unwrap();
-        let Assessment::Finished(outcome) = snap.assess(Instant::now()) else {
+        let Assessment::Finished(outcome) = snap.assess(std::time::Instant::now()) else {
             panic!("ended child must be finished");
         };
         assert!(!outcome.tail_is_thinking);
@@ -3147,7 +3234,7 @@ mod tests {
             reason: cctui_proto::adapter::EndReason::Killed,
         });
         let snap = handle.snapshot().unwrap();
-        let Assessment::Finished(outcome) = snap.assess(Instant::now()) else {
+        let Assessment::Finished(outcome) = snap.assess(std::time::Instant::now()) else {
             panic!("killed child must be finished");
         };
         assert!(outcome.error.as_deref().unwrap().contains("killed"));
@@ -3400,6 +3487,37 @@ mod tests {
             panic!("expected peer_history")
         };
         assert_eq!(query, vec![("session_id", "peer-9".to_owned())]);
+    }
+
+    #[test]
+    fn a_thread_history_call_sends_the_thread_flag_and_its_cursor() {
+        let line = json!({
+            "kind": "peer_history",
+            "session_id": "s1",
+            "args": { "session_id": "s1", "thread": true, "cursor": "2:417" },
+        })
+        .to_string();
+        let CallKind::PeerHistory { query } = parse_call(&line).unwrap().kind else {
+            panic!("expected peer_history")
+        };
+        assert_eq!(
+            query,
+            vec![
+                ("session_id", "s1".to_owned()),
+                ("thread", "1".to_owned()),
+                ("cursor", "2:417".to_owned()),
+            ]
+        );
+        let line = json!({
+            "kind": "peer_history",
+            "session_id": "s1",
+            "args": { "session_id": "s1", "thread": false, "cursor": "2:417" },
+        })
+        .to_string();
+        let CallKind::PeerHistory { query } = parse_call(&line).unwrap().kind else {
+            panic!("expected peer_history")
+        };
+        assert_eq!(query, vec![("session_id", "s1".to_owned())], "a cursor needs thread");
     }
 
     #[test]

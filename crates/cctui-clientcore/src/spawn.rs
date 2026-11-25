@@ -151,6 +151,7 @@ pub fn build_spawn_body(
         pool,
         save_draft: false,
         auto_archive: false,
+        dictated: false,
         env_keys: Vec::new(),
         attachment_names: Vec::new(),
         label_ids: fields.labels.clone(),

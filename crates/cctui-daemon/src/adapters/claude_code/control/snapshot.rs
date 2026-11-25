@@ -22,10 +22,18 @@ struct SnapshotPlan {
     started: Vec<String>,
     /// Known shorts no longer listed as visible.
     gone: Vec<String>,
+    /// Session ids of live listed spares: a claimed spare may still be listed
+    /// as one while it runs a child.
+    spare_sightings: Vec<String>,
 }
 
 fn plan_snapshot(jobs: Vec<LiveSnapshot>, roster: &HashSet<String>) -> SnapshotPlan {
     let foreign_shorts = jobs.iter().filter(|j| j.is_foreign()).map(|j| j.short.clone()).collect();
+    let spare_sightings = jobs
+        .iter()
+        .filter(|j| j.is_spare() && !j.dying && !j.is_dead())
+        .filter_map(|j| j.session_id().map(str::to_owned))
+        .collect();
     let visible: Vec<LiveSnapshot> =
         jobs.into_iter().filter(LiveSnapshot::is_user_visible).collect();
     let native_live = visible.iter().any(LiveSnapshot::is_foreign);
@@ -36,7 +44,16 @@ fn plan_snapshot(jobs: Vec<LiveSnapshot>, roster: &HashSet<String>) -> SnapshotP
     let started =
         visible.iter().filter(|j| !roster.contains(&j.short)).map(|j| j.short.clone()).collect();
     let gone = roster.difference(&now_shorts).cloned().collect();
-    SnapshotPlan { foreign_shorts, visible, now_shorts, native_live, roster_busy, started, gone }
+    SnapshotPlan {
+        foreign_shorts,
+        visible,
+        now_shorts,
+        native_live,
+        roster_busy,
+        started,
+        gone,
+        spare_sightings,
+    }
 }
 
 impl Driver {
@@ -57,6 +74,10 @@ impl Driver {
         }
         for job in &plan.visible {
             self.reconcile_job(job, &observed_efforts).await;
+        }
+        if !plan.spare_sightings.is_empty() {
+            let ids: Vec<&str> = plan.spare_sightings.iter().map(String::as_str).collect();
+            crate::childwatch::global().note_alive(&ids);
         }
         // Done after Status updates so the UI's identity fields land
         // before the message stream they describe.
@@ -214,6 +235,10 @@ impl Driver {
         // Revived: claude reports this short alive again after we marked it
         // dead — clear the sticky flag so live status flows again.
         self.dead_shorts.remove(&job.short);
+        let resumed = on_disk.as_ref().and_then(|s| s.resume_session_id.as_deref());
+        let ids: Vec<&str> =
+            [Some(local_id.as_str()), job.session_id(), resumed].into_iter().flatten().collect();
+        crate::childwatch::global().note_alive(&ids);
 
         // The native daemon can overwrite dispatch respawnFlags while claiming
         // a spare. Its autonomous respawn prefers state.json and drops
@@ -273,7 +298,7 @@ impl Driver {
             self.emit(AdapterEvent::Status {
                 local_id: local_id.to_owned(),
                 tempo: Some("hibernated".to_owned()),
-                state: None,
+                state: Some("stopped".to_owned()),
                 detail: None,
                 activity: None,
                 name: None,
@@ -437,7 +462,7 @@ impl Driver {
         // question. The `AskUserQuestion` PreToolUse hook delivers the real
         // prompt over the daemon socket.
 
-        let (tempo, state) = if self.hookless_turn_ended(job, &local_id).await {
+        let (tempo, state) = if self.transcript_turn_ended(job, &local_id).await {
             (Some("idle".to_owned()), Some("done".to_owned()))
         } else {
             (job.tempo.clone(), job.state.clone())
@@ -581,24 +606,17 @@ impl Driver {
         }
         self.status_resend.remove(short);
         self.task_watches.remove(short);
-        if let Ok(mut m) = self.announced_meta.lock() {
-            m.remove(short);
-        }
+        let announced =
+            self.announced_meta.lock().ok().and_then(|mut m| m.remove(short)).map(|(id, _)| id);
         let was_dead = self.dead_shorts.remove(short);
         self.clear_permission(short).await;
         if let Some(loc) = self.transcript_locations.remove(short) {
-            // Hibernated, not gone: the worker process exited but
-            // its job state survives on disk, so a reply will revive it
-            // (resume-on-reply above). Mark the session so the UI can show
-            // the claude-style "exited, will resume on reply" red dot
-            // instead of a plain dead one. Carried in `tempo` (not
-            // `agent_state`) so the bucket classifier still sees the final
-            // state (`done` → Completed); a revived worker's next live
-            // snapshot overwrites it.
-            //
-            // Skip if we already emitted this short's dead transition while
-            // it was still listed (`dead_shorts`) — the hibernated
-            // Status already went out; re-emitting it here is redundant.
+            // Hibernated, not gone: the worker process exited but its job
+            // state survives on disk, so a reply revives it. `tempo` carries
+            // the marker for the "exited, will resume on reply" dot and
+            // `stopped` takes a worker that died mid-turn out of Working; a
+            // revived worker's next live snapshot overwrites both. Skipped
+            // when `mark_dead` already sent it while the short was listed.
             let hibernated = StateJson::read(&self.cfg.jobs_root, short).is_some();
             self.drop_stale_ask(&loc.local_id).await;
             if !hibernated {
@@ -608,7 +626,7 @@ impl Driver {
                 self.emit(AdapterEvent::Status {
                     local_id: loc.local_id.clone(),
                     tempo: Some("hibernated".to_owned()),
-                    state: None,
+                    state: Some("stopped".to_owned()),
                     detail: None,
                     activity: None,
                     name: None,
@@ -621,20 +639,25 @@ impl Driver {
                 .await;
             }
             self.hookless_turn_ends.remove(&loc.local_id);
+            self.transcript_reads.remove(&loc.local_id);
             self.short_by_session.remove(&loc.local_id);
             self.session_to_local
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .retain(|_, v| v != &loc.local_id);
             self.end_subagents_of(&loc.local_id).await;
+            if hibernated || was_dead {
+                return;
+            }
+            self.emit(AdapterEvent::SessionEnded {
+                local_id: loc.local_id,
+                reason: EndReason::Completed,
+            })
+            .await;
+            return;
         }
-        // We don't retain the session_id mapping after roster removal,
-        // so fall back to the short as the local_id. Sessions on the
-        // server side are indexed by (machine_id, adapter_id,
-        // local_id), and the prior SessionStarted carried the real
-        // session_id; the server reconciles on the running row.
         self.emit(AdapterEvent::SessionEnded {
-            local_id: short.to_owned(),
+            local_id: announced.unwrap_or_else(|| short.to_owned()),
             reason: EndReason::Completed,
         })
         .await;
@@ -919,8 +942,54 @@ mod tests {
         rx.recv().await.unwrap();
         rx.recv().await.unwrap();
         d.apply_snapshot(vec![]).await;
-        let evt = rx.recv().await.unwrap();
-        assert!(matches!(evt, AdapterEvent::SessionEnded { .. }));
+        match rx.recv().await.unwrap() {
+            AdapterEvent::SessionEnded { local_id, .. } => assert_eq!(local_id, "aaaa0001-uuid"),
+            other => panic!("expected SessionEnded, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_pinned_session_that_leaves_the_roster_ends_under_its_session_id() {
+        let (mut d, mut rx) = driver();
+        let local_id = write_main_transcript(&d, "aaaa0009", &[&user_line("u1", "go")]);
+        d.apply_snapshot(vec![snap("aaaa0009", "working", None)]).await;
+        assert!(d.transcript_locations.contains_key("aaaa0009"), "the transcript is pinned");
+        while rx.try_recv().is_ok() {}
+
+        d.apply_snapshot(vec![]).await;
+        let mut ended = Vec::new();
+        while let Ok(evt) = rx.try_recv() {
+            if let AdapterEvent::SessionEnded { local_id, .. } = evt {
+                ended.push(local_id);
+            }
+        }
+        assert_eq!(ended, [local_id]);
+    }
+
+    #[tokio::test]
+    async fn a_hibernated_session_that_leaves_the_roster_is_stopped_not_ended() {
+        let (mut d, mut rx) = driver();
+        write_main_transcript(&d, "aaaa000a", &[&user_line("u1", "go")]);
+        d.apply_snapshot(vec![snap("aaaa000a", "working", None)]).await;
+        let short_dir = d.cfg.jobs_root.join("aaaa000a");
+        std::fs::create_dir_all(&short_dir).unwrap();
+        std::fs::write(
+            short_dir.join("state.json"),
+            r#"{"sessionId":"aaaa000a-uuid","cwd":"/tmp","state":"working"}"#,
+        )
+        .unwrap();
+        while rx.try_recv().is_ok() {}
+
+        d.apply_snapshot(vec![]).await;
+        let mut signals = Vec::new();
+        while let Ok(evt) = rx.try_recv() {
+            match evt {
+                AdapterEvent::Status { tempo, state, .. } => signals.push((tempo, state)),
+                AdapterEvent::SessionEnded { .. } => panic!("a revivable session must not end"),
+                _ => {}
+            }
+        }
+        assert_eq!(signals, [(Some("hibernated".to_owned()), Some("stopped".to_owned()))]);
     }
 
     #[tokio::test]
@@ -949,8 +1018,9 @@ mod tests {
         d.apply_snapshot(vec![dead]).await;
         let evt = rx.recv().await.unwrap();
         match evt {
-            AdapterEvent::Status { tempo, .. } => {
+            AdapterEvent::Status { tempo, state, .. } => {
                 assert_eq!(tempo.as_deref(), Some("hibernated"));
+                assert_eq!(state.as_deref(), Some("stopped"), "a worker killed mid-turn");
             }
             other => panic!("expected hibernated Status, got {other:?}"),
         }
@@ -1308,6 +1378,42 @@ mod tests {
             gone.sort();
             assert_eq!(gone, case.gone, "{}: gone", case.name);
         }
+    }
+
+    #[test]
+    fn only_live_listed_spares_are_sighted_by_session_id() {
+        let spare = |short: &str, edit: fn(&mut LiveSnapshot)| {
+            job(short, |j| {
+                j.source = Some(SPARE_SOURCE.into());
+                edit(j);
+            })
+        };
+        let plan = plan_snapshot(
+            vec![
+                spare("5a5a0001", |_| {}),
+                spare("5a5a0002", |j| j.dying = true),
+                spare("5a5a0003", |j| j.gone = true),
+                spare("5a5a0004", |j| j.session_id = None),
+                job("cccc0003", |_| {}),
+            ],
+            &set(&[]),
+        );
+        assert_eq!(plan.spare_sightings, ["5a5a0001-uuid"]);
+        assert!(plan.visible.iter().all(|j| !j.short.starts_with("5a5a")));
+    }
+
+    #[tokio::test]
+    async fn a_claimed_spare_listed_as_a_spare_keeps_its_child_alive() {
+        let child = "c1a1med5-uuid";
+        let watch = crate::childwatch::global().register_follow_up(child, "run the build");
+        let (mut d, mut rx) = driver();
+        let mut claimed = snap("c1a1med5", "working", None);
+        claimed.source = Some(SPARE_SOURCE.into());
+        d.apply_snapshot(vec![claimed]).await;
+        assert!(rx.try_recv().is_err(), "a spare is still not a session row");
+        let seen = watch.snapshot().unwrap();
+        assert!(seen.process_alive(std::time::Instant::now()), "the claimed spare was not sighted");
+        assert!(!seen.saw_events());
     }
 
     fn started(rx: &mut tokio::sync::mpsc::Receiver<AdapterEvent>) -> Vec<(String, SessionMeta)> {

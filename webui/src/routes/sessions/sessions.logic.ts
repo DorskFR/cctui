@@ -7,6 +7,7 @@ import type { MachineLiveness } from '@bindings/MachineLiveness';
 import type { SessionListItem } from '@bindings/SessionListItem';
 import type { SessionListResponse } from '@bindings/SessionListResponse';
 import type { SessionParentStub } from '@bindings/SessionParentStub';
+import type { SearchTotal } from '@bindings/SearchTotal';
 import type { SpawnRequest } from '@bindings/SpawnRequest';
 import { normalizeDir, spawnSlotDirty, type SpawnSlotPayload } from '#lib/drafts.ts';
 import { NO_ACCOUNT } from '#lib/components/organisms/spawn/options.ts';
@@ -106,6 +107,14 @@ export const PAGE = 50;
 // The server pages by `next_cursor`; `offset` only serves a server that sends none.
 export type SearchPageParam = { offset: number; cursor: string | null };
 export const FIRST_PAGE: SearchPageParam = { offset: 0, cursor: null };
+
+/** The search header's "N matches" / "N+ matches", or null with no server count. */
+export function matchCountLabel(total: SearchTotal | null | undefined): string | null {
+	if (!total) return null;
+	if (total.at_least) return m.sessions_search_match_count_more({ count: total.count });
+	if (total.count === 1) return m.sessions_search_match_one();
+	return m.sessions_search_match_count({ count: total.count });
+}
 
 export function nextSearchPage(
 	last: SessionListResponse,
@@ -321,7 +330,6 @@ export const BUCKETS: { key: GroupKey; label: string }[] = [
 	// Pinned/starred sessions float above every bucket.
 	{ key: 'pinned', get label() { return m.sessions_bucket_pinned(); } },
 	{ key: 'blocked', get label() { return m.sessions_bucket_blocked(); } },
-	{ key: 'review', get label() { return m.sessions_bucket_review(); } },
 	{ key: 'working', get label() { return m.sessions_bucket_working(); } },
 	{ key: 'done', get label() { return m.sessions_bucket_done(); } },
 	{ key: 'dispatched', get label() { return m.sessions_dispatched(); } }
@@ -345,7 +353,7 @@ export const STALE_WORKING_AFTER_MS = 30 * 60 * 1000; // 30 minutes
 // Whether a session should be signalled stale: a Working-bucket session whose
 // last heartbeat is older than the threshold. `now` is passed in so callers can
 // drive re-evaluation off a clock tick. Non-Working buckets are never stale
-// (blocked/review/done already carry their own signal), and a session with no
+// (blocked/done already carry their own signal), and a session with no
 // heartbeat timestamp (stub rows) is treated as not-stale.
 export function isStaleWorking(s: SessionListItem, now: number): boolean {
 	if (groupOf(s) !== 'working') return false;
@@ -824,7 +832,8 @@ export function draftEditPrefill(s: SessionListItem): Record<string, string> {
 		[modelField]: str(d.model),
 		[effortField]: str(d.effort),
 		env_keys: Array.isArray(d.env_keys) ? d.env_keys.filter((k) => typeof k === 'string').join(',') : '',
-		label_ids: draftLabelIds(d, s).join(',')
+		label_ids: draftLabelIds(d, s).join(','),
+		auto_archive: d.auto_archive === true ? '1' : '0'
 	};
 	return Object.fromEntries(Object.entries(full).filter(([, v]) => v !== ''));
 }

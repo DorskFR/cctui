@@ -1,12 +1,12 @@
 //! `POST /api/v1/version/self-update` — how the deployment update was taken.
 
 use serde::Serialize;
-#[cfg(feature = "ts")]
+#[cfg(test)]
 use ts_rs::TS;
 
 /// Which of the two paths took the job, and what to watch as a result.
 #[derive(Serialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 #[serde(tag = "mode", rename_all = "snake_case")]
 pub enum SelfUpdateResponse {
     /// The machine's own update command is running. There is no session to

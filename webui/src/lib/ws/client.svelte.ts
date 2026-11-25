@@ -3,6 +3,7 @@ import type { ServerEvent } from '@bindings/ServerEvent';
 import type { UserAction } from '@bindings/UserAction';
 import type { Notification as Notice } from '@bindings/Notification';
 import type { GuardStepState } from '@bindings/GuardStepState';
+import type { SendFollowup } from '@bindings/SendFollowup';
 import type { AccountUsage } from '../queries/types';
 import { qk } from '../queries/keys';
 import { toasts } from '#lib/toast.svelte.ts';
@@ -11,17 +12,20 @@ import type { QueryClient } from '@tanstack/svelte-query';
 import {
 	KeyedListeners,
 	decodeBase64,
+	isFollowupInProgress,
 	scheduledLaunchPatch,
 	spawnOutcomeFromEnd,
 	streamListPatch,
 	type AccountUsageEvent,
 	type CommandOutcome,
+	type FollowupFailed,
 	type GithubEvent,
 	type GuardStepEvent,
 	type LifecycleEvent,
 	type MachineResourcesEvent,
 	type SessionEndedEvent,
-	type SessionListPatch
+	type SessionListPatch,
+	type SessionSuperseded
 } from './frames';
 
 export type CommandResultEvent = { commandId: string; ok: boolean; error: string | null };
@@ -184,6 +188,7 @@ export class WsClient {
 			case 'message_ack': {
 				// Resolve the tracked send (delivered / failed → auto-retry).
 				this.delivery.resolveAck(msg);
+				if (!msg.ok && isFollowupInProgress(msg.error)) toasts.info(m.followup_thread_in_progress());
 				break;
 			}
 			case 'command_result': {
@@ -215,6 +220,17 @@ export class WsClient {
 			case 'session_deregistered':
 				this.markListDirty();
 				break;
+			case 'session_superseded': {
+				const { type: _, ...ev } = msg;
+				this.supersededCbs.emit(ev.from, ev);
+				this.markListDirty();
+				break;
+			}
+			case 'followup_failed': {
+				const { type: _, ...ev } = msg;
+				this.followupFailedCbs.emit(ev.from, ev);
+				break;
+			}
 			case 'session_outcome':
 				this.emitListPatch({ session_id: msg.session_id, latest_outcome: msg.outcome });
 				this.markListDirty();
@@ -320,6 +336,18 @@ export class WsClient {
 	onEvent(cb: (ev: LifecycleEvent) => void): () => void {
 		this.eventCbs.add(cb);
 		return () => this.eventCbs.delete(cb);
+	}
+
+	/** Keyed by the superseded session (`from`). */
+	private supersededCbs = new KeyedListeners<SessionSuperseded>();
+	onSuperseded(from: string, cb: (ev: SessionSuperseded) => void): () => void {
+		return this.supersededCbs.add(from, cb);
+	}
+
+	/** Keyed by the session the follow-up was launched from. */
+	private followupFailedCbs = new KeyedListeners<FollowupFailed>();
+	onFollowupFailed(from: string, cb: (ev: FollowupFailed) => void): () => void {
+		return this.followupFailedCbs.add(from, cb);
 	}
 
 	private sessionEndedCbs = new Set<(ev: SessionEndedEvent) => void>();
@@ -576,15 +604,19 @@ export class WsClient {
 		content: string,
 		clientMsgId?: string,
 		askPicks?: number[][],
-		turnId?: string
+		turnId?: string,
+		dictated?: boolean,
+		followup: SendFollowup = 'auto'
 	): boolean {
 		return this.send({
 			type: 'message',
 			session_id: id,
 			content,
+			followup,
 			...(clientMsgId ? { client_msg_id: clientMsgId } : {}),
 			...(askPicks ? { ask_picks: askPicks } : {}),
-			...(turnId ? { turn_id: turnId } : {})
+			...(turnId ? { turn_id: turnId } : {}),
+			...(dictated ? { dictated } : {})
 		});
 	}
 
@@ -594,9 +626,11 @@ export class WsClient {
 		text: string,
 		ts: number,
 		askPicks?: number[][],
-		turnId?: string
+		turnId?: string,
+		dictated?: boolean,
+		followup?: SendFollowup
 	): boolean {
-		return this.delivery.trackedSend(sid, text, ts, askPicks, turnId);
+		return this.delivery.trackedSend(sid, text, ts, askPicks, turnId, dictated, followup);
 	}
 
 	retryNow(sid: string, ts: number) {

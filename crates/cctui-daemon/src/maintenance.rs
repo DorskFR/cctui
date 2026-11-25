@@ -146,7 +146,7 @@ mod tests {
     /// The regression of 11/10/2026: a backlog of removals larger than the
     /// adapter's channel must leave that channel free for whatever the server
     /// sends next, however long the adapter takes to get through them.
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn a_removal_backlog_never_fills_the_adapter_channel() {
         let (commands_tx, mut commands_rx) = mpsc::channel(4);
         let shutdown = CancellationToken::new();

@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import type { SessionListItem } from '@bindings/SessionListItem';
 import type { JsonValue } from '@bindings/serde_json/JsonValue';
+import { m } from '#lib/paraglide/messages.js';
 import {
 	accountTrafficWarning,
+	matchCountLabel,
 	sectionVisibility,
 	sessionNavState,
 	urlSyncFor,
@@ -781,9 +783,17 @@ describe('draft payload + prefills', () => {
 			working_dir: '/w',
 			adapter_id: 'claude-code',
 			prompt: 'p',
-			env_keys: 'TOKEN,API_KEY'
+			env_keys: 'TOKEN,API_KEY',
+			auto_archive: '0'
 		});
 		expect('name' in p).toBe(false);
+	});
+
+	it('draftEditPrefill carries the auto-archive flag', () => {
+		const armed = session({ machine_id: 'm', working_dir: '/w', metadata: { draft: { auto_archive: true } } });
+		expect(draftEditPrefill(armed).auto_archive).toBe('1');
+		const plain = session({ machine_id: 'm', working_dir: '/w', metadata: { draft: {} } });
+		expect(draftEditPrefill(plain).auto_archive).toBe('0');
 	});
 
 	it('draftEditPrefill carries the stored labels and those put on the draft card', () => {
@@ -1205,5 +1215,17 @@ describe('withoutViewParam', () => {
 	});
 	it('leaves a pushed session URL alone once the override is gone', () => {
 		expect(withoutViewParam('http://h/sessions/abc')).toBeNull();
+	});
+});
+
+describe('matchCountLabel', () => {
+	it('reads the server total, with a + once counting stopped early', () => {
+		expect(matchCountLabel(null)).toBeNull();
+		expect(matchCountLabel(undefined)).toBeNull();
+		expect(matchCountLabel({ count: 1, at_least: false })).toBe(m.sessions_search_match_one());
+		expect(matchCountLabel({ count: 47, at_least: false })).toBe(m.sessions_search_match_count({ count: 47 }));
+		expect(matchCountLabel({ count: 500, at_least: true })).toBe(
+			m.sessions_search_match_count_more({ count: 500 })
+		);
 	});
 });

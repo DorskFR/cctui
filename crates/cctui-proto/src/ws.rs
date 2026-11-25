@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-#[cfg(feature = "ts")]
+#[cfg(test)]
 use ts_rs::TS;
 
 use crate::adapter::{AdapterCommand, AdapterEvent, BootstrapFile};
@@ -90,6 +90,9 @@ pub enum DaemonFrameUp {
         /// Supports targeted worker authentication recovery before a reply.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         auth_recovery: Option<bool>,
+        /// Answers [`DaemonFrameDown::TranscriptAudit`].
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        transcript_audit: Option<bool>,
     },
     /// Reply to [`DaemonFrameDown::StageFiles`].
     StageFilesResult {
@@ -131,6 +134,14 @@ pub enum DaemonFrameUp {
         /// Folders a `Denied` was checked against. Empty from older daemons.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         allowed_folders: Vec<String>,
+    },
+    /// Reply to [`DaemonFrameDown::TranscriptAudit`]: a report, or an error.
+    TranscriptAuditResult {
+        request_id: uuid::Uuid,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        report: Option<crate::api::privacy_scan::TranscriptAuditReport>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
     },
     /// One chunk of an up-frame split by [`crate::chunk`]. `transfer_id` is the
     /// payload hash; `data` is base64. `codec: Some("zstd")` means the joined
@@ -238,6 +249,13 @@ pub enum DaemonFrameDown {
         max_bytes: u64,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         cwd: Option<String>,
+    },
+    /// Audit this machine's local harness transcripts with the detectors of
+    /// the last `Reconcile`, rewriting them unless `dry_run`. Sent only to
+    /// daemons that report `transcript_audit`.
+    TranscriptAudit {
+        request_id: uuid::Uuid,
+        dry_run: bool,
     },
     /// `None` means no usable prefix; restart from chunk 0.
     ChunkAck {
@@ -353,6 +371,7 @@ impl DaemonFrameDown {
             | Self::TranscriptAck { .. }
             | Self::ArchivedJobs { .. }
             | Self::RefreshCodexModels {}
+            | Self::TranscriptAudit { .. }
             | Self::Features { .. } => &[],
         }
     }
@@ -417,6 +436,9 @@ pub struct SecretScrubConfig {
     pub enabled: bool,
     #[serde(default)]
     pub patterns: Vec<ScrubPattern>,
+    /// The daemon also scrubs the harness's local transcript files.
+    #[serde(default)]
+    pub local_transcripts: bool,
 }
 
 /// Validated server-side.
@@ -555,7 +577,7 @@ pub enum DispatcherFrameUp {
 // --- Agent → Server (stream events) ---
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum AgentEvent {
     /// `meta` marks text injected into the agent rather than typed by the human.
@@ -706,7 +728,7 @@ impl AgentEvent {
 // --- TUI → Server ---
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum TuiCommand {
     Subscribe {
@@ -738,6 +760,11 @@ pub enum TuiCommand {
         /// Client-minted `UUIDv7`.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         turn_id: Option<uuid::Uuid>,
+        /// The words came, at least partly, from speech-to-text.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        dictated: bool,
+        #[serde(default, skip_serializing_if = "crate::api::auto_followup::SendFollowup::is_auto")]
+        followup: crate::api::auto_followup::SendFollowup,
     },
     PermissionResponse {
         session_id: String,
@@ -752,7 +779,7 @@ pub enum TuiCommand {
 
 /// Transition a scheduled draft launch just made.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 #[serde(rename_all = "snake_case")]
 pub enum ScheduledLaunchState {
     Scheduled,
@@ -765,7 +792,7 @@ pub enum ScheduledLaunchState {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ServerEvent {
     Stream {
@@ -979,6 +1006,25 @@ pub enum ServerEvent {
     Event {
         event: crate::api::events::EventRecord,
     },
+    /// `to` registered and continues `from`; `from` is archived when `archived`.
+    SessionSuperseded {
+        followup_id: uuid::Uuid,
+        from: String,
+        to: String,
+        reason: crate::thread::FollowupReason,
+        instruction: String,
+        archived: bool,
+        archive_error: Option<String>,
+        at: chrono::DateTime<chrono::Utc>,
+    },
+    /// The follow-up of `from` never started; `from` is untouched.
+    FollowupFailed {
+        followup_id: uuid::Uuid,
+        from: String,
+        reason: crate::thread::FollowupReason,
+        instruction: String,
+        error: String,
+    },
     /// Application-level liveness tick; browsers cannot observe WS pings.
     Heartbeat {},
     /// This socket lagged. Refetch the session, or everything when `None`.
@@ -1081,6 +1127,52 @@ mod tests {
         let seqs: Vec<Option<i64>> = events.iter().map(AgentEvent::seq).collect();
         assert_eq!(seqs, vec![Some(1), Some(2), Some(3)]);
         assert!(matches!(&events[2], AgentEvent::Text { content, .. } if content.contains("User")));
+    }
+
+    #[test]
+    fn followup_events_round_trip_under_their_wire_names() {
+        let at = chrono::DateTime::parse_from_rfc3339("2026-11-21T10:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        let superseded = ServerEvent::SessionSuperseded {
+            followup_id: uuid::Uuid::nil(),
+            from: "a".into(),
+            to: "b".into(),
+            reason: crate::thread::FollowupReason::Cold,
+            instruction: "go on".into(),
+            archived: false,
+            archive_error: Some("pinned".into()),
+            at,
+        };
+        let json = serde_json::to_value(&superseded).unwrap();
+        assert_eq!(json["type"], "session_superseded");
+        assert_eq!((json["from"].as_str(), json["to"].as_str()), (Some("a"), Some("b")));
+        assert_eq!(json["reason"], "cold");
+        assert_eq!(json["archive_error"], "pinned");
+        let back: ServerEvent = serde_json::from_value(json).unwrap();
+        assert!(matches!(
+            back,
+            ServerEvent::SessionSuperseded { archived: false, at: t, .. } if t == at
+        ));
+
+        let failed = ServerEvent::FollowupFailed {
+            followup_id: uuid::Uuid::nil(),
+            from: "a".into(),
+            reason: crate::thread::FollowupReason::Inbox,
+            instruction: "go on".into(),
+            error: "no daemon".into(),
+        };
+        let json = serde_json::to_value(&failed).unwrap();
+        assert_eq!(json["type"], "followup_failed");
+        assert_eq!(
+            (json["reason"].as_str(), json["error"].as_str()),
+            (Some("inbox"), Some("no daemon"))
+        );
+        let back: ServerEvent = serde_json::from_value(json).unwrap();
+        assert!(matches!(
+            back,
+            ServerEvent::FollowupFailed { instruction, .. } if instruction == "go on"
+        ));
     }
 
     #[test]
@@ -1291,6 +1383,40 @@ mod tests {
     }
 
     #[test]
+    fn transcript_audit_round_trips_and_an_error_reply_omits_the_report() {
+        let down =
+            DaemonFrameDown::TranscriptAudit { request_id: uuid::Uuid::nil(), dry_run: true };
+        let json = serde_json::to_string(&down).unwrap();
+        assert!(json.contains(r#""type":"transcript_audit""#), "{json}");
+        let back: DaemonFrameDown = serde_json::from_str(&json).unwrap();
+        assert!(matches!(back, DaemonFrameDown::TranscriptAudit { dry_run: true, .. }));
+
+        let mut report = crate::api::privacy_scan::TranscriptAuditReport {
+            files_scanned: 3,
+            ..Default::default()
+        };
+        report.by_category.insert("github_token".into(), 2);
+        let up = DaemonFrameUp::TranscriptAuditResult {
+            request_id: uuid::Uuid::nil(),
+            report: Some(report.clone()),
+            error: None,
+        };
+        let back: DaemonFrameUp =
+            serde_json::from_str(&serde_json::to_string(&up).unwrap()).unwrap();
+        assert!(
+            matches!(back, DaemonFrameUp::TranscriptAuditResult { report: Some(r), .. } if r == report)
+        );
+
+        let failed = DaemonFrameUp::TranscriptAuditResult {
+            request_id: uuid::Uuid::nil(),
+            report: None,
+            error: Some("busy".into()),
+        };
+        let json = serde_json::to_string(&failed).unwrap();
+        assert!(!json.contains("report"), "{json}");
+    }
+
+    #[test]
     fn heartbeat_carries_bandwidth_and_accepts_legacy_payload() {
         let hb = DaemonFrameUp::Heartbeat {
             sent_at: chrono::Utc::now(),
@@ -1308,6 +1434,7 @@ mod tests {
             harness: Some(crate::harness::HarnessReport::default()),
             mark_acks: Some(true),
             auth_recovery: Some(true),
+            transcript_audit: Some(true),
         };
         let json = serde_json::to_string(&hb).unwrap();
         assert!(json.contains(r#""forward":900"#), "{json}");
@@ -1316,6 +1443,7 @@ mod tests {
         assert!(json.contains(r#""blob_put":42"#), "{json}");
         assert!(json.contains(r#""update_hook":true"#), "{json}");
         assert!(json.contains(r#""auth_recovery":true"#), "{json}");
+        assert!(json.contains(r#""transcript_audit":true"#), "{json}");
 
         let legacy = r#"{"type":"heartbeat","sent_at":"2026-07-21T00:00:00Z"}"#;
         let back: DaemonFrameUp = serde_json::from_str(legacy).unwrap();
@@ -1330,8 +1458,10 @@ mod tests {
                 harness,
                 mark_acks,
                 auth_recovery,
+                transcript_audit,
                 ..
             } => {
+                assert!(transcript_audit.is_none(), "a legacy daemon cannot audit transcripts");
                 assert!(harness.is_none());
                 assert!(mark_acks.is_none(), "silence is not support");
                 assert!(auth_recovery.is_none(), "legacy daemons cannot recover authentication");
@@ -1442,6 +1572,18 @@ mod tests {
     }
 
     #[test]
+    fn secret_scrub_config_local_transcripts_defaults_off() {
+        let old: SecretScrubConfig =
+            serde_json::from_str(r#"{"enabled":true,"patterns":[]}"#).unwrap();
+        assert!(old.enabled);
+        assert!(!old.local_transcripts);
+        let on: SecretScrubConfig = serde_json::from_str(r#"{"local_transcripts":true}"#).unwrap();
+        assert!(on.local_transcripts);
+        let json = serde_json::to_string(&on).unwrap();
+        assert!(json.contains(r#""local_transcripts":true"#), "{json}");
+    }
+
+    #[test]
     fn daemon_frame_down_command_roundtrips() {
         let f = DaemonFrameDown::Command {
             adapter_id: "claude-code".into(),
@@ -1547,6 +1689,8 @@ mod tests {
             client_msg_id: None,
             ask_picks: None,
             turn_id: None,
+            dictated: false,
+            followup: crate::api::auto_followup::SendFollowup::Auto,
         };
         let json = serde_json::to_string(&cmd).unwrap();
         assert!(json.contains(r#""type":"message""#));
@@ -1568,6 +1712,8 @@ mod tests {
             client_msg_id: None,
             ask_picks: None,
             turn_id: None,
+            dictated: false,
+            followup: crate::api::auto_followup::SendFollowup::Auto,
         };
         let json = serde_json::to_string(&cmd).unwrap();
         assert!(!json.contains("client_msg_id"), "None must be skipped: {json}");
@@ -1592,6 +1738,8 @@ mod tests {
             client_msg_id: Some("abc-123".into()),
             ask_picks: None,
             turn_id: None,
+            dictated: false,
+            followup: crate::api::auto_followup::SendFollowup::Auto,
         };
         let json = serde_json::to_string(&cmd).unwrap();
         assert!(json.contains(r#""client_msg_id":"abc-123""#));
@@ -1602,6 +1750,33 @@ mod tests {
             }
             _ => panic!("wrong variant"),
         }
+    }
+
+    #[test]
+    fn tui_command_message_carries_dictated_only_when_set() {
+        let typed: TuiCommand =
+            serde_json::from_str(r#"{"type":"message","session_id":"s","content":"hi"}"#).unwrap();
+        assert!(matches!(typed, TuiCommand::Message { dictated: false, .. }));
+        assert!(!serde_json::to_string(&typed).unwrap().contains("dictated"));
+        let voiced: TuiCommand = serde_json::from_str(
+            r#"{"type":"message","session_id":"s","content":"hi","dictated":true}"#,
+        )
+        .unwrap();
+        assert!(matches!(voiced, TuiCommand::Message { dictated: true, .. }));
+    }
+
+    #[test]
+    fn tui_command_message_carries_the_followup_opt_out_only_when_set() {
+        use crate::api::auto_followup::SendFollowup;
+        let typed: TuiCommand =
+            serde_json::from_str(r#"{"type":"message","session_id":"s","content":"hi"}"#).unwrap();
+        assert!(matches!(typed, TuiCommand::Message { followup: SendFollowup::Auto, .. }));
+        assert!(!serde_json::to_string(&typed).unwrap().contains("followup"));
+        let here: TuiCommand = serde_json::from_str(
+            r#"{"type":"message","session_id":"s","content":"hi","followup":"never"}"#,
+        )
+        .unwrap();
+        assert!(matches!(here, TuiCommand::Message { followup: SendFollowup::Never, .. }));
     }
 
     #[test]
@@ -2027,6 +2202,7 @@ mod tests {
             (down(json!({ "type": "archived_jobs", "session_ids": [] })), &[]),
             (down(json!({ "type": "refresh_codex_models" })), &[]),
             (down(json!({ "type": "features", "off": [] })), &[]),
+            (down(json!({ "type": "transcript_audit", "request_id": id, "dry_run": true })), &[]),
             (
                 down(json!({
                     "type": "stage_files", "request_id": id, "adapter_id": "a",

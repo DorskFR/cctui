@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # The drift checks degrade to a format check on a runner, which has no harness
-# on PATH. This reads every harness version out of a built worker image and
-# checks it against deploy/worker.Dockerfile, so it must run BEFORE the image
-# is pushed: that is the only point where a wrong harness can still fail the
-# release.
+# on PATH. This reads every harness version out of a worker image built from
+# deploy/examples/worker-agents with every switch on and checks it against that
+# Dockerfile's version args. The release runs it before tagging: that is the
+# only point where a wrong harness can still fail the release.
 #
 # One row per harness: name | binary | Dockerfile ARG | policy. `floor` hands
 # the version to that harness's drift script (a minimum); `exact` requires the
@@ -11,7 +11,7 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-dockerfile="$repo_root/deploy/worker.Dockerfile"
+dockerfile="$repo_root/deploy/examples/worker-agents/Dockerfile"
 image="${1:-}"
 
 fail() { echo "::error::$*" >&2; exit 1; }
@@ -41,7 +41,7 @@ harness_version() {
 dockerfile_arg() {
   local arg="$1" value
   value="$(sed -n "s/^ARG ${arg}=\(.*\)$/\1/p" "$dockerfile" | head -n1)"
-  [ -n "$value" ] || fail "deploy/worker.Dockerfile declares no ARG ${arg}"
+  [ -n "$value" ] || fail "$dockerfile declares no ARG ${arg}"
   printf '%s\n' "$value"
 }
 
@@ -57,7 +57,7 @@ check_floor() {
 check_exact() {
   local name="$1" version="$2" pinned="$3"
   [ "$version" = "$pinned" ] \
-    || fail "$name in $image is $version, deploy/worker.Dockerfile pins $pinned"
+    || fail "$name in $image is $version, $dockerfile pins $pinned"
 }
 
 echo "worker image                = $image"
@@ -73,4 +73,4 @@ for row in "${HARNESSES[@]}"; do
   esac
 done
 
-echo "OK: the harnesses baked into $image match deploy/worker.Dockerfile."
+echo "OK: the harnesses baked into $image match $dockerfile."

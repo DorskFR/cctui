@@ -1,5 +1,6 @@
 import type { ResultImage } from '#lib/resultImages.ts';
 import type { TokenUsage as TokenUsageT } from '@bindings/TokenUsage';
+import type { FollowupReason } from '@bindings/FollowupReason';
 import { m } from '#lib/paraglide/messages.js';
 import type { UserUploadRefs } from './lines';
 import type { HarnessCommand, InjectedKind, TaskNotification } from './format';
@@ -159,6 +160,18 @@ export interface ContextSegment {
 	sessionId?: string;
 }
 
+/** Where a follow-up line moved to its next session. `pending` until the
+ *  server announces the new session. */
+export interface FollowupMark {
+	generation: number;
+	from: string;
+	to: string | null;
+	at: string;
+	reason: FollowupReason | null;
+	instruction: string | null;
+	pending?: boolean;
+}
+
 export interface Line {
 	role:
 		| 'assistant'
@@ -253,6 +266,14 @@ export interface Line {
 	voiceNoteId?: string;
 	/** A user turn that came in through the microphone. */
 	voice?: boolean;
+	/** A user turn typed at least partly by speech-to-text. */
+	dictated?: boolean;
 	usage?: TokenUsageT;
 	images?: ResultImage[];
+	/** A follow-up marker row of a continuous thread. */
+	followup?: FollowupMark;
+	/** A generation of the thread the caller cannot read. */
+	unreadable?: boolean;
+	/** The session this line belongs to, when it is not the pane's. */
+	sessionId?: string;
 }

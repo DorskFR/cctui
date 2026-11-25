@@ -151,6 +151,9 @@ pub fn tool_schema() -> Value {
     whose call was cut off (lost connection, expired follow window), pass only its session_id, \
     without a prompt: that returns its last finished turn's final message, or waits for the \
     turn still running.",
+        // readOnlyHint also makes Claude Code auto-allow the call in ask/auto; spawns are
+        // gated server-side (child policy, posture ceiling, budget).
+        "annotations": { "readOnlyHint": true },
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -265,6 +268,7 @@ pub fn usage_tool_schema() -> Value {
     could run on is currently allowed or soft-limit blocked. Use it before dispatching \
     a batch of work, and when deciding which model to give a child: a blocked model wastes the \
     whole fan-out on 429s. Returns a one-line summary followed by the full JSON.",
+        "annotations": { "readOnlyHint": true },
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -322,6 +326,7 @@ pub fn peers_tool_schema() -> Value {
              not on this list is refused.",
             acp_agent_ids("")
         ),
+        "annotations": { "readOnlyHint": true },
         "inputSchema": {
             "type": "object",
             "properties": {},
@@ -377,7 +382,11 @@ pub fn history_tool_schema() -> Value {
     CctuiPeers). Returns compact markdown by default, newest events first-priority within a size \
     budget; page backwards with `before` using the oldest seq the previous call reported. The \
     human running the target session sees that you consulted it. A `remote:<id>` peer can be \
-    read only if its owner shares its transcript; otherwise the call is refused.",
+    read only if its owner shares its transcript; otherwise the call is refused. With `thread: \
+    true` it reads the whole follow-up line ending at that session (pass your own id for yours): \
+    every earlier generation in order, with a marker where each follow-up started, user and \
+    assistant turns unless `roles` says otherwise.",
+        "annotations": { "readOnlyHint": true },
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -406,6 +415,16 @@ pub fn history_tool_schema() -> Value {
                     "description": "Keep only these roles, e.g. [\"user\", \"assistant\"] for the \
     conversation without tool noise. Known roles: user, context, assistant, peer, thinking, tool, \
     result, mcp, error, summary, compact, system. Omit for everything.",
+                },
+                "thread": {
+                    "type": "boolean",
+                    "description": "Read the follow-up line ending at `session_id`, root first, \
+    instead of that one session. Page back with `cursor`, not `before`.",
+                },
+                "cursor": {
+                    "type": "string",
+                    "description": "With `thread`: the cursor the previous page reported, to read \
+    the entries before it.",
                 },
                 "format": {
                     "type": "string",
@@ -595,7 +614,8 @@ pub fn context_tool_schema() -> Value {
                 "match": {
                     "type": "object",
                     "description": "When the item applies: keys are AND-ed, values within a key \
-    OR-ed, an empty or missing key matches anything.",
+    OR-ed, an empty or missing key matches anything. `machines` and `labels` take ids or \
+    unambiguous names, stored as ids.",
                     "properties": {
                         "machines": strings,
                         "paths": strings,
@@ -1406,6 +1426,22 @@ mod tests {
     }
 
     #[test]
+    fn only_the_spawn_and_pure_read_tools_are_hinted_read_only() {
+        let read_only = [TOOL_NAME, USAGE_TOOL_NAME, PEERS_TOOL_NAME, HISTORY_TOOL_NAME];
+        for schema in tool_schemas() {
+            let name = schema["name"].as_str().unwrap();
+            let hint = &schema["annotations"]["readOnlyHint"];
+            if read_only.contains(&name) {
+                assert_eq!(hint, &json!(true), "{name}");
+            } else {
+                assert!(hint.is_null(), "{name} mutates state and must stay serial: {hint}");
+            }
+        }
+        assert_eq!(tool_schema()["annotations"]["readOnlyHint"], json!(true));
+        assert!(archive_tool_schema().get("annotations").is_none());
+    }
+
+    #[test]
     fn the_roster_tool_takes_no_arguments_at_all() {
         let schema = peers_tool_schema();
         assert_eq!(schema["inputSchema"]["required"], json!([]));
@@ -1435,15 +1471,19 @@ mod tests {
         let schema = history_tool_schema();
         assert_eq!(schema["inputSchema"]["required"], json!(["session_id"]));
         let props = schema["inputSchema"]["properties"].as_object().unwrap();
-        for key in ["session_id", "before", "after", "limit", "roles", "format"] {
+        let keys =
+            ["session_id", "before", "after", "limit", "roles", "format", "thread", "cursor"];
+        for key in keys {
             assert!(props.contains_key(key), "{key} missing from the schema");
         }
         assert_eq!(props["roles"]["type"], "array");
+        assert_eq!(props["thread"]["type"], "boolean");
         assert_eq!(props["format"]["enum"], json!(["markdown", "json"]));
         let desc = schema["description"].as_str().unwrap();
         assert!(desc.contains("archived"), "{desc}");
         assert!(desc.contains("no longer exists"), "{desc}");
         assert!(desc.contains("shares its transcript"), "{desc}");
+        assert!(desc.contains("follow-up line"), "{desc}");
     }
 
     #[test]

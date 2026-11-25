@@ -228,13 +228,13 @@
 		z-index: 6;
 	}
 	/* Tiles: the row's one unit of padding moves from under the title to above
-	   it, so the gap lands under the app header where it was asked for and the
-	   bar's height — the grid's height budget — is unchanged. The grid starts
-	   right below, so no bottom margin either. */
+	   it, so the bar's height — the grid's height budget — is unchanged. Tiles
+	   is a bleed route with no Container, so the bar carries the page gutter. */
 	.bar.flush {
 		margin-bottom: 0;
 		padding-top: var(--sp-2);
 		padding-bottom: 0;
+		padding-inline: max(var(--sp-4), var(--safe-left)) max(var(--sp-4), var(--safe-right));
 	}
 	.bar {
 		margin-bottom: var(--sp-4);

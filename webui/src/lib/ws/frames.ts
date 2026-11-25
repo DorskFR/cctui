@@ -31,7 +31,7 @@ export type PermReq = EventOf<'permission_request'>;
 export const USER_PREFIX = '▷ User:';
 
 const INJECTED_HEAD =
-	/^\s*<(cctui-session-context|session-context|cctui-previous-conversation|previous-conversation)(?:\s[^>]*)?>[\s\S]*?<\/\1>/;
+	/^\s*<(cctui-session-context|session-context|cctui-previous-sessions|cctui-previous-conversation|previous-conversation)(?:\s[^>]*)?>[\s\S]*?<\/\1>/;
 
 /** The prose after the wrappers cctui puts ahead of a prompt, or the whole
  *  body when nothing follows them. */
@@ -168,6 +168,18 @@ export function scheduledLaunchPatch(ev: EventOf<'scheduled_launch'>): SessionLi
 }
 
 export type MessageAck = EventOf<'message_ack'>;
+
+/** The follow-up of `from` registered as `to`: the line's head moved. */
+export type SessionSuperseded = EventOf<'session_superseded'>;
+/** The follow-up of `from` did not register; `from` is untouched. */
+export type FollowupFailed = EventOf<'followup_failed'>;
+
+const FOLLOWUP_IN_PROGRESS = 'a follow-up of this session is in progress';
+
+/** A send the server refused because the session is being followed up. */
+export function isFollowupInProgress(error: string | null | undefined): boolean {
+	return !!error && error.toLowerCase().includes(FOLLOWUP_IN_PROGRESS);
+}
 
 
 /** Decode a standard-base64 string to raw bytes (PTY chunks). */

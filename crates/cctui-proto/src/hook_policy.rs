@@ -2,7 +2,7 @@
 //! its native hook configuration at launch.
 
 use serde::{Deserialize, Serialize};
-#[cfg(feature = "ts")]
+#[cfg(test)]
 use ts_rs::TS;
 
 pub const MAX_COMMAND_BYTES: usize = 4096;
@@ -10,7 +10,7 @@ pub const MAX_RULES: usize = 64;
 pub const MAX_TIMEOUT_SECS: u32 = 600;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export, rename = "HookPolicyEvent"))]
+#[cfg_attr(test, derive(TS), ts(export, rename = "HookPolicyEvent"))]
 pub enum HookEvent {
     SessionStart,
     UserPromptSubmit,
@@ -28,7 +28,7 @@ impl HookEvent {
 
 /// A family of tools, named independently of any harness's tool names.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 #[serde(rename_all = "snake_case")]
 pub enum ToolClass {
     Shell,
@@ -40,7 +40,7 @@ pub enum ToolClass {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct HookRule {
     pub event: HookEvent,
     /// Only meaningful for tool events; ignored elsewhere.
@@ -53,7 +53,7 @@ pub struct HookRule {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct HookPolicy {
     #[serde(default)]
     pub rules: Vec<HookRule>,
@@ -61,7 +61,7 @@ pub struct HookPolicy {
 
 /// Whether the session's harness took the policy at launch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 #[serde(rename_all = "snake_case")]
 pub enum HookPolicyStatus {
     Applied,
@@ -71,7 +71,7 @@ pub enum HookPolicyStatus {
 
 /// `GET /sessions/{id}/hook-policy`: the rules sent with the session's launch.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct SessionHookPolicy {
     #[serde(default)]
     pub rules: Vec<HookRule>,

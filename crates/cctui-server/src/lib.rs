@@ -1,0 +1,2302 @@
+//! The server host: owns `AppState`, implements every domain context and mounts the routers.
+pub mod schema;
+
+mod accounts_context;
+mod api_routes;
+mod authz;
+use cctui_server_accounts::auto_redeem;
+use cctui_server_sessions::{auto_archive, auto_resume, bandwidth_watch};
+mod bus;
+pub mod core_state;
+mod crypto;
+mod db;
+use cctui_server_dispatch::dispatch_archive;
+mod dispatch_context;
+mod dispatch_hooks;
+mod dispatch_liveness;
+use cctui_server_dispatch::dispatchers;
+#[cfg(test)]
+mod events;
+mod extras_context;
+use cctui_server_dispatch::machine_liveness;
+use cctui_server_sessions::{followup, guard_step, inbox, keepalive};
+mod metrics;
+use cctui_server_notify::notify;
+mod notify_context;
+mod openapi;
+use cctui_server_sessions::outcome;
+mod routes;
+use cctui_server_sessions::session_viewers;
+mod sessions_context;
+use cctui_server_sessions::spawn_labels;
+#[cfg(test)]
+#[path = "tests/mod.rs"]
+mod host_tests;
+mod state;
+use cctui_server_sessions::turn_dedupe;
+mod update_check;
+use cctui_server_accounts::usage_history;
+use cctui_server_sessions::uploads;
+mod voice_context;
+use cctui_server_accounts::webauthn;
+use cctui_server_dispatch::webhook;
+use cctui_server_sessions::ws;
+
+#[cfg(test)]
+mod storage_admin_tests;
+
+#[cfg(test)]
+mod image_blobs_search_tests;
+
+use cctui_server_blobs::{blob_move, blob_store, image_blobs};
+use cctui_server_extras::{
+    cctuiverse, langfuse, plugin_archive, plugin_host_token, plugin_store, plugins, presence,
+    preview, skill_store, storage_stats,
+};
+use cctui_server_search as search_index;
+use cctui_server_voice as voice_live;
+use std::path::PathBuf;
+use std::sync::Arc;
+
+use authz::Routes;
+use axum::extract::DefaultBodyLimit;
+use axum::http::Method;
+use axum::routing::{MethodRouter, any, get, post, put};
+use axum::{Extension, Router, middleware};
+use cctui_proto::features::{Feature, FeatureSet};
+use cctui_server_kernel::config::Config;
+use cctui_server_kernel::live_sessions_predicate;
+use cctui_server_sessions::store::sessions::SessionRowStatus;
+use state::AppState;
+
+pub async fn run() -> anyhow::Result<()> {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if let Some((cmd, rest)) = args.split_first()
+        && cmd == "check-plugin-archive"
+    {
+        return check_plugin_archive(rest);
+    }
+    install_crypto_provider();
+    if args.first().is_some_and(|cmd| cmd == "init-db") {
+        return init_db().await;
+    }
+    let _telemetry = cctui_telemetry::init(
+        "cctui-server",
+        env!("CARGO_PKG_VERSION"),
+        "cctui_server=info,sqlx::query=warn",
+    );
+    blob_store::init()?;
+    let secrets = Arc::new(cctui_secrets::SecretRegistry::from_env());
+    let (config, pool, auth_config, migrations) = bootstrap(&secrets).await?;
+    tracing::info!("features: {}", config.features);
+    let state = build_state(&config, pool, auth_config.clone(), &secrets).await?;
+    follow_database_url(&secrets, &state.pool);
+    secrets.spawn_reloader();
+    record_boot_events(&state, &migrations);
+    if Task::PluginInit.enabled(config.features) {
+        plugin_store::init(&state.pool, &state.plugins, &state).await;
+        plugin_host_token::reconcile_installed(&state.pool, &state.auth_config, &state.plugins)
+            .await;
+    }
+    start_background_tasks(&state).await;
+    let app = build_app(&state, &config, &auth_config);
+    spawn_sweeps(&state);
+    serve(&config, app, &state).await
+}
+
+/// `check-plugin-archive <archive.tgz> <id> <version>`: the catalog check's
+/// hook into the installer's own validation.
+fn check_plugin_archive(args: &[String]) -> anyhow::Result<()> {
+    let [path, id, version] = args else {
+        anyhow::bail!("usage: cctui-server check-plugin-archive <archive.tgz> <id> <version>");
+    };
+    let bytes = std::fs::read(path)?;
+    plugin_archive::check_catalog_archive(&bytes, id, version).map_err(anyhow::Error::msg)
+}
+
+/// `init-db`: provision or upgrade the schema, then exit. Needs only
+/// `DATABASE_URL`, which may be a secret ref, and the server's
+/// `CCTUI_FEATURES_FILE`, which decides whether search objects are built.
+async fn init_db() -> anyhow::Result<()> {
+    let features = init_db_features(
+        std::env::var(cctui_server_kernel::config::FEATURES_FILE_ENV).ok().as_deref(),
+    )?;
+    let secrets = cctui_secrets::SecretRegistry::from_env();
+    let raw =
+        std::env::var("DATABASE_URL").map_err(|_| anyhow::anyhow!("DATABASE_URL is required"))?;
+    let url = secrets.register("DATABASE_URL", &raw).await?.get();
+    let (pool, applied) = db::connect_reporting_for(&url, features).await?;
+    pool.close().await;
+    println!("schema ready; {} legacy migrations applied", applied.len());
+    Ok(())
+}
+
+fn init_db_features(path: Option<&str>) -> anyhow::Result<FeatureSet> {
+    let Some(path) = path.filter(|p| !p.trim().is_empty()) else {
+        return Ok(FeatureSet::all());
+    };
+    let env = cctui_server_kernel::config::FEATURES_FILE_ENV;
+    let text = std::fs::read_to_string(path)
+        .map_err(|e| anyhow::anyhow!("{env}: cannot read `{path}`: {e}"))?;
+    let resolution = cctui_server_kernel::config::parse_features(&text)
+        .map_err(|e| anyhow::anyhow!("{env} `{path}`: {e}"))?;
+    Ok(resolution.set)
+}
+
+use cctui_server_dispatch::dispatch_identity;
+use cctui_server_kernel::client::{build_http_client, install_crypto_provider};
+
+async fn bootstrap(
+    secrets: &cctui_secrets::SecretRegistry,
+) -> anyhow::Result<(Config, sqlx::PgPool, cctui_server_kernel::auth::AuthConfig, Vec<i64>)> {
+    if let Err(e @ (cctui_crypto::KeyError::InvalidHex(_) | cctui_crypto::KeyError::Ref(_))) =
+        cctui_crypto::vault_key_checked()
+    {
+        anyhow::bail!("refusing to start: {e}");
+    }
+
+    let config = Config::from_env(secrets).await?;
+    let (pool, migrations) =
+        db::connect_reporting_for(&config.database_url, config.features).await?;
+    install_vault_key(&pool).await?;
+    // One-release back-compat shim: if the retired
+    // CCTUI_CLAUDE_LITELLM_* env vars are set, synthesize a managed (read-only)
+    // anthropic-compatible account per user so existing deployments keep working
+    // until they migrate to first-class accounts.
+    cctui_server_accounts::routes::accounts::sync_litellm_shim(&pool, &config).await;
+    follow_litellm_token(&pool, &config);
+    let admin_tokens = Config::admin_tokens(secrets).await?;
+    let auth_config = cctui_server_kernel::auth::AuthConfig::new(
+        admin_tokens
+            .as_ref()
+            .map_or_else(Vec::new, |s| cctui_server_kernel::auth::parse_admin_tokens(&s.get())),
+        pool.clone(),
+    );
+    // resolve CCTUI_ADMIN_TOKENS to a seeded admin user + api_keys rows
+    // with {admin} ceiling/grant, so the break-glass token is a real identity
+    // rather than a user_id=None ghost. Idempotent, best-effort.
+    auth_config.seed_admin().await;
+    if let Some(admin) = &admin_tokens {
+        auth_config.follow_admin_tokens(admin.subscribe());
+    }
+    Ok((config, pool, auth_config, migrations))
+}
+
+/// Re-runs the litellm shim when its token rotates, so the managed providers
+/// carry the new credential.
+fn follow_litellm_token(pool: &sqlx::PgPool, config: &Config) {
+    let Some(token) = &config.claude_litellm_token else { return };
+    let mut changes = token.subscribe();
+    let (pool, config) = (pool.clone(), config.clone());
+    tokio::spawn(async move {
+        while changes.changed().await.is_ok() {
+            cctui_server_accounts::routes::accounts::sync_litellm_shim(&pool, &config).await;
+            tracing::info!("CCTUI_CLAUDE_LITELLM_TOKEN rotated; managed providers updated");
+        }
+    });
+}
+
+/// Boot rows: `system.server_started` always, `system.migrations_applied` when some ran.
+fn record_boot_events(state: &AppState, migrations: &[i64]) {
+    use cctui_server_kernel::state_events::{Actor, Event, kind};
+    if !migrations.is_empty() {
+        cctui_server_kernel::state_events::record(
+            state,
+            Event::new(kind::SYSTEM_MIGRATIONS_APPLIED, Actor::System)
+                .detail(serde_json::json!({ "versions": migrations })),
+        );
+    }
+    cctui_server_kernel::state_events::record(
+        state,
+        Event::new(kind::SYSTEM_SERVER_STARTED, Actor::System).detail(serde_json::json!({
+            "version": env!("CARGO_PKG_VERSION"),
+            "git_sha": env!("CCTUI_GIT_HASH"),
+        })),
+    );
+}
+
+async fn install_vault_key(pool: &sqlx::PgPool) -> anyhow::Result<()> {
+    let has_data = crypto::has_vault_data(pool).await?;
+    match cctui_crypto::startup_key(has_data) {
+        Err(e) => anyhow::bail!("refusing to start: {e}"),
+        Ok(cctui_crypto::StartupKey::Strong(key)) => {
+            cctui_server_kernel::crypto::install_vault_key(key);
+        }
+        Ok(cctui_crypto::StartupKey::Legacy(key, reason)) => {
+            tracing::warn!(
+                "INSECURE VAULT KEY: {reason}. Starting anyway because the vault already holds \
+                 credentials written under this key{}. Rotate it: generate a new key with \
+                 `openssl rand -hex 32`, set CCTUI_VAULT_KEY, then re-enter every stored \
+                 credential (provider accounts, API keys, account env).",
+                if key.is_empty() { " (stored UNENCRYPTED)" } else { "" }
+            );
+            cctui_server_kernel::crypto::install_vault_key(key);
+        }
+    }
+    Ok(())
+}
+
+/// New pool connections use a rotated `DATABASE_URL`; open ones keep their
+/// session until the pool recycles them.
+fn follow_database_url(secrets: &cctui_secrets::SecretRegistry, pool: &sqlx::PgPool) {
+    let Some(url) = secrets.get("DATABASE_URL") else { return };
+    let mut changes = url.subscribe();
+    let pool = pool.clone();
+    tokio::spawn(async move {
+        while changes.changed().await.is_ok() {
+            let url = changes.borrow_and_update().clone();
+            apply_database_url(&pool, &url);
+        }
+    });
+}
+
+fn apply_database_url(pool: &sqlx::PgPool, url: &str) {
+    if let Ok(options) = db::connect_options(url) {
+        pool.set_connect_options(options);
+        tracing::info!("DATABASE_URL rotated; new pool connections use it");
+    } else {
+        tracing::warn!("rotated DATABASE_URL does not parse; keeping the previous one");
+    }
+}
+
+async fn build_state(
+    config: &Config,
+    pool: sqlx::PgPool,
+    auth_config: cctui_server_kernel::auth::AuthConfig,
+    secrets: &cctui_secrets::SecretRegistry,
+) -> anyhow::Result<AppState> {
+    let skills = init_skill_store().await;
+    let langfuse = langfuse::LangfuseConfig::from_env(secrets)
+        .await?
+        .filter(|_| config.features.contains(Feature::Observability))
+        .map(|c| Arc::new(langfuse::LangfuseClient::new(c, build_http_client())));
+    let dispatchers = init_dispatchers(config);
+
+    let presence = Arc::new(presence::PodIdentity::from_env());
+    let http_client = build_http_client();
+
+    let (transport, internal_secret) = init_bus(&pool, config, &presence, &http_client).await?;
+    if let Some(secret) = &internal_secret {
+        auth_config.set_peers(Arc::new(bus::peer::PeerAuthPurge::new(
+            pool.clone(),
+            http_client.clone(),
+            presence.pod.clone(),
+            config.port,
+            String::from(&**secret),
+        )));
+    }
+    let guard_peers = internal_secret.as_ref().map(|secret| -> Arc<dyn guard_step::ForgetRelay> {
+        Arc::new(bus::peer::PeerGuardForget::new(
+            pool.clone(),
+            http_client.clone(),
+            presence.pod.clone(),
+            config.port,
+            String::from(&**secret),
+        ))
+    });
+    guard_step::init(guard_step::Durable::new(pool.clone(), guard_peers));
+
+    Ok(AppState {
+        core: crate::core_state::CoreState::new(
+            pool,
+            auth_config,
+            cctui_server_kernel::bus::Bus::new(transport),
+            http_client,
+            dispatchers,
+        ),
+        config: config.clone(),
+        permission_store: cctui_server_sessions::routes::permissions::PermissionStore::shared(),
+        // Passkeys ride the deployment's own public URL: a server already
+        // configured with an https `CCTUI_EXTERNAL_URL` needs no new env.
+        webauthn: webauthn::build(&config.external_url, config.rp_id.as_deref())
+            .filter(|_| config.features.contains(Feature::Passkeys))
+            .map(Arc::new),
+        skills,
+        plugins: Arc::new(init_plugins(config)),
+        preview: Arc::new(preview::Registry::new(
+            config.preview_host.clone(),
+            &config.external_url,
+            &cctui_server_kernel::crypto::vault_key(),
+        )),
+        presence,
+        internal_secret,
+        // Optional Langfuse tracing sink. `None` (dark) unless the
+        // CCTUI_LANGFUSE_* env is fully set — zero overhead on the gateway path.
+        langfuse,
+        pr_status_cache: cctui_proto::classifier::PrStatusCache::new(),
+        codex_catalogs: Arc::new(dashmap::DashMap::new()),
+        codex_account_catalogs: Arc::new(dashmap::DashMap::new()),
+        codex_latest_version: Arc::new(std::sync::Mutex::new(None)),
+        eviction_tracker: Arc::new(bandwidth_watch::EvictionTracker::default()),
+        connect_tracker: Arc::new(bandwidth_watch::ConnectTracker::default()),
+        divergence_tracker: Arc::new(bandwidth_watch::DivergenceTracker::default()),
+        upload_caps: Arc::new(std::sync::RwLock::new(uploads::UploadCaps::default())),
+        update_check: update_check::UpdateCheck::shared(),
+        self_update: Arc::new(routes::self_update::SelfUpdateGuard::default()),
+    })
+}
+
+/// Bus transport selection: with a routable pod IP this replica
+/// participates in the peer mesh — mint/load the internal shared secret and
+/// route/relay through `PeerHttpTransport`. Without one (local dev, single
+/// replica) the bus stays local-only (`NoopTransport`) and writes nothing.
+async fn init_bus(
+    pool: &sqlx::PgPool,
+    config: &Config,
+    presence: &presence::PodIdentity,
+    http_client: &reqwest::Client,
+) -> anyhow::Result<(Box<dyn cctui_server_kernel::bus::Transport>, Option<Arc<str>>)> {
+    let selected: (Box<dyn cctui_server_kernel::bus::Transport>, Option<Arc<str>>) =
+        if presence.ip.is_some() {
+            let secret = routes::internal::ensure_secret(pool).await?;
+            let transport = bus::peer::PeerHttpTransport::new(
+                pool.clone(),
+                http_client.clone(),
+                presence.pod.clone(),
+                config.port,
+                secret.clone(),
+            );
+            (Box::new(transport), Some(Arc::from(secret.as_str())))
+        } else {
+            (Box::new(cctui_server_kernel::bus::NoopTransport), None)
+        };
+    Ok(selected)
+}
+
+async fn start_background_tasks(state: &AppState) {
+    routes::server_settings::refresh_upstream_allowlist(&state.pool).await;
+    tokio::spawn(routes::server_settings::upstream_allowlist_task(state.pool.clone()));
+    routes::server_settings::refresh_upload_caps(state).await;
+    tokio::spawn(routes::server_settings::upload_caps_task(state.clone()));
+
+    // Slow upstream release probe feeding `/version.latest_version`;
+    // `CCTUI_UPDATE_CHECK=0` keeps air-gapped deployments quiet.
+    if update_check::enabled_from_env() && Task::UpdateProbe.enabled(state.config.features) {
+        tokio::spawn(update_check::task(state.update_check.clone(), state.http_client.clone()));
+    }
+
+    // Statuspage poller behind `GET /provider-status` and the usage payloads;
+    // `CCTUI_PROVIDER_STATUS=0` keeps every family on `unknown`.
+    if cctui_server_accounts::provider_status::enabled_from_env() {
+        tokio::spawn(cctui_server_accounts::provider_status::task(
+            state.provider_status.clone(),
+            state.http_client.clone(),
+        ));
+    }
+
+    // Warm the reauth gate from the persisted flag so a restart doesn't
+    // strand an account: without this the success path couldn't clear a flag set
+    // before the restart (it only writes on the in-memory transition).
+    if let Ok(ids) =
+        sqlx::query_scalar::<_, uuid::Uuid>("SELECT id FROM account_providers WHERE needs_reauth")
+            .fetch_all(&state.pool)
+            .await
+    {
+        for id in ids {
+            state.account_reauth.insert(id, ());
+        }
+    }
+
+    cctui_server_sessions::routes::codex_models::warm_cache(state).await;
+
+    if let Some(config) = search_index::BackfillConfig::from_env()
+        && Task::SearchBackfill.enabled(state.config.features)
+    {
+        tokio::spawn(search_index::task(state.pool.clone(), config));
+    }
+    if let Some(config) = image_blobs::backfill::Config::from_env() {
+        tokio::spawn(image_blobs::backfill::task(state.pool.clone(), config));
+    }
+    if let Some(config) = blob_move::Config::from_env() {
+        tokio::spawn(blob_move::task(state.pool.clone(), config));
+    }
+    tokio::spawn(storage_stats::task(state.pool.clone(), state.clone()));
+
+    // Off the startup path: every replica sweeps, and the scan is IO over a
+    // shared volume.
+    if Task::SkillStoreSweep.enabled(state.config.features) {
+        tokio::spawn({
+            let (pool, skills) = (state.pool.clone(), state.skills.clone());
+            async move { skill_store::sweep_orphans_or_warn(&pool, &skills).await }
+        });
+    }
+
+    // Replica-aware WS presence: registered only when the pod knows
+    // its routable IP; the heartbeat task keeps this pod's rows trusted and
+    // reaps rows crashed pods left behind.
+    if state.presence.ip.is_some() {
+        tokio::spawn(presence::heartbeat_task(state.clone()));
+    }
+}
+
+fn build_app(
+    state: &AppState,
+    config: &Config,
+    auth_config: &cctui_server_kernel::auth::AuthConfig,
+) -> Router {
+    let (api_router, public_api_router, api_descriptors) =
+        build_api_routes_with(config.features).into_parts();
+    let outer = outer_routes(config.features);
+    let left_out: Vec<&str> = outer
+        .classified
+        .iter()
+        .filter(|(feature, _)| !config.features.allows(*feature))
+        .map(|(_, path)| *path)
+        .collect();
+    tracing::debug!(?left_out, "outer routes not mounted");
+
+    // The descriptor list is the route table / source of truth, consumed by
+    // the coverage test. At runtime it is informational only.
+    debug_assert!(!api_descriptors.is_empty());
+    let _ = &api_descriptors;
+
+    let api_router = api_router
+        // Authentication runs as a global layer; AUTHORIZATION is enforced
+        // per-route inside each route's `route_layer` (attached by
+        // `Routes::add`), which runs INSIDE this `auth_middleware` so the
+        // `AuthContext` it inserts is already present when the policy evaluates.
+        .layer(middleware::from_fn(cctui_server_kernel::auth::auth_middleware))
+        .layer(Extension(auth_config.clone()))
+        .layer(middleware::from_fn_with_state(
+            Arc::new(config.allowed_origins.clone()),
+            preview::csrf::middleware,
+        ));
+    outer
+        .router
+        .nest("/api/v1", api_router)
+        // `cctui_server_kernel::authz::PUBLIC_PATHS`, already prefixed. Merged rather than nested —
+        // a second nest at `/api/v1` collides on axum's nest catch-all — so
+        // `auth_middleware` cannot 401 a tokenless caller.
+        .merge(public_api_router)
+        .layer(middleware::from_fn_with_state(
+            auth_config.clone(),
+            cctui_server_kernel::auth::worker_key_gate,
+        ))
+        // Credentialed CORS bound to an explicit origin allowlist (same-origin
+        // webui + dev Vite, extendable via CCTUI_ALLOWED_ORIGINS). A wildcard
+        // origin is invalid once credentials are allowed.
+        .layer(cors_layer(&config.allowed_origins))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            preview::handler::host_gate::<crate::state::AppState>,
+        ))
+        .layer(cctui_telemetry::http::trace_layer())
+        .with_state(state.clone())
+}
+
+/// The routes outside the authenticated `/api/v1` table. A route whose
+/// feature is off is left out; every route is recorded with its feature.
+struct OuterRoutes {
+    router: Router<AppState>,
+    features: FeatureSet,
+    classified: Vec<(Option<Feature>, &'static str)>,
+}
+
+impl OuterRoutes {
+    fn new(features: FeatureSet) -> Self {
+        Self { router: Router::new(), features, classified: Vec::new() }
+    }
+
+    fn route(self, path: &'static str, handler: MethodRouter<AppState>) -> Self {
+        self.add(None, path, handler)
+    }
+
+    fn feature(
+        self,
+        feature: Feature,
+        path: &'static str,
+        handler: MethodRouter<AppState>,
+    ) -> Self {
+        self.add(Some(feature), path, handler)
+    }
+
+    fn add(
+        mut self,
+        feature: Option<Feature>,
+        path: &'static str,
+        handler: MethodRouter<AppState>,
+    ) -> Self {
+        self.classified.push((feature, path));
+        if self.features.allows(feature) {
+            self.router = self.router.route(path, handler);
+        }
+        self
+    }
+
+    fn merge(mut self, feature: Feature, label: &'static str, router: Router<AppState>) -> Self {
+        self.classified.push((Some(feature), label));
+        if self.features.contains(feature) {
+            self.router = self.router.merge(router);
+        }
+        self
+    }
+
+    /// The launch-context pull runs on every launch; only the context tool's
+    /// POST belongs to `context`.
+    fn launch_context(mut self) -> Self {
+        const PATH: &str = "/api/v1/daemon/sessions/{id}/context";
+        self.classified.push((None, PATH));
+        self.classified.push((Some(Feature::Context), PATH));
+        let handler = get(cctui_server_sessions::routes::daemon::session_launch_context::<
+            crate::state::AppState,
+        >);
+        let handler = if self.features.contains(Feature::Context) {
+            handler.post(
+                cctui_server_sessions::routes::context_tool::context_tool::<crate::state::AppState>,
+            )
+        } else {
+            handler
+        };
+        self.router = self.router.route(PATH, handler);
+        self
+    }
+}
+
+// `{id}` etc. in route paths are axum path-param syntax, not format args.
+#[allow(clippy::literal_string_with_formatting_args)]
+fn outer_routes(features: FeatureSet) -> OuterRoutes {
+    let r =
+        OuterRoutes::new(features)
+            .route("/health", get(|| async { "ok" }))
+            .route("/readyz", get(readyz))
+            // Prometheus scrape. Self-authenticating (same token scheme as
+            // `/api/v1`, unless `CCTUI_METRICS_PUBLIC` opts out), so it sits here
+            // rather than under the `/api/v1` auth layer: a scrape config expects
+            // `/metrics` at the root.
+            .route("/metrics", get(routes::metrics::metrics))
+            // Self-describing API surface. Both are unauthenticated meta
+            // routes — like `/health` — because they expose ONLY the public shape of
+            // the API (paths/methods/auth model/summaries), never any data. An agent
+            // handed a base URL can discover the surface, then authenticate.
+            .route("/llms.txt", get(openapi::llms_txt))
+            .route("/api/v1/openapi.json", get(openapi::openapi_json))
+            .route("/api/v1/ws", get(ws::tui_ws::<crate::state::AppState>))
+            .feature(Feature::Voice, "/api/v1/ws/voice", get(voice_live::voice_ws::<AppState>))
+            // Browser auth-cookie endpoints. Self-authenticating: `login`
+            // validates the presented token and sets the `HttpOnly` cookie, `logout`
+            // clears it — both live outside the `auth_middleware` group.
+            .route(
+                "/api/v1/auth/login",
+                post(cctui_server_accounts::routes::auth::login::<crate::state::AppState>),
+            )
+            .route(
+                "/api/v1/auth/logout",
+                post(cctui_server_accounts::routes::auth::logout::<crate::state::AppState>),
+            )
+            // Passkey login. Unauthenticated for the same reason `login` is: the
+            // assertion IS the credential. `config` is the pre-auth probe the login
+            // screen makes to decide whether to offer the passkey button at all.
+            .feature(
+                Feature::Passkeys,
+                "/api/v1/auth/passkey/config",
+                get(cctui_server_accounts::routes::passkeys::config::<crate::state::AppState>),
+            )
+            .feature(
+                Feature::Passkeys,
+                "/api/v1/auth/passkey/login/start",
+                post(
+                    cctui_server_accounts::routes::passkeys::login_start::<crate::state::AppState>,
+                ),
+            )
+            .feature(
+                Feature::Passkeys,
+                "/api/v1/auth/passkey/login/finish",
+                post(
+                    cctui_server_accounts::routes::passkeys::login_finish::<crate::state::AppState>,
+                ),
+            )
+            // Device-authorization login. Unauthenticated because the device has no
+            // credential yet; a request is worthless until an authenticated user
+            // approves it through `/auth/device/{user_code}/decision`.
+            .feature(
+                Feature::DeviceLogin,
+                "/api/v1/auth/device/start",
+                post(cctui_server_accounts::routes::device_auth::start::<crate::state::AppState>),
+            )
+            .feature(
+                Feature::DeviceLogin,
+                "/api/v1/auth/device/poll",
+                post(cctui_server_accounts::routes::device_auth::poll::<crate::state::AppState>),
+            )
+            // The token in the path is the credential; `GET` only renders the confirm page.
+            .route(
+                "/n/{token}",
+                get(cctui_server_notify::routes::notifications::confirm_page::<
+                    crate::state::AppState,
+                >),
+            )
+            .route(
+                "/api/v1/notifications/actions/{token}",
+                post(
+                    cctui_server_notify::routes::notifications::act_with_token::<
+                        crate::state::AppState,
+                    >,
+                ),
+            );
+    infra_routes(daemon_routes(r))
+}
+
+#[allow(clippy::literal_string_with_formatting_args)]
+fn daemon_routes(r: OuterRoutes) -> OuterRoutes {
+    r
+        // Daemon-facing endpoints. `auth` and `ws` carry their own auth
+        // (machine-key Bearer) so they live outside the user-token-only
+        // `api_router` group.
+        .route("/api/v1/daemon/auth", post(cctui_server_sessions::routes::daemon::auth::<crate::state::AppState>))
+        .route("/api/v1/daemon/ws", get(cctui_server_sessions::routes::daemon::ws::<crate::state::AppState>))
+        // Launch-time gateway-env pull: the daemon resolves a
+        // session's account env here on every worker (re)launch. Self-auths via
+        // the machine-key Bearer, so it sits beside the other daemon endpoints.
+        .route(
+            "/api/v1/daemon/sessions/{id}/gateway-env",
+            get(cctui_server_sessions::routes::daemon::session_gateway_env::<crate::state::AppState>),
+        )
+        // Token-validity probe: the daemon's low-frequency sweep asks
+        // whether the session token it launched a trusted worker with still
+        // resolves (by sha256 hash — no token material on the wire). Same
+        // machine-key self-auth as gateway-env.
+        .route(
+            "/api/v1/daemon/sessions/{id}/token-valid",
+            get(cctui_server_sessions::routes::daemon::session_token_valid::<crate::state::AppState>),
+        )
+        .route(
+            "/api/v1/daemon/sessions/{id}/limits",
+            get(cctui_server_sessions::routes::session_limits::session_limits::<crate::state::AppState>),
+        )
+        .route(
+            "/api/v1/daemon/sessions/{id}/user-actions",
+            post(cctui_server_notify::routes::user_actions::daemon_add::<crate::state::AppState>),
+        )
+        .route(
+            "/api/v1/daemon/sessions/{id}/outcome",
+            post(outcome::daemon_declare::<crate::state::AppState>),
+        )
+        .feature(
+            Feature::Automation,
+            "/api/v1/daemon/sessions/{id}/timer",
+            post(inbox::timer::daemon_timer::<crate::state::AppState>),
+        )
+        .launch_context()
+        .route(
+            "/api/v1/daemon/sessions/{id}/user-actions/tick",
+            post(cctui_server_notify::routes::user_actions::daemon_tick::<crate::state::AppState>),
+        )
+        .feature(
+            Feature::ChildSessions,
+            "/api/v1/daemon/sessions/{id}/spawn-child",
+            post(cctui_server_sessions::routes::spawn_child::spawn_child::<crate::state::AppState>),
+        )
+        .feature(
+            Feature::Rooms,
+            "/api/v1/daemon/sessions/{id}/room",
+            post(cctui_server_extras::routes::rooms::room_tool::<crate::state::AppState>),
+        )
+        .feature(
+            Feature::Rooms,
+            "/api/v1/daemon/sessions/{id}/peers",
+            get(cctui_server_extras::routes::peer::list_peers::<crate::state::AppState>),
+        )
+        .feature(
+            Feature::Rooms,
+            "/api/v1/daemon/sessions/{id}/message-peer",
+            post(cctui_server_extras::routes::peer::message_peer::<crate::state::AppState>),
+        )
+        .feature(
+            Feature::Rooms,
+            "/api/v1/daemon/sessions/{id}/peer-conversation",
+            get(cctui_server_extras::routes::peer::peer_conversation::<crate::state::AppState>),
+        )
+        .feature(
+            Feature::ChildSessions,
+            "/api/v1/daemon/sessions/{id}/message-child",
+            post(cctui_server_sessions::routes::spawn_child::message_child::<crate::state::AppState>),
+        )
+        .feature(
+            Feature::ChildSessions,
+            "/api/v1/daemon/sessions/{id}/archive-child",
+            post(cctui_server_sessions::routes::spawn_child::archive_child::<crate::state::AppState>),
+        )
+        .feature(
+            Feature::ChildSessions,
+            "/api/v1/daemon/sessions/{id}/child-completion",
+            post(cctui_server_sessions::routes::spawn_child::child_completion::<crate::state::AppState>),
+        )
+        // Agent-posted image upload: the daemon POSTs raw image bytes
+        // it detected as a marker in an assistant message. Self-auths via the
+        // machine-key Bearer like the sibling daemon endpoints, so it sits here
+        // outside the user-token `api_router`. Cap the body a little over the
+        // 5 MiB per-image limit so an over-cap upload 413s in-handler.
+        .feature(
+            Feature::Voice,
+            "/api/v1/daemon/sessions/{id}/voice-notes",
+            post(routes::voice_notes::create_voice_note),
+        )
+        .route(
+            "/api/v1/daemon/sessions/{id}/images",
+            post(cctui_server_sessions::routes::images::upload_session_image::<crate::state::AppState>)
+                .layer(DefaultBodyLimit::max(6 * 1024 * 1024)),
+        )
+        // Content-addressed blob upload: the daemon PUTs oversized
+        // base64 attachments it extracted from transcript payloads, keyed by
+        // sha256. Machine-key Bearer self-auth, so it sits beside the other
+        // daemon endpoints outside the user-token `api_router`. Headroom over
+        // the per-blob cap so an over-cap upload 413s in-handler.
+        .route(
+            "/api/v1/daemon/blobs/{hash}",
+            put(cctui_server_blobs::routes::put_blob::<AppState>)
+                .layer(DefaultBodyLimit::max(cctui_server_blobs::routes::MAX_BLOB_BYTES + 1024 * 1024)),
+        )
+        // Update-hook endpoints. Machine-key Bearer self-auth like the blob
+        // upload above, so they live outside the user-token `api_router`: a
+        // daemon has no user token, and the health probe below is what tells
+        // it whether the update it just ran actually took.
+        .feature(
+            Feature::SelfUpdate,
+            "/api/v1/daemon/version",
+            get(routes::update_hook::daemon_version),
+        )
+        .feature(
+            Feature::SelfUpdate,
+            "/api/v1/daemon/update-hook/{run_id}",
+            post(routes::update_hook::report),
+        )
+}
+
+#[allow(clippy::literal_string_with_formatting_args)]
+fn infra_routes(r: OuterRoutes) -> OuterRoutes {
+    r
+        // Enrolled-dispatcher endpoints. Carry their own key auth
+        // (dispatcher-key Bearer), so they live outside the user-token
+        // `api_router` group, like the daemon endpoints.
+        .route(
+            "/api/v1/dispatcher/auth",
+            post(cctui_server_dispatch::targets::dispatcher::auth::<crate::state::AppState>),
+        )
+        .route(
+            "/api/v1/dispatcher/ws",
+            get(cctui_server_dispatch::targets::dispatcher::ws::<crate::state::AppState>),
+        )
+        // Kube dispatch identity. Register carries the dispatcher key, redeem a
+        // pod's service-account token, env the redeemed machine key.
+        .route("/api/v1/dispatch/register", post(dispatch_identity::register::<AppState>))
+        .route("/api/v1/dispatch/redeem", post(dispatch_identity::redeem::<AppState>))
+        .route("/api/v1/dispatch/{id}/env", get(dispatch_identity::env::<AppState>))
+        .route("/api/v1/dispatch/{id}/hold", post(dispatch_identity::hold::<AppState>))
+        // Public like the SPA assets: the webui `import()`s plugin modules.
+        .feature(
+            Feature::Plugins,
+            "/plugins/{id}/{*path}",
+            get(cctui_server_extras::routes::plugins::static_file::<crate::state::AppState>),
+        )
+        // OAuth passthrough gateway. Auths via the session-scoped
+        // token in the request's own Authorization header — NOT the user-token
+        // `api_router` middleware — so it lives on the outer app. Matches any
+        // method + sub-path under each provider prefix.
+        .route(
+            "/gateway/anthropic/{*path}",
+            any(cctui_server_accounts::routes::gateway::anthropic::<crate::state::AppState>),
+        )
+        .route(
+            "/gateway/openai/{*path}",
+            any(cctui_server_accounts::routes::gateway::openai::<crate::state::AppState>),
+        )
+        .route(
+            "/gateway/fireworks/{*path}",
+            any(cctui_server_accounts::routes::gateway::fireworks::<crate::state::AppState>),
+        )
+        .route(
+            "/gateway/google/{*path}",
+            any(cctui_server_accounts::routes::gateway::google::<crate::state::AppState>),
+        )
+        // Pod-to-pod bus endpoints. Self-authenticating via the
+        // cluster-internal shared secret (constant-time compare; user/machine
+        // tokens never accepted), so they live outside the `api_router` auth
+        // group. `route` may carry a forwarded stage-files upload — give it the
+        // same body headroom as the spawn/files routes it serves.
+        .route(
+            "/internal/bus/route",
+            post(routes::internal::bus_route).layer(DefaultBodyLimit::max(32 * 1024 * 1024)),
+        )
+        .route("/internal/bus/publish", post(routes::internal::bus_publish))
+        .route("/internal/auth/purge", post(routes::internal::auth_purge))
+        .route("/internal/guard/forget", post(routes::internal::guard_forget))
+        // Server-to-server cctuiverse calls, authenticated by each link's
+        // Ed25519 signature rather than any cctui credential.
+        .merge(Feature::Federation, "/cctuiverse/v1/*", cctuiverse_routes())
+        // Preview leg for a browser that landed on a pod without the daemon
+        // link. Same secret; serves locally only, so it cannot loop.
+        .feature(
+            Feature::Previews,
+            "/internal/preview/{id}/",
+            any(routes::internal::preview_serve_root),
+        )
+        .feature(
+            Feature::Previews,
+            "/internal/preview/{id}/{*path}",
+            any(routes::internal::preview_serve),
+        )
+}
+
+fn cctuiverse_routes() -> Router<AppState> {
+    Router::new()
+        .route("/cctuiverse/v1/join", post(cctuiverse::wire::join::<crate::state::AppState>))
+        .route(
+            "/cctuiverse/v1/links/{id}/messages",
+            post(cctuiverse::wire::messages::<crate::state::AppState>),
+        )
+        .route(
+            "/cctuiverse/v1/links/{id}/close",
+            post(cctuiverse::wire::close::<crate::state::AppState>),
+        )
+        .route(
+            "/cctuiverse/v1/links/{id}/history",
+            post(cctuiverse::wire::history::<crate::state::AppState>),
+        )
+        .route(
+            "/cctuiverse/v1/links/{id}/room",
+            post(cctuiverse::wire::room::<crate::state::AppState>),
+        )
+        .layer(DefaultBodyLimit::max(64 * 1024))
+}
+
+const CCTUIVERSE_SWEEP_PERIOD: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Background and boot-time work owned by a switchable feature. Anything not
+/// listed here runs on every server.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Task {
+    FederationOutbox,
+    Keepalive,
+    PreviewSweep,
+    PluginInit,
+    PluginSync,
+    FollowUp,
+    AutoResume,
+    AutoRedeem,
+    UpdateProbe,
+    SearchBackfill,
+    LabelIntentSweep,
+    SkillStoreSweep,
+}
+
+impl Task {
+    #[cfg(test)]
+    const ALL: [Self; 12] = [
+        Self::FederationOutbox,
+        Self::Keepalive,
+        Self::PreviewSweep,
+        Self::PluginInit,
+        Self::PluginSync,
+        Self::FollowUp,
+        Self::AutoResume,
+        Self::AutoRedeem,
+        Self::UpdateProbe,
+        Self::SearchBackfill,
+        Self::LabelIntentSweep,
+        Self::SkillStoreSweep,
+    ];
+
+    const fn feature(self) -> Feature {
+        match self {
+            Self::FederationOutbox => Feature::Federation,
+            Self::Keepalive | Self::FollowUp | Self::AutoResume | Self::AutoRedeem => {
+                Feature::Automation
+            }
+            Self::PreviewSweep => Feature::Previews,
+            Self::PluginInit | Self::PluginSync => Feature::Plugins,
+            Self::UpdateProbe => Feature::SelfUpdate,
+            Self::SearchBackfill => Feature::TranscriptSearch,
+            Self::LabelIntentSweep => Feature::Organising,
+            Self::SkillStoreSweep => Feature::Library,
+        }
+    }
+
+    const fn enabled(self, features: FeatureSet) -> bool {
+        features.contains(self.feature())
+    }
+}
+
+fn spawn_sweeps(state: &AppState) {
+    let features = state.config.features;
+    if Task::FederationOutbox.enabled(features) {
+        spawn_periodic(CCTUIVERSE_SWEEP_PERIOD, {
+            let state = state.clone();
+            move || {
+                let state = state.clone();
+                async move { cctuiverse::outbox::sweep(&state).await }
+            }
+        });
+    }
+    spawn_periodic(REAPER_PERIOD, {
+        let state = state.clone();
+        move || webhook_sweep(state.clone())
+    });
+    if Task::Keepalive.enabled(features) {
+        spawn_periodic(REAPER_PERIOD, {
+            let state = state.clone();
+            move || keepalive_sweep(state.clone())
+        });
+    }
+    spawn_periodic(session_viewers::HEARTBEAT, {
+        let state = state.clone();
+        move || {
+            let state = state.clone();
+            async move { session_viewers::heartbeat(&state).await }
+        }
+    });
+    if Task::PreviewSweep.enabled(features) {
+        spawn_periodic(REAPER_PERIOD, {
+            let pool = state.pool.clone();
+            let tracked = state.presence.ip.is_some();
+            move || {
+                let pool = pool.clone();
+                async move {
+                    preview::store::sweep(&pool, tracked).await;
+                }
+            }
+        });
+    }
+    spawn_periodic(REAPER_PERIOD, {
+        let pool = state.pool.clone();
+        move || {
+            let pool = pool.clone();
+            async move { turn_dedupe::sweep(&pool).await }
+        }
+    });
+    if Task::PluginSync.enabled(features) {
+        spawn_periodic(PLUGIN_SYNC_PERIOD, {
+            let state = state.clone();
+            move || {
+                let state = state.clone();
+                async move { plugin_store::sync_or_warn(&state.pool, &state.plugins, &state).await }
+            }
+        });
+    }
+    spawn_reaper_sweeps(state);
+}
+
+/// Fits inside Kubernetes' default 30 s termination grace period.
+const SHUTDOWN_DRAIN: std::time::Duration = std::time::Duration::from_secs(20);
+const READY_DB_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Presence is withdrawn as soon as the signal lands, before the drain: a peer
+/// that keeps routing to this pod's rows would otherwise hit a closed listener
+/// until the heartbeat window ran out.
+async fn serve(config: &Config, app: Router, state: &AppState) -> anyhow::Result<()> {
+    let listener = tokio::net::TcpListener::bind(config.bind_addr()).await?;
+    tracing::info!("listening on {}", config.bind_addr());
+    let signal = async {
+        shutdown_signal().await;
+        presence::withdraw(&state.pool, &state.presence).await;
+    };
+    serve_until(listener, app, signal, SHUTDOWN_DRAIN).await
+}
+
+/// The drain is bounded: `WebSockets` and streams can outlast any wait.
+async fn serve_until(
+    listener: tokio::net::TcpListener,
+    app: Router,
+    signal: impl std::future::Future<Output = ()>,
+    drain: std::time::Duration,
+) -> anyhow::Result<()> {
+    use std::future::IntoFuture;
+    let stop = Arc::new(tokio::sync::Notify::new());
+    // With connect info, so a handler that must identify its caller can use the
+    // peer address rather than believing a header.
+    let server =
+        axum::serve(listener, app.into_make_service_with_connect_info::<std::net::SocketAddr>())
+            .with_graceful_shutdown({
+                let stop = stop.clone();
+                async move { stop.notified().await }
+            })
+            .into_future();
+    let mut server = std::pin::pin!(server);
+    tokio::select! {
+        res = &mut server => return Ok(res?),
+        () = signal => {}
+    }
+    tracing::info!("shutdown signal received, draining connections");
+    stop.notify_one();
+    if let Ok(res) = tokio::time::timeout(drain, server).await {
+        res?;
+    } else {
+        tracing::warn!(?drain, "connections still open after the drain window; exiting");
+    }
+    Ok(())
+}
+
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        if tokio::signal::ctrl_c().await.is_err() {
+            std::future::pending::<()>().await;
+        }
+    };
+    #[cfg(unix)]
+    let terminate = async {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut sigterm) => {
+                sigterm.recv().await;
+            }
+            Err(err) => {
+                tracing::warn!(%err, "cannot listen for SIGTERM");
+                std::future::pending::<()>().await;
+            }
+        }
+    };
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+    tokio::select! {
+        () = ctrl_c => {}
+        () = terminate => {}
+    }
+}
+
+/// Readiness, unlike `/health` liveness: 503 while the database is unreachable.
+async fn readyz(
+    axum::extract::State(state): axum::extract::State<AppState>,
+) -> (axum::http::StatusCode, String) {
+    let (status, verdict) = if db_ready(&state.pool).await {
+        (axum::http::StatusCode::OK, "ok")
+    } else {
+        (axum::http::StatusCode::SERVICE_UNAVAILABLE, "database unavailable")
+    };
+    (status, format!("{verdict}\nfeatures: {}\n", state.config.features))
+}
+
+async fn db_ready(pool: &sqlx::PgPool) -> bool {
+    matches!(
+        tokio::time::timeout(READY_DB_TIMEOUT, sqlx::query("SELECT 1").execute(pool)).await,
+        Ok(Ok(_))
+    )
+}
+
+/// Build the `/api/v1` route table from the descriptor list. Every
+/// route declares both an [`cctui_server_kernel::authz::Authn`] (recorded; the proven `auth_middleware`
+/// path still performs authentication) and an [`cctui_server_kernel::authz::Authz`] (enforced by
+/// `cctui_server_kernel::authz::enforce_route`, default-deny for any un-policied route). Each route's
+/// declared policy mirrors its CURRENT enforcement exactly: routes with
+/// in-handler owner checks or `owner_filter()` SQL filters declare
+/// `Authenticated` and keep that filter in the handler (the type system can't
+/// express a self-scoped filter); scope-gated routes declare the matching
+/// `Scope`. The returned [`Routes`] is the single source of truth walked by the
+/// coverage test.
+fn build_api_routes() -> Routes {
+    build_api_routes_with(FeatureSet::all())
+}
+
+/// [`build_api_routes`] with the routes of every feature off in `features` left out.
+fn build_api_routes_with(features: FeatureSet) -> Routes {
+    api_routes::register(Routes::with_features(features))
+}
+
+/// Credentialed CORS layer restricted to `allowed_origins`. Credentials forbid
+/// a wildcard origin, so the origin is an explicit list; request headers are
+/// mirrored (not `*`) for the same reason.
+fn cors_layer(allowed_origins: &[String]) -> tower_http::cors::CorsLayer {
+    use axum::http::HeaderValue;
+    use tower_http::cors::{AllowHeaders, AllowOrigin, CorsLayer};
+    let origins: Vec<HeaderValue> =
+        allowed_origins.iter().filter_map(|o| o.parse::<HeaderValue>().ok()).collect();
+    CorsLayer::new()
+        .allow_origin(AllowOrigin::list(origins))
+        .allow_credentials(true)
+        .allow_methods([
+            Method::GET,
+            Method::POST,
+            Method::PUT,
+            Method::PATCH,
+            Method::DELETE,
+            Method::OPTIONS,
+        ])
+        .allow_headers(AllowHeaders::mirror_request())
+}
+
+fn init_plugins(config: &Config) -> plugins::PluginRegistry {
+    config.plugins_dir.as_ref().map_or_else(plugins::PluginRegistry::disabled, |dir| {
+        let registry = plugins::PluginRegistry::from_dir(dir.clone());
+        tracing::info!(dir = %dir.display(), installed = registry.all().len(), "plugins dir scanned");
+        registry
+    })
+}
+
+async fn init_skill_store() -> Arc<skill_store::SkillStore> {
+    let root: PathBuf =
+        std::env::var("CCTUI_SKILLS_PATH").unwrap_or_else(|_| "/skills".into()).into();
+    let store = Arc::new(skill_store::SkillStore::new(root.clone()));
+    if let Err(e) = store.ensure_root().await {
+        tracing::warn!(path = %root.display(), "skill root ensure_root failed: {e}");
+    }
+    store
+}
+
+/// Construct the [`dispatchers::Registry`] of env-configured `http` escape-hatch
+/// dispatchers, merged from the legacy `CCTUI_HTTP_DISPATCHERS` and the
+/// `kind:"http"` entries of `CCTUI_DISPATCHERS`.
+///
+/// The in-process `kube`/`docker` dispatchers are gone — production
+/// dispatches exclusively through enrolled executor binaries
+/// (`/api/v1/dispatcher/ws`), and `resolve_dispatcher` checks enrolled first,
+/// falling back to this http-only registry.
+fn init_dispatchers(config: &Config) -> Arc<dispatchers::Registry> {
+    let mut registry = dispatchers::Registry::new();
+
+    for d in config.http_dispatchers.iter().chain(config.dispatchers.iter()) {
+        tracing::info!(id = %d.id, url = %d.url, "http dispatcher registered");
+        registry = registry.with(Arc::new(dispatchers::http::HttpDispatcher::reloadable(
+            &d.id,
+            &d.url,
+            d.bearer.as_ref().map(cctui_secrets::Secret::subscribe),
+            build_http_client(),
+        )));
+    }
+
+    Arc::new(registry)
+}
+
+/// Auto-archive sessions silent past the TTL so the default list stays
+/// self-cleaning, asking the daemon to remove each underlying job. `0` disables.
+async fn auto_archive_stale(state: &AppState) -> usize {
+    if state.config.archive_after_secs == 0 {
+        return 0;
+    }
+    let cutoff = chrono::Utc::now()
+        - chrono::Duration::seconds(
+            i64::try_from(state.config.archive_after_secs).unwrap_or(i64::MAX),
+        );
+    match sqlx::query_scalar::<_, String>(
+        // Drafts are staged-not-running — never auto-archive them.
+        concat!(
+            "UPDATE sessions SET status = 'archived', archived_by = 'automatic', \
+                 ended_at = COALESCE(ended_at, now()), \
+                 end_reason = COALESCE(end_reason, 'reaped_inactive') \
+             WHERE ",
+            live_sessions_predicate!(),
+            " AND status <> ALL($2) \
+               AND pinned = false AND last_heartbeat < $1 \
+             RETURNING id"
+        ),
+    )
+    .bind(cutoff)
+    .bind(SessionRowStatus::names(SessionRowStatus::NOT_ARCHIVABLE))
+    .fetch_all(&state.pool)
+    .await
+    {
+        Ok(ids) if !ids.is_empty() => {
+            tracing::info!(count = ids.len(), "auto-archived stale sessions");
+            for id in &ids {
+                // Same as the explicit archive route: the sweep ends the
+                // session, so its gateway credential goes with it instead of
+                // counting as load on its account until the token expires.
+                cctui_server_accounts::routes::gateway::revoke_session_tokens(state, id).await;
+                cctui_server_sessions::routes::sessions::dispatch_remove(
+                    state,
+                    id,
+                    cctui_proto::adapter::RemoveInitiator::Automatic,
+                )
+                .await;
+                cctui_server_kernel::state_events::record(
+                    state,
+                    cctui_server_kernel::state_events::Event::new(
+                        cctui_server_kernel::state_events::kind::SESSION_ARCHIVED,
+                        cctui_server_kernel::state_events::Actor::Reaper,
+                    )
+                    .session(id)
+                    .detail(serde_json::json!({ "reason": "inactive_ttl" })),
+                );
+            }
+            ids.len()
+        }
+        Ok(_) => 0,
+        Err(err) => {
+            tracing::warn!(%err, "auto-archive sweep failed");
+            0
+        }
+    }
+}
+
+/// One `system.reaper_ran` summary per sweep that changed something.
+async fn reaper_sweep(state: &AppState) {
+    demote_idle_registered(state).await;
+    let archived = auto_archive_stale(state).await;
+    auto_archive::sweep(state).await;
+    cctui_server_sessions::undo_window::revoke_orphaned_tokens(state).await;
+    dispatch_archive::sweep(state).await;
+    let events_pruned = cctui_server_kernel::state_events::prune(&state.pool).await;
+    if archived > 0 || events_pruned > 0 {
+        cctui_server_kernel::state_events::record(
+            state,
+            cctui_server_kernel::state_events::Event::new(
+                cctui_server_kernel::state_events::kind::SYSTEM_REAPER_RAN,
+                cctui_server_kernel::state_events::Actor::Reaper,
+            )
+            .detail(serde_json::json!({ "archived": archived, "events_pruned": events_pruned })),
+        );
+    }
+}
+
+const REAPER_PERIOD: std::time::Duration = std::time::Duration::from_secs(30);
+const PLUGIN_SYNC_PERIOD: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Runs `job` every `period` on its own task, so a slow pass delays only itself.
+fn spawn_periodic<F, Fut>(period: std::time::Duration, mut job: F) -> tokio::task::JoinHandle<()>
+where
+    F: FnMut() -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = ()> + Send + 'static,
+{
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(period);
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            interval.tick().await;
+            job().await;
+        }
+    })
+}
+
+async fn webhook_sweep(state: AppState) {
+    webhook::sweep(&state).await;
+}
+
+async fn keepalive_sweep(state: AppState) {
+    keepalive::sweep(&state).await;
+}
+
+/// Each sweep runs on its own task so a slow pass delays only itself.
+fn spawn_reaper_sweeps(state: &AppState) {
+    let features = state.config.features;
+    spawn_sweep(state, |state| async move { reaper_sweep(&state).await });
+    if Task::LabelIntentSweep.enabled(features) {
+        spawn_sweep(state, |state| async move { spawn_labels::sweep(&state.pool).await });
+    }
+    spawn_sweep(state, |state| async move { usage_history::sweep(&state) });
+    if Task::FollowUp.enabled(features) {
+        spawn_sweep(state, |state| async move { followup::sweep(&state).await });
+    }
+    spawn_sweep(state, |state| async move {
+        cctui_server_dispatch::machine_policy::purge_spawner_intents(&state.pool).await;
+    });
+    spawn_sweep(state, |state| async move {
+        reap_ephemeral_machines(&state).await;
+        reap_ephemeral_keys(&state).await;
+    });
+    spawn_sweep(state, |state| async move {
+        machine_liveness::sweep(&state).await;
+        machine_liveness::sweep_dispatchers(&state).await;
+    });
+    spawn_sweep(state, |state| async move {
+        cctui_server_dispatch::dispatch_liveness::sweep(&state).await;
+    });
+    if Task::AutoResume.enabled(features) {
+        spawn_sweep(state, |state| async move { auto_resume::sweep(&state).await });
+    }
+    if Task::AutoRedeem.enabled(features) {
+        spawn_sweep(state, |state| async move { auto_redeem::sweep(&state).await });
+    }
+    spawn_sweep(state, |state| async move {
+        state.permission_store.write().await.reap_stale(300); // seconds
+    });
+    notify::install(&state.pool);
+    notify::in_app::install(&state.bus);
+    spawn_sweep(state, |state| async move {
+        notify::dispatcher::sweep(&state.pool, &state.config).await;
+    });
+    spawn_sweep(state, |state| async move { notify::retention::sweep(&state.pool).await });
+    spawn_sweep(state, |state| async move { notify::expiry::sweep(&state.pool).await });
+    spawn_sweep(state, |state| async move { inbox::deliver::sweep(&state).await });
+    spawn_sweep(state, |state| async move { inbox::schedule::sweep(&state).await });
+}
+
+fn spawn_sweep<F, Fut>(state: &AppState, job: F)
+where
+    F: Fn(AppState) -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = ()> + Send + 'static,
+{
+    let state = state.clone();
+    spawn_periodic(REAPER_PERIOD, move || job(state.clone()));
+}
+
+async fn demote_idle_registered(state: &AppState) {
+    let demoted = {
+        let mut registry = state.registry.write().await;
+        registry.mark_stale(state.config.inactive_after_secs)
+    };
+    if !demoted.is_empty() {
+        let _ = sqlx::query("UPDATE sessions SET status = 'inactive' WHERE id = ANY($1)")
+            .bind(&demoted)
+            .execute(&state.pool)
+            .await;
+        tracing::info!(session_ids = ?demoted, "sessions demoted to inactive");
+    }
+}
+
+async fn reap_ephemeral_machines(state: &AppState) {
+    cctui_server_dispatch::worker_retirement::reap_ephemeral_machines(
+        state,
+        state.config.ephemeral_machine_ttl_secs,
+    )
+    .await;
+}
+
+async fn reap_ephemeral_keys(state: &AppState) {
+    cctui_server_dispatch::worker_retirement::reap_ephemeral_keys(state).await;
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    use super::{REAPER_PERIOD, db_ready, serve_until, spawn_periodic};
+
+    #[test]
+    fn init_db_resolves_the_feature_file_like_the_server() {
+        use cctui_proto::features::{Feature, FeatureSet};
+        assert_eq!(super::init_db_features(None).unwrap(), FeatureSet::all());
+        assert_eq!(super::init_db_features(Some(" ")).unwrap(), FeatureSet::all());
+        let core = concat!(env!("CARGO_MANIFEST_DIR"), "/../../deploy/features/core.toml");
+        let features = super::init_db_features(Some(core)).unwrap();
+        assert!(!features.contains(Feature::TranscriptSearch));
+        let missing = super::init_db_features(Some("/nonexistent/cctui-features.toml"));
+        assert!(
+            missing
+                .unwrap_err()
+                .to_string()
+                .contains(cctui_server_kernel::config::FEATURES_FILE_ENV)
+        );
+    }
+
+    #[test]
+    fn legacy_log_filter_enables_relocated_workspace_targets() {
+        let subscriber = tracing_subscriber::fmt()
+            .with_env_filter("cctui_server=debug")
+            .with_writer(std::io::sink)
+            .finish();
+        tracing::subscriber::with_default(subscriber, || {
+            assert!(tracing::enabled!(target: "cctui_server::routes", tracing::Level::DEBUG));
+            assert!(!tracing::enabled!(target: "cctui_server::routes", tracing::Level::TRACE));
+            assert!(tracing::enabled!(target: "cctui_server_kernel::authz", tracing::Level::DEBUG));
+            assert!(tracing::enabled!(target: "cctui_server_search", tracing::Level::DEBUG));
+            assert!(
+                tracing::enabled!(target: "cctui_server_accounts::routes::gateway", tracing::Level::DEBUG)
+            );
+            assert!(
+                tracing::enabled!(target: "cctui_server_dispatch::routes::dispatch", tracing::Level::DEBUG)
+            );
+            assert!(tracing::enabled!(target: "cctui_server_blobs::routes", tracing::Level::DEBUG));
+            assert!(tracing::enabled!(target: "cctui_server_voice::engine", tracing::Level::DEBUG));
+            assert!(
+                tracing::enabled!(target: "cctui_server_extras::storage_stats::job", tracing::Level::DEBUG)
+            );
+            assert!(
+                tracing::enabled!(target: "cctui_server_notify::notify::dispatcher", tracing::Level::DEBUG)
+            );
+            assert!(
+                tracing::enabled!(target: "cctui_server_sessions::routes::daemon", tracing::Level::DEBUG)
+            );
+        });
+    }
+
+    #[tokio::test]
+    async fn shutdown_does_not_wait_forever_on_a_hung_request() {
+        use tokio::io::AsyncWriteExt;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let app = axum::Router::new()
+            .route("/hang", axum::routing::get(std::future::pending::<&'static str>));
+        let (fire, signal) = tokio::sync::oneshot::channel::<()>();
+        let drain = std::time::Duration::from_millis(200);
+        let server = tokio::spawn(serve_until(
+            listener,
+            app,
+            async move {
+                let _ = signal.await;
+            },
+            drain,
+        ));
+
+        let mut client = tokio::net::TcpStream::connect(addr).await.unwrap();
+        client.write_all(b"GET /hang HTTP/1.1\r\nHost: test\r\n\r\n").await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        fire.send(()).unwrap();
+
+        let finished = tokio::time::timeout(drain * 10, server).await;
+        assert!(matches!(finished, Ok(Ok(Ok(())))), "server exits after the drain window");
+        drop(client);
+    }
+
+    #[tokio::test]
+    async fn shutdown_returns_promptly_when_idle() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let app = axum::Router::new().route("/", axum::routing::get(|| async { "ok" }));
+        let drain = std::time::Duration::from_secs(30);
+        let started = std::time::Instant::now();
+        serve_until(listener, app, async {}, drain).await.unwrap();
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+    }
+
+    #[tokio::test]
+    async fn readiness_fails_when_the_database_is_unreachable() {
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .acquire_timeout(std::time::Duration::from_millis(500))
+            .connect_lazy("postgres://u:p@127.0.0.1:1/none")
+            .unwrap();
+        assert!(!db_ready(&pool).await);
+    }
+
+    #[tokio::test]
+    async fn readiness_passes_against_a_live_database() {
+        let Some(url) = crate::routes::gateway::test_db_url("readiness_live_db") else { return };
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(1)
+            .connect(&url)
+            .await
+            .expect("connect test db");
+        assert!(db_ready(&pool).await);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_hung_periodic_job_does_not_stall_the_others() {
+        let hung = spawn_periodic(REAPER_PERIOD, std::future::pending::<()>);
+        let ticks = Arc::new(AtomicU32::new(0));
+        let counter = ticks.clone();
+        let reaper = spawn_periodic(REAPER_PERIOD, move || {
+            counter.fetch_add(1, Ordering::SeqCst);
+            async {}
+        });
+        tokio::time::sleep(REAPER_PERIOD * 10 + std::time::Duration::from_secs(1)).await;
+        assert_eq!(ticks.load(Ordering::SeqCst), 11);
+        hung.abort();
+        reaper.abort();
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)] // literal route-table snapshot
+    fn api_route_table_is_unchanged() {
+        let mut descs = super::build_api_routes().into_parts().2;
+        descs.sort_by(|a, b| (a.path, a.method.as_str()).cmp(&(b.path, b.method.as_str())));
+        let actual: Vec<String> = descs
+            .iter()
+            .map(|d| format!("{} {} {:?} {:?}", d.method, d.path, d.authn, d.authz))
+            .collect();
+        let expected = [
+            "GET /account-pools Bearer Human",
+            "POST /account-pools Bearer Human",
+            "GET /account-pools/usage Bearer Human",
+            "DELETE /account-pools/{id} Bearer Human",
+            "PATCH /account-pools/{id} Bearer Human",
+            "GET /accounts Bearer Human",
+            "POST /accounts Bearer Human",
+            "POST /accounts/oauth/finish Bearer Human",
+            "POST /accounts/oauth/start Bearer Human",
+            "GET /accounts/settings-catalog Bearer Authenticated",
+            "GET /accounts/usage Bearer Human",
+            "GET /accounts/usage/closes Bearer Human",
+            "GET /accounts/usage/ledger Bearer Human",
+            "DELETE /accounts/{id} Bearer Human",
+            "GET /accounts/{id} Bearer Human",
+            "PATCH /accounts/{id} Bearer Human",
+            "POST /accounts/{id}/limit-reset Bearer Human",
+            "POST /accounts/{id}/providers Bearer Human",
+            "DELETE /accounts/{id}/providers/{provider_id} Bearer Human",
+            "PATCH /accounts/{id}/providers/{provider_id} Bearer Human",
+            "POST /accounts/{id}/providers/{provider_id}/move Bearer Human",
+            "PUT /accounts/{id}/redirect Bearer Human",
+            "GET /accounts/{id}/service-tokens Bearer Human",
+            "POST /accounts/{id}/service-tokens Bearer Human",
+            "DELETE /accounts/{id}/service-tokens/{token_id} Bearer Human",
+            "GET /accounts/{id}/shares Bearer Human",
+            "POST /accounts/{id}/shares Bearer Human",
+            "DELETE /accounts/{id}/shares/{user_id} Bearer Human",
+            "GET /accounts/{id}/tool-policy Bearer Human",
+            "PUT /accounts/{id}/tool-policy Bearer Human",
+            "GET /accounts/{id}/usage Bearer Human",
+            "GET /accounts/{id}/usage/closes Bearer Human",
+            "GET /accounts/{id}/usage/history Bearer Human",
+            "GET /admin/harness-autoupdate Bearer Scope(Admin)",
+            "PUT /admin/harness-autoupdate Bearer Scope(Admin)",
+            "PUT /admin/harness-autoupdate/{machine_id} Bearer Scope(Admin)",
+            "POST /admin/harness-autoupdate/{machine_id}/restart Bearer Scope(Admin)",
+            "PUT /admin/instance Bearer Scope(Admin)",
+            "GET /admin/instance/event-retention Bearer Scope(Admin)",
+            "PUT /admin/instance/event-retention Bearer Scope(Admin)",
+            "GET /admin/instance/self-update Bearer Scope(Admin)",
+            "PUT /admin/instance/self-update Bearer Scope(Admin)",
+            "GET /admin/instance/spawn-defaults Bearer Scope(Admin)",
+            "PUT /admin/instance/spawn-defaults Bearer Scope(Admin)",
+            "GET /admin/instance/speech Bearer Scope(Admin)",
+            "PUT /admin/instance/speech Bearer Scope(Admin)",
+            "GET /admin/instance/speech/catalog Bearer Scope(Admin)",
+            "POST /admin/instance/speech/test Bearer Scope(Admin)",
+            "GET /admin/instance/upload-caps Bearer Scope(Admin)",
+            "PUT /admin/instance/upload-caps Bearer Scope(Admin)",
+            "GET /admin/instance/upstream-hosts Bearer Scope(Admin)",
+            "PUT /admin/instance/upstream-hosts Bearer Scope(Admin)",
+            "DELETE /admin/machines/{id} Bearer Scope(Admin)",
+            "PATCH /admin/machines/{id} Bearer Scope(Admin)",
+            "DELETE /admin/machines/{id}/purge Bearer Scope(Admin)",
+            "POST /admin/machines/{id}/rotate Bearer Scope(Admin)",
+            "PUT /admin/passkeys/auto-prompt Bearer Scope(Admin)",
+            "GET /admin/plugins Bearer Scope(Admin)",
+            "POST /admin/plugins Bearer Scope(Admin)",
+            "GET /admin/plugins/catalog Bearer Scope(Admin)",
+            "DELETE /admin/plugins/{id} Bearer Scope(Admin)",
+            "PATCH /admin/plugins/{id} Bearer Scope(Admin)",
+            "POST /admin/plugins/{id}/proxy-secret Bearer Scope(Admin)",
+            "GET /admin/plugins/{id}/settings Bearer Scope(Admin)",
+            "PUT /admin/plugins/{id}/settings Bearer Scope(Admin)",
+            "GET /admin/redteam Bearer Scope(Admin)",
+            "GET /admin/storage Bearer Scope(Admin)",
+            "PUT /admin/storage/lifecycle Bearer Scope(Admin)",
+            "POST /admin/storage/lifecycle/preview Bearer Scope(Admin)",
+            "GET /admin/users Bearer Scope(Admin)",
+            "POST /admin/users Bearer Scope(Admin)",
+            "DELETE /admin/users/{id} Bearer Scope(Admin)",
+            "PATCH /admin/users/{id} Bearer Scope(Admin)",
+            "DELETE /admin/users/{id}/dispatch-policy Bearer Scope(Admin)",
+            "GET /admin/users/{id}/dispatch-policy Bearer Scope(Admin)",
+            "PUT /admin/users/{id}/dispatch-policy Bearer Scope(Admin)",
+            "GET /admin/users/{id}/machines Bearer Scope(Admin)",
+            "DELETE /admin/users/{id}/purge Bearer Scope(Admin)",
+            "POST /admin/users/{id}/rotate Bearer Scope(Admin)",
+            "GET /admin/users/{id}/tokens Bearer Scope(Admin)",
+            "DELETE /admin/users/{id}/tokens/{token_id} Bearer Scope(Admin)",
+            "PATCH /admin/users/{id}/tokens/{token_id} Bearer Scope(Admin)",
+            "DELETE /admin/users/{id}/tokens/{token_id}/purge Bearer Scope(Admin)",
+            "GET /auth/device/{user_code} Bearer Authenticated",
+            "POST /auth/device/{user_code}/decision Bearer Authenticated",
+            "GET /bookmarks Bearer Authenticated",
+            "POST /bookmarks Bearer Authenticated",
+            "DELETE /bookmarks/{id} Bearer Authenticated",
+            "PATCH /bookmarks/{id} Bearer Authenticated",
+            "GET /capabilities Bearer Authenticated",
+            "GET /cctuiverse/config Bearer Authenticated",
+            "POST /cctuiverse/join Bearer Human",
+            "PATCH /cctuiverse/links/{id} Bearer Human",
+            "POST /cctuiverse/links/{id}/close Bearer Human",
+            "GET /cctuiverse/links/{id}/messages Bearer Human",
+            "POST /cctuiverse/links/{id}/messages/{msg}/approve Bearer Human",
+            "POST /cctuiverse/links/{id}/messages/{msg}/drop Bearer Human",
+            "POST /cctuiverse/links/{id}/messages/{msg}/release Bearer Human",
+            "GET /context Bearer Human",
+            "PATCH /context Bearer Human",
+            "POST /context Bearer Human",
+            "GET /context/resolve Bearer Human",
+            "DELETE /context/{id} Bearer Human",
+            "PATCH /context/{id} Bearer Human",
+            "POST /context/{id}/pending/approve Bearer Human",
+            "POST /context/{id}/pending/reject Bearer Human",
+            "GET /daemon/binary/{target} Bearer Authenticated",
+            "POST /deenroll Bearer Authenticated",
+            "POST /dispatch-records/dismiss-all Bearer Authenticated",
+            "GET /dispatch-records/failed Bearer Authenticated",
+            "POST /dispatch-records/{id}/dismiss Bearer Authenticated",
+            "POST /dispatch-records/{id}/redispatch Bearer Scope(Dispatch)",
+            "POST /dispatcher/enroll Bearer Scope(Enroll)",
+            "GET /dispatchers Bearer Authenticated",
+            "DELETE /dispatchers/{id} Bearer Scope(Enroll)",
+            "PATCH /dispatchers/{id} Bearer Scope(Enroll)",
+            "GET /drafts Bearer Authenticated",
+            "DELETE /drafts/{*key} Bearer Authenticated",
+            "GET /drafts/{*key} Bearer Authenticated",
+            "PUT /drafts/{*key} Bearer Authenticated",
+            "POST /enroll Bearer Scope(Enroll)",
+            "GET /events Bearer Authenticated",
+            "GET /harnesses Bearer Authenticated",
+            "POST /hooks/{id} None Public",
+            "GET /inbox/events Bearer Authenticated",
+            "POST /inbox/events Bearer Scope(Dispatch)",
+            "DELETE /inbox/events/{id} Bearer Authenticated",
+            "GET /inbox/events/{id} Bearer Authenticated",
+            "POST /inbox/events/{id}/retry Bearer Scope(Dispatch)",
+            "POST /inbox/lanes/{id}/pause Bearer Scope(Dispatch)",
+            "POST /inbox/lanes/{id}/resume Bearer Scope(Dispatch)",
+            "GET /keys Bearer Authenticated",
+            "POST /keys Bearer Authenticated",
+            "DELETE /keys/{id} Bearer Authenticated",
+            "GET /labels Bearer Authenticated",
+            "POST /labels Bearer Authenticated",
+            "DELETE /labels/{id} Bearer Authenticated",
+            "PATCH /labels/{id} Bearer Authenticated",
+            "GET /machines/resources Bearer Authenticated",
+            r#"GET /machines/{machine_id}/adapters Bearer Resource(Machine, Read, Path("machine_id"))"#,
+            "DELETE /machines/{machine_id}/adapters/{adapter} Bearer Scope(Admin)",
+            "PUT /machines/{machine_id}/adapters/{adapter} Bearer Scope(Admin)",
+            r#"GET /machines/{machine_id}/codex-models Bearer Resource(Machine, Read, Path("machine_id"))"#,
+            r#"POST /machines/{machine_id}/codex-models/refresh Bearer Resource(Machine, Read, Path("machine_id"))"#,
+            "GET /machines/{machine_id}/commands/pending Bearer Authenticated",
+            r#"GET /machines/{machine_id}/events Bearer Resource(Machine, Read, Path("machine_id"))"#,
+            r#"GET /machines/{machine_id}/fs/dirs Bearer Resource(Machine, Read, Path("machine_id"))"#,
+            r#"GET /machines/{machine_id}/fs/file Bearer Resource(Machine, Read, Path("machine_id"))"#,
+            r#"GET /machines/{machine_id}/fs/gitinfo Bearer Resource(Machine, Read, Path("machine_id"))"#,
+            r#"GET /machines/{machine_id}/status Bearer Resource(Machine, Read, Path("machine_id"))"#,
+            "GET /manifest/daemon Bearer Authenticated",
+            "GET /me Bearer Authenticated",
+            "GET /me/hidden-owners Bearer Scope(Admin)",
+            "DELETE /me/hidden-owners/{kind}/{target_id} Bearer Scope(Admin)",
+            "PUT /me/hidden-owners/{kind}/{target_id} Bearer Scope(Admin)",
+            "DELETE /me/key Bearer Authenticated",
+            "GET /meta/usage-probes Bearer Authenticated",
+            "GET /models/codex/catalog Bearer Authenticated",
+            "GET /models/{harness} Bearer Authenticated",
+            "GET /notifications Bearer Human",
+            "GET /notifications/endpoints Bearer Human",
+            "POST /notifications/endpoints Bearer Human",
+            "DELETE /notifications/endpoints/{id} Bearer Human",
+            "POST /notifications/endpoints/{id}/test Bearer Human",
+            "POST /notifications/read-all Bearer Human",
+            "GET /notifications/settings Bearer Human",
+            "GET /notifications/vapid-key Bearer Human",
+            "POST /notifications/{id}/act Bearer Human",
+            "POST /notifications/{id}/dismiss Bearer Human",
+            "POST /notifications/{id}/read Bearer Human",
+            "POST /otlp/v1/traces Bearer Human",
+            "GET /passkeys Bearer Authenticated",
+            "POST /passkeys/register/finish Bearer Authenticated",
+            "POST /passkeys/register/start Bearer Authenticated",
+            "POST /passkeys/test/finish Bearer Authenticated",
+            "POST /passkeys/test/start Bearer Authenticated",
+            "DELETE /passkeys/{id} Bearer Authenticated",
+            "PATCH /passkeys/{id} Bearer Authenticated",
+            "GET /permissions/pending Bearer Authenticated",
+            "GET /plugins Bearer Authenticated",
+            "POST /plugins/rescan Bearer Scope(Admin)",
+            "DELETE /plugins/{id}/backend/{*path} Bearer Authenticated",
+            "GET /plugins/{id}/backend/{*path} Bearer Authenticated",
+            "PATCH /plugins/{id}/backend/{*path} Bearer Authenticated",
+            "POST /plugins/{id}/backend/{*path} Bearer Authenticated",
+            "PUT /plugins/{id}/backend/{*path} Bearer Authenticated",
+            "GET /presets Bearer Authenticated",
+            "POST /presets Bearer Authenticated",
+            "DELETE /presets/{id} Bearer Authenticated",
+            "GET /presets/{id} Bearer Authenticated",
+            "PUT /presets/{id} Bearer Authenticated",
+            "PUT /presets/{id}/attachments Bearer Authenticated",
+            "POST /presets/{id}/run Bearer Authenticated",
+            "GET /profiles Bearer Human",
+            "POST /profiles Bearer Human",
+            "PUT /profiles/order Bearer Human",
+            "DELETE /profiles/{id} Bearer Human",
+            "PATCH /profiles/{id} Bearer Human",
+            "GET /prompts Bearer Authenticated",
+            "POST /prompts Bearer Authenticated",
+            "GET /prompts/resolve Bearer Authenticated",
+            "DELETE /prompts/{id} Bearer Authenticated",
+            "GET /prompts/{id} Bearer Authenticated",
+            "GET /provider-status Bearer Authenticated",
+            "GET /redirects Bearer Human",
+            "DELETE /redirects/{id} Bearer Human",
+            "POST /redteam/runs Bearer Scope(Dispatch)",
+            "GET /rooms Bearer Authenticated",
+            "DELETE /rooms/{id} Bearer Authenticated",
+            "PATCH /rooms/{id} Bearer Authenticated",
+            "POST /rooms/{id}/cctuiverse/invites Bearer Human",
+            "GET /rooms/{id}/cctuiverse/links Bearer Human",
+            "GET /sessions Bearer Authenticated",
+            "POST /sessions/archive Bearer Authenticated",
+            "POST /sessions/dispatch Bearer Scope(Dispatch)",
+            "GET /sessions/dispatchers Bearer Authenticated",
+            "POST /sessions/pin Bearer Authenticated",
+            "GET /sessions/recent-dirs Bearer Authenticated",
+            "POST /sessions/register Bearer Authenticated",
+            "GET /sessions/search Bearer Authenticated",
+            "GET /sessions/search/values Bearer Authenticated",
+            "POST /sessions/spawn Bearer Scope(Dispatch)",
+            "GET /sessions/stats Bearer Authenticated",
+            "GET /sessions/stats/cache-busts Bearer Authenticated",
+            "GET /sessions/stats/tokens Bearer Authenticated",
+            "GET /sessions/stats/usage Bearer Authenticated",
+            "POST /sessions/unarchive Bearer Authenticated",
+            "POST /sessions/unpin Bearer Authenticated",
+            r#"GET /sessions/{id} Bearer Resource(Session, Read, Path("id"))"#,
+            r#"PATCH /sessions/{id} Bearer Resource(Session, Write, Path("id"))"#,
+            r#"POST /sessions/{id}/archive Bearer Resource(Session, Write, Path("id"))"#,
+            r#"GET /sessions/{id}/attachments Bearer Resource(Session, Read, Path("id"))"#,
+            r#"POST /sessions/{id}/auto-approve Bearer Resource(Session, Write, Path("id"))"#,
+            r#"PUT /sessions/{id}/auto-followup Bearer Resource(Session, Write, Path("id"))"#,
+            r#"GET /sessions/{id}/bindings Bearer Resource(Session, Read, Path("id"))"#,
+            r#"GET /sessions/{id}/blobs/{hash} Bearer Resource(Session, Read, Path("id"))"#,
+            r#"GET /sessions/{id}/brief Bearer Resource(Session, Read, Path("id"))"#,
+            r#"POST /sessions/{id}/cancel-launch Bearer Resource(Session, Write, Path("id"))"#,
+            r#"POST /sessions/{id}/cctuiverse/invites Bearer Resource(Session, Write, Path("id"))"#,
+            r#"GET /sessions/{id}/cctuiverse/links Bearer Resource(Session, Read, Path("id"))"#,
+            r#"GET /sessions/{id}/context Bearer Resource(Session, Read, Path("id"))"#,
+            r#"POST /sessions/{id}/context Bearer Resource(Session, Write, Path("id"))"#,
+            r#"GET /sessions/{id}/conversation Bearer Resource(Session, Read, Path("id"))"#,
+            r#"POST /sessions/{id}/deregister Bearer Resource(Session, Write, Path("id"))"#,
+            r#"GET /sessions/{id}/diagnose Bearer Resource(Session, Read, Path("id"))"#,
+            r#"POST /sessions/{id}/discard Bearer Resource(Session, Write, Path("id"))"#,
+            r#"PUT /sessions/{id}/draft Bearer Resource(Session, Write, Path("id"))"#,
+            r#"PUT /sessions/{id}/draft-attachments Bearer Resource(Session, Write, Path("id"))"#,
+            r#"GET /sessions/{id}/events Bearer Resource(Session, Read, Path("id"))"#,
+            r#"POST /sessions/{id}/files Bearer Resource(Session, Write, Path("id"))"#,
+            r#"POST /sessions/{id}/followup Bearer Resource(Session, Write, Path("id"))"#,
+            r#"POST /sessions/{id}/fork Bearer Resource(Session, Write, Path("id"))"#,
+            r#"GET /sessions/{id}/guard Bearer Resource(Session, Read, Path("id"))"#,
+            r#"POST /sessions/{id}/guard/transition Bearer Resource(Session, Write, Path("id"))"#,
+            r#"GET /sessions/{id}/hook-policy Bearer Resource(Session, Read, Path("id"))"#,
+            r#"GET /sessions/{id}/images/{image_id} Bearer Resource(Session, Read, Path("id"))"#,
+            r#"POST /sessions/{id}/interrupt Bearer Resource(Session, Write, Path("id"))"#,
+            r#"POST /sessions/{id}/keepalive Bearer Resource(Session, Write, Path("id"))"#,
+            r#"POST /sessions/{id}/kill Bearer Resource(Session, Write, Path("id"))"#,
+            r#"POST /sessions/{id}/labels Bearer Resource(Session, Write, Path("id"))"#,
+            r#"DELETE /sessions/{id}/labels/{label_id} Bearer Resource(Session, Write, Path("id"))"#,
+            r#"GET /sessions/{id}/langfuse Bearer Resource(Session, Read, Path("id"))"#,
+            r#"POST /sessions/{id}/launch Bearer Resource(Session, Write, Path("id"))"#,
+            r#"GET /sessions/{id}/linked-file Bearer Resource(Session, Read, Path("id"))"#,
+            r#"GET /sessions/{id}/linked-file-owner Bearer Resource(Session, Read, Path("id"))"#,
+            r#"POST /sessions/{id}/message Bearer Resource(Session, Write, Path("id"))"#,
+            r#"GET /sessions/{id}/messages/scheduled Bearer Resource(Session, Read, Path("id"))"#,
+            r#"DELETE /sessions/{id}/messages/scheduled/{queue_id} Bearer Resource(Session, Write, Path("id"))"#,
+            r#"PATCH /sessions/{id}/messages/scheduled/{queue_id} Bearer Resource(Session, Write, Path("id"))"#,
+            r#"POST /sessions/{id}/messages/scheduled/{queue_id}/send-now Bearer Resource(Session, Write, Path("id"))"#,
+            r#"POST /sessions/{id}/pin Bearer Resource(Session, Write, Path("id"))"#,
+            r#"GET /sessions/{id}/pins Bearer Resource(Session, Read, Path("id"))"#,
+            r#"POST /sessions/{id}/pins Bearer Resource(Session, Write, Path("id"))"#,
+            r#"DELETE /sessions/{id}/pins/{seq} Bearer Resource(Session, Write, Path("id"))"#,
+            r#"PATCH /sessions/{id}/plugins/{plugin_id} Bearer Resource(Session, Write, Path("id"))"#,
+            r#"GET /sessions/{id}/previews Bearer Resource(Session, Read, Path("id"))"#,
+            r#"POST /sessions/{id}/previews/{pid}/ticket Bearer Resource(Session, Read, Path("id"))"#,
+            r#"GET /sessions/{id}/rebinds Bearer Resource(Session, Read, Path("id"))"#,
+            r#"GET /sessions/{id}/result Bearer Resource(Session, Read, Path("id"))"#,
+            r#"POST /sessions/{id}/resume Bearer Resource(Session, Write, Path("id"))"#,
+            r#"DELETE /sessions/{id}/room Bearer Resource(Session, Write, Path("id"))"#,
+            r#"PUT /sessions/{id}/room Bearer Resource(Session, Write, Path("id"))"#,
+            r#"POST /sessions/{id}/schedule-launch Bearer Resource(Session, Write, Path("id"))"#,
+            r#"POST /sessions/{id}/schedule-repeat Bearer Resource(Session, Write, Path("id"))"#,
+            r#"GET /sessions/{id}/search Bearer Resource(Session, Read, Path("id"))"#,
+            r#"POST /sessions/{id}/seen Bearer Resource(Session, Write, Path("id"))"#,
+            r#"POST /sessions/{id}/set-model Bearer Resource(Session, Write, Path("id"))"#,
+            r#"POST /sessions/{id}/switch-account Bearer Resource(Session, Write, Path("id"))"#,
+            r#"GET /sessions/{id}/thread Bearer Resource(Session, Read, Path("id"))"#,
+            r#"GET /sessions/{id}/tool-guard Bearer Resource(Session, Write, Path("id"))"#,
+            r#"PUT /sessions/{id}/tool-guard Bearer Resource(Session, Write, Path("id"))"#,
+            r#"POST /sessions/{id}/unarchive Bearer Resource(Session, Write, Path("id"))"#,
+            r#"POST /sessions/{id}/unpin Bearer Resource(Session, Write, Path("id"))"#,
+            r#"GET /sessions/{id}/user-actions Bearer Resource(Session, Read, Path("id"))"#,
+            r#"POST /sessions/{id}/user-actions/{aid}/tick Bearer Resource(Session, Write, Path("id"))"#,
+            r#"GET /sessions/{id}/voice-notes/{note_id} Bearer Resource(Session, Read, Path("id"))"#,
+            "GET /settings Bearer Authenticated",
+            "PUT /settings Bearer Authenticated",
+            "GET /settings/rescrub Bearer Authenticated",
+            "POST /settings/rescrub Bearer Authenticated",
+            "POST /settings/rescrub/cancel Bearer Authenticated",
+            "GET /skills/index Bearer Authenticated",
+            "GET /skills/{name} Bearer Authenticated",
+            "PUT /skills/{name} Bearer Authenticated",
+            "GET /spawn-memory Bearer Authenticated",
+            "PUT /spawn-memory Bearer Authenticated",
+            "GET /users/{id}/acls Bearer Scope(Admin)",
+            "PATCH /users/{id}/acls Bearer Scope(Admin)",
+            "GET /users/{id}/keys Bearer Scope(Admin)",
+            "POST /users/{id}/keys Bearer Scope(Admin)",
+            "DELETE /users/{id}/keys/{kid} Bearer Scope(Admin)",
+            "PATCH /users/{id}/keys/{kid}/acls Bearer Scope(Admin)",
+            "POST /users/{id}/tokens Bearer Authenticated",
+            "GET /version None Public",
+            "GET /version/changelog Bearer Authenticated",
+            "POST /version/refresh Bearer Authenticated",
+            "GET /version/self-update Bearer Authenticated",
+            "POST /version/self-update Bearer Scope(Admin)",
+            "GET /voice/config Bearer Human",
+            "POST /voice/speak Bearer Human",
+            "POST /voice/transcribe Bearer Human",
+            "GET /voice/voices Bearer Human",
+            "GET /webhooks Bearer Authenticated",
+            "POST /webhooks Bearer Authenticated",
+            "DELETE /webhooks/{id} Bearer Authenticated",
+            "GET /webhooks/{id} Bearer Authenticated",
+            "PUT /webhooks/{id} Bearer Authenticated",
+            "GET /webhooks/{id}/deliveries Bearer Authenticated",
+            "POST /webhooks/{id}/secret Bearer Authenticated",
+            "GET /{resource_type}/{id}/shares Bearer Human",
+            "POST /{resource_type}/{id}/shares Bearer Human",
+            "DELETE /{resource_type}/{id}/shares/{user_id} Bearer Human",
+        ];
+        assert_eq!(actual, expected);
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::literal_string_with_formatting_args)]
+mod feature_gate_tests {
+    use std::collections::BTreeSet;
+
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use cctui_proto::api::routes::ROUTES;
+    use cctui_proto::features::{Feature, FeatureSet};
+    use cctui_proto::ws::TuiCommand;
+    use tower::ServiceExt;
+
+    use super::{Task, outer_routes};
+
+    /// Switchable features that gate nothing on the server; clients read them
+    /// from capabilities only.
+    const ANNOUNCEMENT_ONLY: &[Feature] = &[];
+
+    /// What a dispatched worker and its dispatcher reach outside `/api/v1`'s table.
+    const WORKER_PATHS: &[&str] = &[
+        "/api/v1/ws",
+        "/api/v1/auth/login",
+        "/api/v1/auth/logout",
+        "/api/v1/daemon/auth",
+        "/api/v1/daemon/ws",
+        "/api/v1/daemon/sessions/{id}/gateway-env",
+        "/api/v1/daemon/sessions/{id}/token-valid",
+        "/api/v1/daemon/sessions/{id}/limits",
+        "/api/v1/daemon/sessions/{id}/user-actions",
+        "/api/v1/daemon/sessions/{id}/user-actions/tick",
+        "/api/v1/daemon/sessions/{id}/outcome",
+        "/api/v1/daemon/sessions/{id}/context",
+        "/api/v1/daemon/sessions/{id}/images",
+        "/api/v1/daemon/blobs/{hash}",
+        "/api/v1/dispatcher/auth",
+        "/api/v1/dispatcher/ws",
+        "/api/v1/dispatch/register",
+        "/api/v1/dispatch/redeem",
+        "/api/v1/dispatch/{id}/env",
+        "/api/v1/dispatch/{id}/hold",
+        "/gateway/anthropic/{*path}",
+        "/gateway/openai/{*path}",
+        "/gateway/fireworks/{*path}",
+        "/gateway/google/{*path}",
+        "/internal/bus/route",
+        "/internal/bus/publish",
+        "/internal/auth/purge",
+        "/internal/guard/forget",
+    ];
+
+    fn core_outer_paths() -> BTreeSet<&'static str> {
+        outer_routes(FeatureSet::none())
+            .classified
+            .into_iter()
+            .filter(|(feature, _)| feature.is_none())
+            .map(|(_, path)| path)
+            .collect()
+    }
+
+    const WORKER_API_ROUTES: &[&str] = &[
+        "GET /capabilities",
+        "GET /me",
+        "POST /dispatcher/enroll",
+        "GET /dispatchers",
+        "PATCH /dispatchers/{id}",
+        "DELETE /dispatchers/{id}",
+        "GET /sessions/dispatchers",
+        "POST /sessions/dispatch",
+        "GET /dispatch-records/failed",
+        "POST /dispatch-records/{id}/redispatch",
+        "GET /accounts",
+        "GET /accounts/{id}",
+        "GET /harnesses",
+        "GET /models/{harness}",
+        "GET /models/codex/catalog",
+        "POST /machines/{machine_id}/codex-models/refresh",
+        "GET /sessions",
+        "GET /sessions/{id}",
+        "GET /sessions/{id}/conversation",
+        "GET /sessions/{id}/diagnose",
+        "POST /sessions/{id}/message",
+        "POST /sessions/{id}/interrupt",
+        "POST /sessions/{id}/set-model",
+        "POST /sessions/{id}/kill",
+        "POST /sessions/{id}/archive",
+        "GET /permissions/pending",
+    ];
+
+    const MACHINE_ONLY_API_ROUTES: &[&str] = &[
+        "POST /enroll",
+        "POST /deenroll",
+        "POST /sessions/spawn",
+        "POST /sessions/register",
+        "GET /sessions/recent-dirs",
+        "GET /machines/resources",
+        "GET /machines/{machine_id}/status",
+        "GET /machines/{machine_id}/adapters",
+        "PUT /machines/{machine_id}/adapters/{adapter}",
+        "GET /machines/{machine_id}/fs/dirs",
+        "GET /machines/{machine_id}/fs/file",
+        "GET /admin/users/{id}/machines",
+        "DELETE /admin/machines/{id}",
+        "POST /admin/machines/{id}/rotate",
+        "POST /sessions/{id}/fork",
+        "POST /sessions/{id}/resume",
+        "GET /spawn-memory",
+        "PUT /spawn-memory",
+    ];
+
+    fn core_features() -> FeatureSet {
+        cctui_server_kernel::config::parse_features(include_str!(
+            "../../../deploy/features/core.toml"
+        ))
+        .expect("core.toml resolves")
+        .set
+    }
+
+    fn core_api_routes() -> BTreeSet<String> {
+        crate::build_api_routes_with(core_features())
+            .into_parts()
+            .2
+            .into_iter()
+            .map(|d| format!("{} {}", d.method.as_str(), d.path))
+            .collect()
+    }
+
+    #[test]
+    fn a_core_server_keeps_every_route_a_dispatched_worker_needs() {
+        let core = core_outer_paths();
+        for path in WORKER_PATHS {
+            assert!(core.contains(path), "{path} must stay mounted with every feature off");
+        }
+        let api = core_api_routes();
+        for route in WORKER_API_ROUTES {
+            assert!(api.contains(*route), "{route} must stay mounted on a core server");
+        }
+    }
+
+    #[test]
+    fn a_core_server_mounts_no_machine_only_route() {
+        let api = core_api_routes();
+        for route in MACHINE_ONLY_API_ROUTES {
+            assert!(!api.contains(*route), "{route} must not be mounted on a core server");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_core_server_mounts_the_archive_listing_but_not_search_autocomplete() {
+        let api = core_api_routes();
+        assert!(api.contains("GET /sessions/search"), "the archive listing is core");
+        assert!(!api.contains("GET /sessions/search/values"), "autocomplete needs search");
+        let router = crate::build_api_routes_with(core_features()).into_parts().0;
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .connect_lazy("postgres://u:p@127.0.0.1:1/none")
+            .unwrap();
+        let app = router.with_state(crate::state::AppState::for_test(pool));
+        for (uri, want) in [
+            ("/sessions/search?include_archived=true", StatusCode::UNAUTHORIZED),
+            ("/sessions/search/values?field=status", StatusCode::NOT_FOUND),
+        ] {
+            let request = Request::builder().method("GET").uri(uri).body(Body::empty()).unwrap();
+            let got = app.clone().oneshot(request).await.unwrap().status();
+            assert_eq!(got, want, "GET {uri}");
+        }
+    }
+
+    #[tokio::test]
+    async fn machine_spawn_off_unmounts_enrollment_spawn_and_files() {
+        let off =
+            cctui_server_kernel::config::parse_features("[features]\nmachine_spawn = false\n")
+                .expect("resolves")
+                .set;
+        let router = crate::build_api_routes_with(off).into_parts().0;
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .connect_lazy("postgres://u:p@127.0.0.1:1/none")
+            .unwrap();
+        let app = router.with_state(crate::state::AppState::for_test(pool));
+        for (method, uri, want) in [
+            ("POST", "/enroll", StatusCode::NOT_FOUND),
+            ("POST", "/deenroll", StatusCode::NOT_FOUND),
+            ("GET", "/machines/resources", StatusCode::NOT_FOUND),
+            ("GET", "/machines/m1/fs/dirs", StatusCode::NOT_FOUND),
+            ("GET", "/machines/m1/adapters", StatusCode::NOT_FOUND),
+            ("POST", "/sessions/s1/fork", StatusCode::NOT_FOUND),
+            ("POST", "/sessions/s1/resume", StatusCode::NOT_FOUND),
+            ("GET", "/spawn-memory", StatusCode::NOT_FOUND),
+            ("POST", "/sessions/dispatch", StatusCode::UNAUTHORIZED),
+            ("POST", "/sessions/s1/kill", StatusCode::UNAUTHORIZED),
+        ] {
+            let request = Request::builder().method(method).uri(uri).body(Body::empty()).unwrap();
+            let got = app.clone().oneshot(request).await.unwrap().status();
+            assert_eq!(got, want, "{method} {uri}");
+        }
+        for uri in ["/sessions/spawn", "/sessions/register", "/sessions/recent-dirs"] {
+            let request = Request::builder().method("POST").uri(uri).body(Body::empty()).unwrap();
+            let got = app.clone().oneshot(request).await.unwrap().status();
+            assert_eq!(
+                got,
+                StatusCode::METHOD_NOT_ALLOWED,
+                "POST {uri} is unmounted, but the path still matches the kept GET/PATCH \
+                 /sessions/{{id}}, so the router answers 405 rather than 404"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn service_tokens_off_unmounts_the_service_token_routes_only() {
+        let off =
+            cctui_server_kernel::config::parse_features("[features]\nservice_tokens = false\n")
+                .expect("resolves")
+                .set;
+        let router = crate::build_api_routes_with(off).into_parts().0;
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .connect_lazy("postgres://u:p@127.0.0.1:1/none")
+            .unwrap();
+        let app = router.with_state(crate::state::AppState::for_test(pool));
+        for (method, uri, want) in [
+            ("GET", "/accounts/a1/service-tokens", StatusCode::NOT_FOUND),
+            ("POST", "/accounts/a1/service-tokens", StatusCode::NOT_FOUND),
+            ("DELETE", "/accounts/a1/service-tokens/t1", StatusCode::NOT_FOUND),
+            ("GET", "/accounts/a1", StatusCode::UNAUTHORIZED),
+        ] {
+            let request = Request::builder().method(method).uri(uri).body(Body::empty()).unwrap();
+            let got = app.clone().oneshot(request).await.unwrap().status();
+            assert_eq!(got, want, "{method} {uri}");
+        }
+    }
+
+    #[test]
+    fn every_switchable_feature_gates_a_route_a_task_or_a_message() {
+        let mut gated: BTreeSet<Feature> = ROUTES.iter().filter_map(|r| r.feature).collect();
+        gated.extend(outer_routes(FeatureSet::all()).classified.into_iter().filter_map(|(f, _)| f));
+        gated.extend(Task::ALL.map(Task::feature));
+        let watch = TuiCommand::WatchTerminal { session_id: "s".into(), watch: true };
+        gated.extend(cctui_server_sessions::ws::command_feature(&watch));
+        for feature in Feature::ALL {
+            assert!(
+                gated.contains(&feature) || ANNOUNCEMENT_ONLY.contains(&feature),
+                "{feature} gates nothing: classify a route, task or message under it, or list \
+                 it in ANNOUNCEMENT_ONLY and say why in docs/features.md"
+            );
+        }
+        for feature in ANNOUNCEMENT_ONLY {
+            assert!(!gated.contains(feature), "{feature} gates something; drop it from the list");
+        }
+    }
+
+    #[test]
+    fn tasks_follow_their_feature() {
+        for task in Task::ALL {
+            assert!(task.enabled(FeatureSet::all()), "{task:?}");
+            assert!(!task.enabled(FeatureSet::none()), "{task:?}");
+            assert!(!task.enabled(FeatureSet::all().without(task.feature())), "{task:?}");
+        }
+    }
+
+    async fn status(features: FeatureSet, method: &str, uri: &str) -> StatusCode {
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .connect_lazy("postgres://u:p@127.0.0.1:1/none")
+            .unwrap();
+        let app = outer_routes(features).router.with_state(crate::state::AppState::for_test(pool));
+        let request = Request::builder().method(method).uri(uri).body(Body::empty()).unwrap();
+        app.oneshot(request).await.unwrap().status()
+    }
+
+    #[tokio::test]
+    async fn outer_routes_of_an_off_feature_answer_404() {
+        let none = FeatureSet::none();
+        for (method, uri) in [
+            ("POST", "/api/v1/auth/device/start"),
+            ("POST", "/api/v1/auth/device/poll"),
+            ("POST", "/api/v1/auth/passkey/login/start"),
+            ("GET", "/api/v1/auth/passkey/config"),
+            ("GET", "/api/v1/ws/voice"),
+            ("POST", "/api/v1/daemon/sessions/s1/spawn-child"),
+            ("POST", "/api/v1/daemon/sessions/s1/room"),
+            ("GET", "/api/v1/daemon/sessions/s1/peers"),
+            ("POST", "/api/v1/daemon/sessions/s1/voice-notes"),
+            ("GET", "/api/v1/daemon/version"),
+            ("GET", "/plugins/p1/index.js"),
+            ("POST", "/cctuiverse/v1/join"),
+            ("GET", "/internal/preview/p1/"),
+        ] {
+            assert_eq!(status(none, method, uri).await, StatusCode::NOT_FOUND, "{method} {uri}");
+        }
+        assert_eq!(status(none, "GET", "/health").await, StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn the_launch_context_pull_survives_with_context_off() {
+        let off = FeatureSet::all().without(Feature::Context);
+        let uri = "/api/v1/daemon/sessions/s1/context";
+        assert_eq!(status(off, "POST", uri).await, StatusCode::METHOD_NOT_ALLOWED);
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::literal_string_with_formatting_args)]
+mod http_tracing_tests {
+    use axum::body::Body;
+    use axum::http::{Method, Request, StatusCode};
+    use axum::routing::{get, post};
+    use opentelemetry::trace::{SpanId, SpanKind, TraceId, TracerProvider as _};
+    use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider, SpanData};
+    use tower::ServiceExt;
+    use tracing_subscriber::layer::SubscriberExt;
+
+    use super::cors_layer;
+
+    const TRACE_ID: &str = "4bf92f3577b34da6a3ce929d0e0e4736";
+    const PARENT_ID: &str = "00f067aa0ba902b7";
+
+    fn traced_router() -> axum::Router {
+        let api = axum::Router::new()
+            .route("/sessions/spawn", post(|| async { StatusCode::CREATED }))
+            .route("/sessions/{id}/kill", post(|| async { "killed" }))
+            .layer(axum::middleware::from_fn(
+                |req: axum::extract::Request, next: axum::middleware::Next| next.run(req),
+            ));
+        axum::Router::new()
+            .route("/health", get(|| async { "ok" }))
+            .route("/metrics", get(|| async { "" }))
+            .nest("/api/v1", api)
+            .layer(cctui_telemetry::http::trace_layer())
+    }
+
+    fn attribute(span: &SpanData, key: &str) -> Option<String> {
+        span.attributes
+            .iter()
+            .find(|kv| kv.key.as_str() == key)
+            .map(|kv| kv.value.as_str().into_owned())
+    }
+
+    #[tokio::test]
+    async fn http_tracing_joins_traceparent_and_names_spans_by_matched_route() {
+        let exporter = InMemorySpanExporter::default();
+        let provider = SdkTracerProvider::builder().with_simple_exporter(exporter.clone()).build();
+        let _default = tracing::subscriber::set_default(
+            tracing_subscriber::registry()
+                .with(tracing_opentelemetry::layer().with_tracer(provider.tracer("test"))),
+        );
+        let app = traced_router();
+        for (method, uri) in [
+            (Method::POST, "/api/v1/sessions/spawn"),
+            (Method::POST, "/api/v1/sessions/raw-id-0b5e/kill"),
+            (Method::GET, "/health"),
+            (Method::GET, "/metrics"),
+        ] {
+            let request = Request::builder()
+                .method(method)
+                .uri(uri)
+                .header("traceparent", format!("00-{TRACE_ID}-{PARENT_ID}-01"))
+                .body(Body::empty())
+                .unwrap();
+            drop(app.clone().oneshot(request).await.unwrap());
+        }
+
+        let spans = exporter.get_finished_spans().unwrap();
+        let server: Vec<&SpanData> =
+            spans.iter().filter(|s| s.span_kind == SpanKind::Server).collect();
+        let names: Vec<&str> = server.iter().map(|s| s.name.as_ref()).collect();
+        assert_eq!(names, ["POST /api/v1/sessions/spawn", "POST /api/v1/sessions/{id}/kill"]);
+        for span in &server {
+            assert_eq!(span.span_context.trace_id(), TraceId::from_hex(TRACE_ID).unwrap());
+            assert_eq!(span.parent_span_id, SpanId::from_hex(PARENT_ID).unwrap());
+            assert!(span.parent_span_is_remote);
+            assert_eq!(attribute(span, "http.request.method").as_deref(), Some("POST"));
+            assert!(attribute(span, "code.file.path").is_some());
+        }
+        let (spawn, kill) = (server[0], server[1]);
+        assert_eq!(attribute(spawn, "http.route").as_deref(), Some("/api/v1/sessions/spawn"));
+        assert_eq!(attribute(spawn, "http.response.status_code").as_deref(), Some("201"));
+        assert_eq!(attribute(kill, "http.route").as_deref(), Some("/api/v1/sessions/{id}/kill"));
+        assert_eq!(
+            attribute(kill, "url.path").as_deref(),
+            Some("/api/v1/sessions/raw-id-0b5e/kill")
+        );
+        assert_eq!(attribute(kill, "http.response.status_code").as_deref(), Some("200"));
+    }
+
+    #[tokio::test]
+    async fn http_tracing_without_traceparent_starts_a_root_span() {
+        let exporter = InMemorySpanExporter::default();
+        let provider = SdkTracerProvider::builder().with_simple_exporter(exporter.clone()).build();
+        let _default = tracing::subscriber::set_default(
+            tracing_subscriber::registry()
+                .with(tracing_opentelemetry::layer().with_tracer(provider.tracer("test"))),
+        );
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri("/api/v1/sessions/spawn")
+            .body(Body::empty())
+            .unwrap();
+        drop(traced_router().oneshot(request).await.unwrap());
+
+        let spans = exporter.get_finished_spans().unwrap();
+        let span = spans.iter().find(|s| s.span_kind == SpanKind::Server).expect("server span");
+        assert_eq!(span.parent_span_id, SpanId::INVALID);
+        assert_ne!(span.span_context.trace_id(), TraceId::from_hex(TRACE_ID).unwrap());
+    }
+
+    #[tokio::test]
+    async fn cors_preflight_allows_trace_context_headers() {
+        let origin = "http://localhost:5173";
+        let app = axum::Router::new()
+            .route("/api/v1/sessions/spawn", post(|| async { "ok" }))
+            .layer(cors_layer(&[origin.to_owned()]));
+        let request = Request::builder()
+            .method(Method::OPTIONS)
+            .uri("/api/v1/sessions/spawn")
+            .header("origin", origin)
+            .header("access-control-request-method", "POST")
+            .header("access-control-request-headers", "content-type,traceparent,tracestate")
+            .body(Body::empty())
+            .unwrap();
+        let response = app.oneshot(request).await.unwrap();
+        let allowed = response
+            .headers()
+            .get("access-control-allow-headers")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        assert!(allowed.contains("traceparent"), "{allowed}");
+        assert!(allowed.contains("tracestate"), "{allowed}");
+    }
+}
+
+#[cfg(test)]
+mod secret_reload_tests {
+    use std::time::Duration;
+
+    use sqlx::postgres::PgPoolOptions;
+
+    use super::{apply_database_url, follow_database_url};
+    use cctui_server_kernel::config::test_refs::map_registry;
+
+    #[tokio::test]
+    async fn database_url_rotation_updates_the_pool_connect_config() {
+        let pool = PgPoolOptions::new().connect_lazy("postgres://old:pw@db-old:5432/app").unwrap();
+        apply_database_url(&pool, "postgres://new:pw2@db-new:6432/app2");
+        let options = pool.connect_options();
+        assert_eq!(options.get_username(), "new");
+        assert_eq!(options.get_host(), "db-new");
+        assert_eq!(options.get_port(), 6432);
+        assert_eq!(options.get_database(), Some("app2"));
+
+        apply_database_url(&pool, "not a url ::");
+        assert_eq!(pool.connect_options().get_host(), "db-new", "a bad URL keeps the old config");
+    }
+
+    #[tokio::test]
+    async fn the_slow_query_threshold_survives_a_database_url_rotation() {
+        let pool = PgPoolOptions::new().connect_lazy("postgres://old:pw@db-old:5432/app").unwrap();
+        apply_database_url(&pool, "postgres://new:pw2@db-new:6432/app2");
+        let shown = format!("{:?}", pool.connect_options());
+        let want = Duration::from_millis(u64::from(crate::db::slow_query_ms()));
+        assert!(shown.contains("slow_statements_level: Warn"), "{shown}");
+        assert!(shown.contains(&format!("slow_statements_duration: {want:?}")), "{shown}");
+    }
+
+    #[tokio::test]
+    async fn database_url_ref_rotation_reaches_the_pool_config_and_failure_keeps_it() {
+        let (map, registry) = map_registry("postgres://u1:p1@db1/app");
+        let url = registry.register("DATABASE_URL", "k8s:dev/cctui#value").await.unwrap();
+        let pool = PgPoolOptions::new().connect_lazy(&url.get()).unwrap();
+        follow_database_url(&registry, &pool);
+
+        map.set(Some("postgres://u2:p2@db2/app"));
+        registry.reload().await;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        while pool.connect_options().get_host() != "db2" {
+            assert!(tokio::time::Instant::now() < deadline, "pool never saw the rotation");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(pool.connect_options().get_username(), "u2");
+
+        map.set(None);
+        let report = registry.reload().await;
+        assert_eq!(report.failed, 1);
+        tokio::task::yield_now().await;
+        assert_eq!(pool.connect_options().get_host(), "db2");
+        assert_eq!(&*url.get(), "postgres://u2:p2@db2/app");
+    }
+}

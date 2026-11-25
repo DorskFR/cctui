@@ -89,7 +89,7 @@ describe("Settings save → load round-trip through the blob", () => {
 
   it("a full serialize → mergeDefaults preserves the whole catalogue", () => {
     const saved = mergeDefaults({
-      sessionList: { sort: "name", view: "card", density: "compact" },
+      sessionList: { sort: "name", density: "compact" },
       display: { theme: "light", fontScale: 0.9, archiveShortcut: false },
       harnessMode: "sdk",
       whipStopPhrases: {
@@ -99,6 +99,8 @@ describe("Settings save → load round-trip through the blob", () => {
       },
       secretScrubEnabled: true,
       secretScrubPatterns: [{ name: "tok", regex: "sk-\\w+", enabled: true }],
+      secretScrubOutbound: true,
+      secretScrubLocalTranscripts: true,
       sessionEmojiPrefix: true,
       autoResumeOnConnectionLoss: true,
       dispatchAutoArchive: false,
@@ -188,6 +190,14 @@ describe("Settings save → load round-trip through the blob", () => {
       sessionList: { sort: "created", sortDir: "sideways" },
     } as unknown as Record<string, unknown>);
     expect(merged.sessionList.sortDir).toBe("desc");
+  });
+
+  it("drops the retired list view a blob still carries", () => {
+    const loaded = mergeDefaults({
+      sessionList: { sort: "name", view: "card" },
+    } as Record<string, unknown>);
+    expect(loaded.sessionList.sort).toBe("name");
+    expect("view" in loaded.sessionList).toBe(false);
   });
 
   it("a blob that predates sortDir merges with the default direction", () => {

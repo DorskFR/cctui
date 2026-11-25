@@ -3,7 +3,7 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-#[cfg(feature = "ts")]
+#[cfg(test)]
 use ts_rs::TS;
 use uuid::Uuid;
 
@@ -13,7 +13,7 @@ pub const OUTCOME_EVIDENCE_MAX: usize = 20;
 pub const OUTCOME_EVIDENCE_ITEM_MAX: usize = 2048;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 #[serde(rename_all = "snake_case")]
 pub enum OutcomeStatus {
     Result,
@@ -57,7 +57,7 @@ impl OutcomeStatus {
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 #[serde(rename_all = "snake_case")]
 pub enum OutcomeSource {
     #[default]
@@ -98,7 +98,7 @@ impl OutcomeSource {
 
 /// Body for `POST /api/v1/daemon/sessions/{id}/outcome`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct DeclareOutcomeRequest {
     pub status: OutcomeStatus,
     pub headline: String,
@@ -249,7 +249,7 @@ pub fn parse_text_outcome(text: &str) -> Option<DeclareOutcomeRequest> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct SessionOutcome {
     pub id: Uuid,
     pub session_id: String,
@@ -281,7 +281,7 @@ impl From<&SessionOutcome> for DeclareOutcomeRequest {
 
 /// A rejection is a tool-level result the model reads, not an HTTP error.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct DeclareOutcomeResult {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,

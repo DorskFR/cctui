@@ -10,9 +10,7 @@ keeps a reference in place of the base64 `source`:
 ```
 
 This is the marker the daemon already writes for sources over 512 KiB; the
-server now applies it to every base64 source of 1 KiB or more. Because
-`search_text` is generated from the payload, it no longer carries the base64
-either.
+server now applies it to every base64 source of 1 KiB or more.
 
 Only valid images are stored as images. A source declaring `image/png`,
 `image/jpeg`, `image/gif` or `image/webp` must decode from base64, start with
@@ -105,7 +103,8 @@ newest row, then polls every minute.
 | `CCTUI_IMAGE_BACKFILL` | off | `1`/`true`/`on`/`yes` starts the walk |
 | `CCTUI_IMAGE_BACKFILL_SCAN` | `500` | events scanned per batch |
 | `CCTUI_IMAGE_BACKFILL_ROWS` | `20` | events rewritten per batch (about 10 MB of screenshots) |
-| `CCTUI_IMAGE_BACKFILL_PAUSE_MS` | `1000` | sleep between batches |
+| `CCTUI_IMAGE_BACKFILL_CONCURRENCY` | `1` | events of a batch rewritten at once, each on its own pooled connection; keep it well under `CCTUI_DB_MAX_CONNECTIONS` (4 with the default pool of 20) |
+| `CCTUI_IMAGE_BACKFILL_PAUSE_MS` | `1000` | sleep between batches; `0` for none |
 | `CCTUI_IMAGE_BACKFILL_BUDGET_MB` | `512` | new blob bytes this process writes before the walk stops; restart to continue |
 
 Disk grows by the new blob bytes until autovacuum frees the old TOAST chunks of
@@ -121,6 +120,12 @@ SELECT last_event_id, rows_rewritten, pg_size_pretty(blob_bytes) AS blob_bytes,
 FROM image_blob_backfill WHERE name = 'backfill';
 
 SELECT count(*), pg_size_pretty(sum(byte_len)) FROM daemon_blobs;
+
+-- inline image payloads left
+-- (pg_column_size reads no TOAST, so only large rows are detoasted)
+SELECT count(*), pg_size_pretty(sum(pg_column_size(payload)))
+FROM stream_events
+WHERE pg_column_size(payload) > 65536 AND strpos(payload::text, '"type": "base64"') > 0;
 ```
 
 Restart from the beginning (idempotent: rewritten rows are skipped):
@@ -129,22 +134,87 @@ Restart from the beginning (idempotent: rewritten rows are skipped):
 UPDATE image_blob_backfill SET last_event_id = 0 WHERE name = 'backfill';
 ```
 
-## Durable file backend
+## External blob stores
 
-Set `CCTUI_BLOB_PATH` to a directory on durable storage shared by every server
-replica. Blob metadata, ownership links and hashes remain in PostgreSQL; new
-blob bytes are atomically written and synced to `<directory>/<sha256>`. The
-same authenticated routes and image references serve both backends. Reads
-verify the file length and hash. Missing or damaged files fail closed.
+By default blob bytes live in `daemon_blobs.bytes`. One external store can
+hold them instead; metadata, ownership links and hashes stay in PostgreSQL. A
+row with `file_stored = true` has empty `bytes` and its bytes in the external
+store under its sha256 (`daemon_blobs.hash`). Every reader (the session blob
+route, plugin archives, image recovery and ingest verification) goes through
+the same backend-aware reader, which checks the length and the sha256 and
+fails closed on a missing or damaged object. Existing database rows stay
+readable with any configuration.
 
-Without the variable, new blobs continue using PostgreSQL. Existing database
-blobs remain readable with either configuration. Once any `file_stored` rows
-exist, keep the directory mounted and the variable configured, including on
-restore. Back up this directory together with PostgreSQL. Files whose database
-transaction rolled back are safe orphans; this change does not delete files.
-Do not remove the directory or roll back migration 191 while it is in use.
+The store is chosen once at boot. Setting both `CCTUI_BLOB_PATH` and
+`CCTUI_BLOB_S3_BUCKET`, or the bucket without its endpoint and keys, refuses
+to start.
 
-To migrate existing blobs, copy and verify each file by hash and length before
-setting `file_stored = true, bytes = ''::bytea` in a transaction. Preserve the
-original rows in a verified external backup first. Keep plugin archives and
-image recovery on the same backend-aware reader.
+| Variable | Default | Effect |
+| --- | --- | --- |
+| `CCTUI_BLOB_PATH` | unset | file backend: a directory on durable storage shared by every replica; bytes are written atomically and synced to `<directory>/<sha256>` |
+| `CCTUI_BLOB_S3_BUCKET` | unset | S3 backend: the bucket |
+| `CCTUI_BLOB_S3_ENDPOINT` | required with the bucket | `http(s)://host[:port]`, e.g. `http://versitygw.storage.svc:7070`; requests are path-style, `<endpoint>/<bucket>/<key>` |
+| `CCTUI_BLOB_S3_REGION` | `us-east-1` | SigV4 signing region |
+| `CCTUI_BLOB_S3_ACCESS_KEY_ID` | required with the bucket | static access key |
+| `CCTUI_BLOB_S3_SECRET_ACCESS_KEY` | required with the bucket | static secret key |
+| `CCTUI_BLOB_S3_PREFIX` | empty | object key is `<prefix><sha256>` |
+
+A write checks that the bytes hash to their key before storing them. On S3 an
+object already present with the same length is not uploaded again. When a row
+with external bytes is deleted (a plugin uninstall), its object is deleted
+after the commit, unless the hash was stored again meanwhile; a failed delete
+is only logged. Objects whose database transaction rolled back are safe
+orphans.
+
+Once any `file_stored` rows exist, keep the store configured, including on
+restore, and back it up together with PostgreSQL. Do not roll back migration
+191 while it is in use.
+
+### Moving existing blobs
+
+`CCTUI_BLOB_MOVE=1` starts a background task that moves the bytes of every
+database-stored blob to the configured external store. It is **off by
+default**, and logs and exits when no external store is configured. One
+replica runs it (advisory lock); the others exit quietly.
+
+For each blob, in hash order: check that the bytes hash to the key and match
+`byte_len` (a mismatch is logged once and skipped for the life of the process,
+the row left as is), write it to the store, read it back and verify it, then
+`UPDATE daemon_blobs SET file_stored = true, bytes = ''::bytea WHERE hash = $1
+AND NOT file_stored` in its own transaction. A restart resumes where it
+stopped: moved rows no longer match. A progress line is logged every 100 blobs
+(`blob move progress`: moved, bytes, skipped, remaining) and a summary at the
+end (`blob move finished`).
+
+| Variable | Default | Effect |
+| --- | --- | --- |
+| `CCTUI_BLOB_MOVE` | off | `1`/`true`/`on`/`yes` starts the move |
+| `CCTUI_BLOB_MOVE_BATCH` | `20` | rows read per batch |
+| `CCTUI_BLOB_MOVE_PAUSE_MS` | `500` | sleep between batches |
+| `CCTUI_BLOB_MOVE_BUDGET_MB` | unlimited | stop after this many MB moved by this process; restart to continue |
+
+Procedure:
+
+1. Take a PostgreSQL snapshot.
+2. Configure the S3 variables and deploy. New blobs now go to S3.
+3. Set `CCTUI_BLOB_MOVE=1` and deploy. Watch the logs and the SQL below until
+   nothing is left but skipped rows.
+4. Remove `CCTUI_BLOB_MOVE` and deploy.
+5. `VACUUM (FULL, VERBOSE) daemon_blobs;` to return the space to the volume.
+   It locks the table while it rewrites it; blob reads and writes wait.
+
+Progress:
+
+```sql
+SELECT file_stored, count(*), pg_size_pretty(sum(byte_len)) AS bytes,
+       pg_size_pretty(sum(octet_length(bytes))) AS in_postgres
+FROM daemon_blobs GROUP BY file_stored;
+
+SELECT pg_size_pretty(pg_total_relation_size('daemon_blobs'));
+```
+
+Rollback: rows already moved, and blobs written since step 2, are readable
+only while S3 stays configured. Stopping the move (step 4) is always safe.
+Unsetting the S3 variables is safe only while no row has `file_stored = true`;
+otherwise each object must first be copied back into `bytes`, verified by hash,
+and `file_stored` cleared in the same transaction.

@@ -67,12 +67,14 @@ export interface Form {
 	// or the server would add it back.
 	context_items: string[];
 	context_auto: boolean;
+	auto_archive: boolean;
 }
 
 /** What opens the form pre-seeded: a session's config, or a draft to edit
  * (`draft_id` names its row, `env_keys` the comma-joined env var names,
- * `label_ids` the comma-joined label ids). */
-export type SpawnPrefill = Partial<Form> & {
+ * `label_ids` the comma-joined label ids, `auto_archive` '1' or '0'). */
+export type SpawnPrefill = Omit<Partial<Form>, 'auto_archive'> & {
+	auto_archive?: string;
 	draft_id?: string;
 	env_keys?: string;
 	label_ids?: string;
@@ -82,8 +84,10 @@ export type SpawnPrefill = Partial<Form> & {
 	followup_file?: string;
 };
 
-/** One env-secret row of the spawn form. Values never reach a draft. */
+/** One env-secret row. `stored`: the server holds a sealed value for `key`,
+ * kept unless `value` replaces it. Values never reach local storage. */
 export interface EnvRow {
 	key: string;
 	value: string;
+	stored?: boolean;
 }

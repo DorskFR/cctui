@@ -24,7 +24,8 @@ model?: string | null,
  */
 service_tier?: string | null, 
 /**
- * Keys match `^[A-Z_][A-Z0-9_]*$`. Never persisted or logged.
+ * Keys match `^[A-Z_][A-Z0-9_]*$`. Never logged or returned; a draft
+ * keeps the values vault-encrypted.
  */
 env?: { [key in string]: string }, 
 /**
@@ -49,7 +50,7 @@ auto_account?: boolean,
  */
 pool?: string | null, 
 /**
- * Persist as a draft without dispatching; `env` is not stored.
+ * Persist as a draft without dispatching.
  */
 save_draft?: boolean, 
 /**
@@ -57,7 +58,12 @@ save_draft?: boolean,
  */
 auto_archive?: boolean, 
 /**
- * Draft only: env var names, values are never stored.
+ * The prompt came, at least partly, from speech-to-text.
+ */
+dictated?: boolean, 
+/**
+ * Draft only: the names of its sealed env. On a draft edit a listed name
+ * sent without a value in `env` keeps its stored value; an unlisted one is dropped.
  */
 env_keys?: Array<string>, 
 /**

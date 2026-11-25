@@ -119,13 +119,20 @@ function userTurn(
   scheduledAt?: string | null,
 ): Line[] {
   const { blocks: all, prose } = splitInjected(content);
-  // The spoken-style wrapper is the mic's doing, not context worth a line.
-  const blocks = all.filter((b) => b.attrs.voice !== "spoken");
+  // The mic's own wrappers are not context worth a line.
+  const spoken = all.some((b) => b.attrs.voice === "spoken");
+  const dictated = all.some((b) => b.attrs.input === "dictated");
+  const blocks = all.filter(
+    (b) => b.attrs.voice !== "spoken" && b.attrs.input !== "dictated",
+  );
   const meta = mayBeMeta && looksMeta(prose);
   const body = prose.trim()
     ? userOrSystem(prose, ts, meta, ctx, poll, turnId, scheduledAt)
     : null;
-  if (body && blocks.length !== all.length && body.role === "user") body.voice = true;
+  if (body?.role === "user") {
+    if (spoken) body.voice = true;
+    else if (dictated) body.dictated = true;
+  }
   if (!blocks.length || !ctx.visible("context")) return body ? [body] : [];
   const eventBase = `${ts}|user|${stripAttachmentDecorations(prose).slice(0, 24)}`;
   const segments = blocks.map((b, index) =>
@@ -441,7 +448,7 @@ function buildLine(
         toolUseId: e.tool_use_id ?? undefined,
         text,
         htmlCode: ctx.renderCode(text, ""),
-        ...(parsed ? { images: parsed.images } : {}),
+        ...(parsed?.images.length ? { images: parsed.images } : {}),
       };
     }
     case "context_reset":

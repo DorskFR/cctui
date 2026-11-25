@@ -27,8 +27,12 @@ const stream = (over: Partial<ConversationStream> = {}) =>
 		...over
 	}) as unknown as ConversationStream;
 
-const render = (s: ConversationStream, archived = false) => {
-	comp = mount(ActivityBanner, { target: document.body, props: { stream: s, archived } });
+const render = (
+	s: ConversationStream,
+	archived = false,
+	extra: { needsInput?: boolean; waitingSince?: number | null } = {}
+) => {
+	comp = mount(ActivityBanner, { target: document.body, props: { stream: s, archived, ...extra } });
 	return document.body;
 };
 
@@ -139,5 +143,29 @@ describe('ActivityBanner', () => {
 		);
 		expect(text()).toContain('↓120');
 		expect(text()).toContain('↑34');
+	});
+
+	it('shows the waiting state with its age instead of Idle when the session needs input', () => {
+		render(stream(), false, { needsInput: true, waitingSince: Date.now() - 19 * 60_000 });
+		const el = document.querySelector('.activity');
+		expect(el?.classList.contains('waiting')).toBe(true);
+		expect(el?.classList.contains('idle')).toBe(false);
+		expect(el?.getAttribute('data-journey-key')).toBe('waiting');
+		expect(text()).toContain('Waiting for you · 19m');
+		expect(text()).not.toContain('Idle');
+	});
+
+	it('shows the waiting state without an age when the wait start is unknown', () => {
+		render(stream(), false, { needsInput: true, waitingSince: null });
+		expect(text().trim()).toBe('Waiting for you');
+	});
+
+	it('keeps the live turn status over the waiting state while a turn runs', () => {
+		render(stream({ working: true, turnStartedAt: Date.now(), lastAssistantLine: 'Test passes.' }), false, {
+			needsInput: true,
+			waitingSince: Date.now()
+		});
+		expect(document.querySelector('.activity')?.classList.contains('waiting')).toBe(false);
+		expect(text()).toContain('Test passes.');
 	});
 });

@@ -518,6 +518,10 @@ fn register_session(app: &mut App, session: cctui_proto::models::Session) {
         followup_count: 0,
         tool_guard_bypass: false,
         hidden: false,
+        context_tokens: None,
+        context_window: None,
+        auto_followup_at: None,
+        auto_followup_override: None,
     });
     app.update_aggregates();
 }

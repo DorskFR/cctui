@@ -140,6 +140,7 @@ jobs:
           REDTEAM_DISPATCHER: ${{ vars.REDTEAM_DISPATCHER }}
           REDTEAM_PROFILE: ${{ vars.REDTEAM_PROFILE }}
           REDTEAM_SINK_HITS_URL: ${{ vars.REDTEAM_SINK_HITS_URL }}
+          REDTEAM_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           canary_file="$PLAN_DIR/canaries.txt"
           printf '%s\n' "$CANARY_LIST" >"$canary_file"

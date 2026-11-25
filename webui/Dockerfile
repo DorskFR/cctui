@@ -27,7 +27,7 @@ ENV CLIENT_VERSION=$CLIENT_VERSION
 RUN npm run prepare && npm run build
 
 # ---- serve ----
-FROM nginx:1.30.6-alpine@sha256:901e593c95dc85f5a729f5765516321366ef4ac401821431d408897e95287d0a
+FROM nginx:1.31.10-alpine@sha256:aceb952b920393b7d0bc7b978927fc283370bea89fb082c6fef0ce18c60f96a9
 # nginx.conf is a template: the image's entrypoint renders it into
 # conf.d/default.conf at start, substituting CCTUI_FRAME_ANCESTORS only (the
 # filter keeps nginx's own $variables and any other env var untouched).

@@ -1,12 +1,12 @@
 //! `GET /api/v1/me` — who the presented token resolves to.
 
 use serde::{Deserialize, Serialize};
-#[cfg(feature = "ts")]
+#[cfg(test)]
 use ts_rs::TS;
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct MeResponse {
     /// Coarse role hint for the UI: `admin` | `user` | `machine`. Derived from
     /// scopes + machine id; authority itself lives in `scopes`.

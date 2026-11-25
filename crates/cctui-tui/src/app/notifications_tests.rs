@@ -40,6 +40,7 @@ fn notice(n: u128, title: &str, state: &str) -> Notification {
         acted_at: None,
         resolved_at: None,
         expires_at: None,
+        anchor_seq: None,
     }
 }
 

@@ -1,0 +1,425 @@
+//! Pod-to-pod internal bus endpoints.
+//!
+//! `POST /internal/bus/route` delivers one forwarded frame/round-trip to a WS
+//! held by THIS pod; `POST /internal/bus/publish` ingests a batch of relayed
+//! [`cctui_server_kernel::bus::BusEvent`]s into THIS pod's local subscribers and prompt
+//! stores; `POST /internal/auth/purge` drops revoked credentials from THIS
+//! pod's auth cache. All are loop-guarded by construction: they only ever call
+//! local delivery paths, so a forwarded frame, relayed event or purge can never
+//! be re-forwarded around the mesh.
+//!
+//! Auth: Bearer = the cluster-internal shared secret ([`ensure_secret`]),
+//! minted once into `cluster_secrets` at first boot and read by every replica.
+//! Constant-time comparison; user/machine/admin tokens are never accepted.
+//! When this pod runs without the peer transport (`CCTUI_POD_IP` unset) no
+//! secret is loaded and the endpoints refuse everything.
+
+use axum::Json;
+use axum::extract::State;
+use axum::http::{HeaderMap, StatusCode, header};
+use axum::response::{IntoResponse, Response};
+use chrono::Utc;
+use sha2::{Digest, Sha256};
+use sqlx::PgPool;
+use uuid::Uuid;
+
+use crate::bus::peer::{RouteRequest, RouteResponse, WireBusEvent};
+use crate::state::AppState;
+use cctui_server_extras::presence::Kind;
+use cctui_server_kernel::bus::{BusError, DaemonRequest, DaemonResponse};
+use cctui_server_sessions::routes::permissions::{PendingAsk, PendingPermission, PendingPlan};
+
+/// Row name of the internal bus secret in `cluster_secrets`.
+const SECRET_NAME: &str = "internal_bus";
+
+/// Load — minting on first boot — the cluster-internal shared secret. The
+/// `INSERT ... ON CONFLICT DO NOTHING` makes the mint race-free across
+/// replicas booting simultaneously: exactly one candidate wins and everyone
+/// reads the winner back. Called only when the peer transport is enabled
+/// (`CCTUI_POD_IP` set), so a single-replica/dev boot writes nothing.
+pub async fn ensure_secret(pool: &PgPool) -> Result<String, sqlx::Error> {
+    // Two v4 UUIDs = ~244 bits of CSPRNG entropy, hex-encoded — comfortably
+    // past the 32-byte bar without pulling in a new RNG dependency.
+    let candidate = format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple());
+    sqlx::query("INSERT INTO cluster_secrets (name, value) VALUES ($1, $2) ON CONFLICT DO NOTHING")
+        .bind(SECRET_NAME)
+        .bind(&candidate)
+        .execute(pool)
+        .await?;
+    sqlx::query_scalar("SELECT value FROM cluster_secrets WHERE name = $1")
+        .bind(SECRET_NAME)
+        .fetch_one(pool)
+        .await
+}
+
+/// Constant-time string equality via fixed-size digest comparison: hashing
+/// both sides first makes the XOR-fold independent of where the inputs differ
+/// and of their lengths.
+fn constant_time_eq(a: &str, b: &str) -> bool {
+    let da = Sha256::digest(a.as_bytes());
+    let db = Sha256::digest(b.as_bytes());
+    da.iter().zip(db.iter()).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+}
+
+/// Gate an internal request on the shared secret. No secret loaded (peer
+/// transport disabled) ⇒ 404, indistinguishable from the route not existing;
+/// wrong/missing bearer ⇒ 401.
+fn authenticate(state: &AppState, headers: &HeaderMap) -> Result<(), StatusCode> {
+    let Some(secret) = state.internal_secret.as_deref() else {
+        return Err(StatusCode::NOT_FOUND);
+    };
+    let bearer = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .ok_or(StatusCode::UNAUTHORIZED)?;
+    if constant_time_eq(bearer, secret) { Ok(()) } else { Err(StatusCode::UNAUTHORIZED) }
+}
+
+fn daemon_response(response: DaemonResponse) -> RouteResponse {
+    match response {
+        DaemonResponse::StagedFiles(paths) => RouteResponse::StagedFiles { paths },
+        DaemonResponse::Dirs(dirs) => RouteResponse::Dirs { dirs },
+        DaemonResponse::GitInfo(info) => RouteResponse::GitInfo { info },
+        DaemonResponse::File(file) => RouteResponse::File { file },
+        DaemonResponse::Diagnose(report) => RouteResponse::Diagnose { report },
+        DaemonResponse::TranscriptAudit(report) => RouteResponse::TranscriptAudit { report },
+    }
+}
+
+/// `POST /internal/bus/route` — deliver one forwarded frame/round-trip to a WS
+/// terminated by THIS pod. Local delivery only (`*_local`): if the target
+/// isn't here (it moved, or the presence row was stale) the miss is reported
+/// in the body and the sending pod surfaces it honestly — one hop, never a
+/// re-forward.
+#[tracing::instrument(target = "otel", skip_all, fields(code.function.name = "bus_route"))]
+pub async fn bus_route(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<RouteRequest>,
+) -> Result<Json<RouteResponse>, StatusCode> {
+    authenticate(&state, &headers)?;
+    let held = if headers.contains_key(crate::bus::peer::PROBE_HEADER) {
+        held_rows(&state, &request)
+    } else {
+        Vec::new()
+    };
+    let outcome = deliver_local(&state, request).await;
+    if outcome.is_ok() {
+        restore_presence(&state, held).await;
+    }
+    Ok(Json(outcome.unwrap_or_else(|err| RouteResponse::from_error(&err))))
+}
+
+fn held_rows(state: &AppState, request: &RouteRequest) -> Vec<(Kind, Uuid, Uuid)> {
+    let Some(machine) = request.machine() else { return Vec::new() };
+    let mut rows = Vec::new();
+    if let Some(conn) = state.bus.machine_conn(machine) {
+        rows.push((Kind::Daemon, machine, conn));
+    }
+    if let Some(session) = request.session()
+        && let Some(conn) = state.bus.session_conn(machine, session)
+        && let Ok(session) = Uuid::parse_str(session)
+    {
+        rows.push((Kind::Session, session, conn));
+    }
+    rows
+}
+
+/// A peer found this pod only by probing, so the presence rows that should
+/// have named it are gone. Re-registering under the holding connection also
+/// re-arms their heartbeat and lets that connection's close drop them.
+async fn restore_presence(state: &AppState, rows: Vec<(Kind, Uuid, Uuid)>) {
+    for (kind, id, conn) in rows {
+        tracing::warn!(
+            kind = kind.as_str(),
+            %id,
+            "peer probe reached a connection this pod holds without a presence row",
+        );
+        cctui_server_extras::presence::register_conn(state, kind, id, conn).await;
+    }
+}
+
+const fn route_op(request: &RouteRequest) -> &'static str {
+    match request {
+        RouteRequest::DaemonCommand { .. } => "daemon_command",
+        RouteRequest::DaemonStageFiles { .. } => "daemon_stage_files",
+        RouteRequest::DaemonListDirs { .. } => "daemon_list_dirs",
+        RouteRequest::DaemonGitInfo { .. } => "daemon_git_info",
+        RouteRequest::DaemonReadFile { .. } => "daemon_read_file",
+        RouteRequest::DaemonDiagnose { .. } => "daemon_diagnose",
+        RouteRequest::DaemonTranscriptAudit { .. } => "daemon_transcript_audit",
+        RouteRequest::DispatcherCommand { .. } => "dispatcher_command",
+        RouteRequest::DispatcherRequest { .. } => "dispatcher_request",
+    }
+}
+
+#[tracing::instrument(
+    target = "otel",
+    skip_all,
+    fields(code.function.name = "deliver_local", bus.route.op = route_op(&request))
+)]
+async fn deliver_local(state: &AppState, request: RouteRequest) -> Result<RouteResponse, BusError> {
+    match request {
+        RouteRequest::DaemonCommand { machine, frame } => {
+            match cctui_server_kernel::bus::frame_session(&frame).map(ToOwned::to_owned) {
+                Some(session) => state
+                    .bus
+                    .command_daemon_local_for_session(machine, &session, frame)
+                    .await
+                    .map(|()| RouteResponse::Ok),
+                None => {
+                    state.bus.command_daemon_local(machine, frame).await.map(|()| RouteResponse::Ok)
+                }
+            }
+        }
+        RouteRequest::DaemonStageFiles { machine, adapter_id, local_id, uploads } => state
+            .bus
+            .request_daemon_local_for_session(
+                machine,
+                &local_id.clone(),
+                DaemonRequest::StageFiles { adapter_id, local_id, uploads },
+            )
+            .await
+            .map(daemon_response),
+        RouteRequest::DaemonListDirs { machine, path } => state
+            .bus
+            .request_daemon_local(machine, DaemonRequest::ListDirs { path })
+            .await
+            .map(daemon_response),
+        RouteRequest::DaemonGitInfo { machine, path, include_dirty } => state
+            .bus
+            .request_daemon_local(machine, DaemonRequest::GitInfo { path, include_dirty })
+            .await
+            .map(daemon_response),
+        RouteRequest::DaemonReadFile { machine, path, max_bytes, cwd } => state
+            .bus
+            .request_daemon_local(machine, DaemonRequest::ReadFile { path, max_bytes, cwd })
+            .await
+            .map(daemon_response),
+        RouteRequest::DaemonDiagnose { machine, adapter_id, local_id } => state
+            .bus
+            .request_daemon_local_for_session(
+                machine,
+                &local_id.clone(),
+                DaemonRequest::Diagnose { adapter_id, local_id },
+            )
+            .await
+            .map(daemon_response),
+        RouteRequest::DaemonTranscriptAudit { machine, dry_run } => state
+            .bus
+            .request_daemon_local(machine, DaemonRequest::TranscriptAudit { dry_run })
+            .await
+            .map(daemon_response),
+        RouteRequest::DispatcherCommand { dispatcher, frame } => {
+            state.bus.command_dispatcher_local(dispatcher, frame).await.map(|()| RouteResponse::Ok)
+        }
+        RouteRequest::DispatcherRequest { dispatcher, request_id, frame } => state
+            .bus
+            .request_dispatcher_local(dispatcher, request_id, frame)
+            .await
+            .map(|frame| RouteResponse::DispatcherReply { frame }),
+    }
+}
+
+/// `POST /internal/bus/publish` — ingest a batch of relayed events into THIS
+/// pod's local subscribers. `ServerEvent`s that carry prompt lifecycle
+/// (permission/ask/plan raise + resolve) are also applied to the local stores
+/// first, so replay-on-subscribe works on any pod (§store sync).
+pub async fn bus_publish(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(events): Json<Vec<WireBusEvent>>,
+) -> Result<StatusCode, StatusCode> {
+    authenticate(&state, &headers)?;
+    for event in events {
+        if let WireBusEvent::Server { event } = &event {
+            apply_server_event(&state, event).await;
+        }
+        state.bus.deliver_local(event.into());
+    }
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// `POST /internal/auth/purge` — drop an auth entry (or everything), a tool-guard
+/// session lookup or an account tool policy from THIS
+/// pod's caches after the matching change on the sending pod.
+/// Local only, never re-broadcast.
+pub async fn auth_purge(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(purge): Json<cctui_server_kernel::auth::CachePurge>,
+) -> Result<StatusCode, StatusCode> {
+    authenticate(&state, &headers)?;
+    state.auth_config.purge_local(&purge);
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// `POST /internal/guard/forget` — drop a session's guard step from THIS
+/// pod's mirror after it ended, was killed or archived on the sending pod.
+/// Local only, never re-broadcast.
+pub async fn guard_forget(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(forget): Json<cctui_server_sessions::guard_step::GuardForget>,
+) -> Result<StatusCode, StatusCode> {
+    authenticate(&state, &headers)?;
+    cctui_server_sessions::guard_step::forget_local(&forget.session_id);
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// `ANY /internal/preview/{id}/{*path}` — serve a preview request forwarded by
+/// the pod the browser reached. That pod already checked the preview cookie, so
+/// the verified owner rides in [`forward::USER_HEADER`]; this hop never carries
+/// the browser's own cookie. Served locally only, never re-forwarded.
+pub async fn preview_serve(
+    State(state): State<AppState>,
+    axum::extract::Path((preview_id, path)): axum::extract::Path<(String, String)>,
+    request: axum::extract::Request,
+) -> Response {
+    serve_forwarded(state, preview_id, &path, request).await
+}
+
+/// `ANY /internal/preview/{id}/` — the app root, which `{*path}` cannot match.
+pub async fn preview_serve_root(
+    State(state): State<AppState>,
+    axum::extract::Path(preview_id): axum::extract::Path<String>,
+    request: axum::extract::Request,
+) -> Response {
+    serve_forwarded(state, preview_id, "", request).await
+}
+
+async fn serve_forwarded(
+    state: AppState,
+    preview_id: String,
+    path: &str,
+    mut request: axum::extract::Request,
+) -> Response {
+    if let Err(status) = authenticate(&state, request.headers()) {
+        return status.into_response();
+    }
+    let claimed = request
+        .headers()
+        .get(cctui_server_extras::preview::forward::USER_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| uuid::Uuid::parse_str(v).ok());
+    let Some(claimed) = claimed else {
+        return StatusCode::BAD_REQUEST.into_response();
+    };
+    let Some(preview) = state.preview.get(&state.pool, &preview_id).await else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    if preview.user_id != claimed {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    // The app must see its own path, not the internal envelope's.
+    let query = request.uri().query().map(|q| format!("?{q}")).unwrap_or_default();
+    match format!("/{path}{query}").parse() {
+        Ok(uri) => *request.uri_mut() = uri,
+        Err(_) => return StatusCode::BAD_REQUEST.into_response(),
+    }
+    cctui_server_extras::preview::handler::serve_local_only(state, preview, request).await
+}
+
+/// Mirror a relayed [`ServerEvent`]'s prompt-store side effects locally.
+/// The originating pod already ran the daemon-ingest path (which wrote its own
+/// stores and published these events); applying the same mutations here makes
+/// both pods' stores converge — raise AND resolve — so a client (re)subscribing
+/// on either pod gets the live prompt replayed.
+async fn apply_server_event(state: &AppState, event: &cctui_proto::ws::ServerEvent) {
+    use cctui_proto::ws::ServerEvent;
+    match event {
+        ServerEvent::PermissionRequest {
+            session_id,
+            request_id,
+            tool_name,
+            description,
+            input_preview,
+            options,
+        } => {
+            state.permission_store.write().await.insert_request(PendingPermission {
+                session_id: session_id.clone(),
+                request_id: request_id.clone(),
+                tool_name: tool_name.clone(),
+                description: description.clone(),
+                input_preview: input_preview.clone(),
+                options: options.clone(),
+                received_at: Utc::now(),
+            });
+        }
+        ServerEvent::PermissionResolved { request_id, .. } => {
+            // Same terminal write the daemon-ingest resolution path performs.
+            state.permission_store.write().await.record_decision(request_id, "resolved".into());
+        }
+        ServerEvent::AskQuestion { session_id, question, questions, preamble } => {
+            state.permission_store.write().await.insert_ask(PendingAsk {
+                session_id: session_id.clone(),
+                question: question.clone(),
+                questions: questions.clone(),
+                preamble: preamble.clone(),
+                received_at: Utc::now(),
+            });
+        }
+        ServerEvent::AskResolved { session_id } => {
+            state.permission_store.write().await.remove_ask(session_id);
+        }
+        ServerEvent::PlanRequest { session_id, plan, preamble } => {
+            state.permission_store.write().await.insert_plan(PendingPlan {
+                session_id: session_id.clone(),
+                plan: plan.clone(),
+                preamble: preamble.clone(),
+                received_at: Utc::now(),
+            });
+        }
+        ServerEvent::PlanResolved { session_id } => {
+            state.permission_store.write().await.remove_plan(session_id);
+        }
+        ServerEvent::GuardStepState { session_id, state: step } => {
+            cctui_server_sessions::guard_step::record(session_id.clone(), step.clone());
+        }
+        ServerEvent::SessionEnded { session_id, .. } => {
+            cctui_server_sessions::guard_step::forget_local(session_id);
+        }
+        _ => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::constant_time_eq;
+
+    #[tokio::test]
+    async fn a_relayed_session_end_forgets_the_guard_step() {
+        use cctui_proto::ws::ServerEvent;
+        let state = crate::state::AppState::for_test(
+            sqlx::PgPool::connect_lazy("postgres://invalid").unwrap(),
+        );
+        let sid = "internal-guard-end".to_owned();
+        let step = cctui_proto::guard_step::GuardStepState { step: 2, ..Default::default() };
+        super::apply_server_event(
+            &state,
+            &ServerEvent::GuardStepState { session_id: sid.clone(), state: step.clone() },
+        )
+        .await;
+        assert_eq!(cctui_server_sessions::guard_step::get(&sid), Some(step));
+        super::apply_server_event(
+            &state,
+            &ServerEvent::SessionEnded {
+                session_id: sid.clone(),
+                reason: cctui_proto::models::SessionEndReason::Completed,
+                detail: None,
+            },
+        )
+        .await;
+        assert_eq!(cctui_server_sessions::guard_step::get(&sid), None);
+    }
+
+    #[test]
+    fn constant_time_eq_matches_semantics() {
+        assert!(constant_time_eq("secret", "secret"));
+        assert!(!constant_time_eq("secret", "secreT"));
+        assert!(!constant_time_eq("secret", "secret-longer"));
+        assert!(!constant_time_eq("", "x"));
+        assert!(constant_time_eq("", ""));
+    }
+}

@@ -1,5 +1,5 @@
-//! [`Request`] takes the path and query in canonical form: see [`canonical_uri`]
-//! and [`canonical_query`].
+//! [`Request`] takes the path and query in canonical form: see [`canonical_uri`],
+//! [`s3_canonical_uri`] and [`canonical_query`].
 
 use std::fmt::Write as _;
 use std::time::SystemTime;
@@ -10,6 +10,9 @@ use sha2::{Digest as _, Sha256};
 use crate::AwsCredentials;
 
 const ALGORITHM: &str = "AWS4-HMAC-SHA256";
+
+/// S3 `x-amz-content-sha256` value that leaves the body out of the signature.
+pub const UNSIGNED_PAYLOAD: &str = "UNSIGNED-PAYLOAD";
 
 #[derive(Debug, Clone, Copy)]
 pub struct Scope<'a> {
@@ -39,10 +42,24 @@ pub fn sign(
     req: &Request<'_>,
     now: SystemTime,
 ) -> Vec<(&'static str, String)> {
+    sign_with_payload_hash(creds, scope, req, &hex::encode(Sha256::digest(req.body)), now)
+}
+
+/// [`sign`] with the payload hash supplied instead of computed from
+/// `req.body`, as S3 requires: send the same value as `x-amz-content-sha256`
+/// and list that header in `req.headers` so it is signed.
+#[must_use]
+pub fn sign_with_payload_hash(
+    creds: &AwsCredentials,
+    scope: Scope<'_>,
+    req: &Request<'_>,
+    payload_hash: &str,
+    now: SystemTime,
+) -> Vec<(&'static str, String)> {
     let amz_date = amz_date(now);
     let headers = canonical_headers(creds, req, &amz_date);
     let signed = signed_headers(&headers);
-    let canonical = canonical_request(req, &headers, &signed);
+    let canonical = canonical_request_with(req, &headers, &signed, payload_hash);
     let credential_scope = credential_scope(&amz_date, scope);
     let to_sign = string_to_sign(&amz_date, &credential_scope, &canonical);
     let signature = signature(&creds.secret_key, &amz_date, scope, &to_sign);
@@ -83,6 +100,15 @@ pub fn canonical_uri(path: &str) -> String {
         out.push('/');
     }
     uri_encode(&out, true)
+}
+
+/// Canonical URI of an S3 object path, which is also the path to send: bytes
+/// outside the unreserved set and `/` are percent-encoded once, and dot or
+/// empty segments are kept, since S3 keys are used as-is.
+#[must_use]
+pub fn s3_canonical_uri(path: &str) -> String {
+    let encoded = uri_encode(path, true);
+    if encoded.starts_with('/') { encoded } else { format!("/{encoded}") }
 }
 
 /// Canonical query string: pairs form-decoded, re-encoded, then sorted.
@@ -166,18 +192,22 @@ fn signed_headers(headers: &[(String, String)]) -> String {
     headers.iter().map(|(k, _)| k.as_str()).collect::<Vec<_>>().join(";")
 }
 
+#[cfg(test)]
 fn canonical_request(req: &Request<'_>, headers: &[(String, String)], signed: &str) -> String {
+    canonical_request_with(req, headers, signed, &hex::encode(Sha256::digest(req.body)))
+}
+
+fn canonical_request_with(
+    req: &Request<'_>,
+    headers: &[(String, String)],
+    signed: &str,
+    payload_hash: &str,
+) -> String {
     let mut lines = String::new();
     for (k, v) in headers {
         let _ = writeln!(lines, "{k}:{v}");
     }
-    format!(
-        "{}\n{}\n{}\n{lines}\n{signed}\n{}",
-        req.method,
-        req.path,
-        req.query,
-        hex::encode(Sha256::digest(req.body))
-    )
+    format!("{}\n{}\n{}\n{lines}\n{signed}\n{payload_hash}", req.method, req.path, req.query)
 }
 
 fn credential_scope(amz_date: &str, scope: Scope<'_>) -> String {
@@ -365,5 +395,85 @@ mod tests {
         let req = request("GET", &[("My-Header1", "  a   b   c  ")], b"");
         let headers = canonical_headers(&creds, &req, "20150830T123600Z");
         assert!(headers.contains(&("my-header1".to_owned(), "a b c".to_owned())), "{headers:?}");
+    }
+
+    const S3_KEY_ID: &str = "AKIAIOSFODNN7EXAMPLE";
+    const S3_SECRET: &str = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY";
+    const S3_SCOPE: Scope<'static> = Scope { region: "us-east-1", service: "s3" };
+    const S3_HOST: &str = "examplebucket.s3.amazonaws.com";
+    const EMPTY_SHA256: &str = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+
+    fn s3_clock() -> SystemTime {
+        chrono::DateTime::parse_from_rfc3339("2013-05-24T00:00:00Z").unwrap().into()
+    }
+
+    fn s3_request<'a>(
+        method: &'a str,
+        path: &'a str,
+        headers: &'a [(&'a str, &'a str)],
+        body: &'a [u8],
+    ) -> Request<'a> {
+        Request { method, host: S3_HOST, path, query: "", headers, body }
+    }
+
+    #[test]
+    fn s3_get_object_matches_the_aws_example() {
+        let creds = AwsCredentials::new(S3_KEY_ID, S3_SECRET);
+        let path = s3_canonical_uri("/test.txt");
+        let headers = [("Range", "bytes=0-9"), ("x-amz-content-sha256", EMPTY_SHA256)];
+        let req = s3_request("GET", &path, &headers, b"");
+        let signed = sign_with_payload_hash(&creds, S3_SCOPE, &req, EMPTY_SHA256, s3_clock());
+        assert_eq!(
+            authorization(&signed),
+            "AWS4-HMAC-SHA256 Credential=AKIAIOSFODNN7EXAMPLE/20130524/us-east-1/s3/aws4_request, \
+             SignedHeaders=host;range;x-amz-content-sha256;x-amz-date, \
+             Signature=f0e8bdb87c964420e857bd35b5d6ed310bd44f0170aba48dd91039c6036bdb41"
+        );
+    }
+
+    #[test]
+    fn s3_put_object_matches_the_aws_example() {
+        let creds = AwsCredentials::new(S3_KEY_ID, S3_SECRET);
+        let body = b"Welcome to Amazon S3.";
+        let payload = hex::encode(Sha256::digest(body));
+        assert_eq!(payload, "44ce7dd67c959e0d3524ffac1771dfbba87d2b6b4b4e99e42034a8b803f8b072");
+        let path = s3_canonical_uri("/test$file.text");
+        assert_eq!(path, "/test%24file.text");
+        let headers = [
+            ("Date", "Fri, 24 May 2013 00:00:00 GMT"),
+            ("x-amz-storage-class", "REDUCED_REDUNDANCY"),
+            ("x-amz-content-sha256", payload.as_str()),
+        ];
+        let req = s3_request("PUT", &path, &headers, body);
+        let signed = sign_with_payload_hash(&creds, S3_SCOPE, &req, &payload, s3_clock());
+        assert_eq!(
+            authorization(&signed),
+            "AWS4-HMAC-SHA256 Credential=AKIAIOSFODNN7EXAMPLE/20130524/us-east-1/s3/aws4_request, \
+             SignedHeaders=date;host;x-amz-content-sha256;x-amz-date;x-amz-storage-class, \
+             Signature=98ad721746da40c64f1a55b78f14c238d841ea1380cd77a1b5971af0ece108bd"
+        );
+        assert_eq!(signed, sign(&creds, S3_SCOPE, &req, s3_clock()), "body hash is the default");
+    }
+
+    #[test]
+    fn s3_paths_are_encoded_once_and_never_normalised() {
+        for (raw, canonical) in [
+            ("/bucket/a/./b/../c", "/bucket/a/./b/../c"),
+            ("/bucket//key//", "/bucket//key//"),
+            ("/bucket/a%2Fb", "/bucket/a%252Fb"),
+            ("/bucket/a b+c", "/bucket/a%20b%2Bc"),
+            ("bucket/key", "/bucket/key"),
+        ] {
+            assert_eq!(s3_canonical_uri(raw), canonical, "{raw:?}");
+        }
+        let creds = AwsCredentials::new(S3_KEY_ID, S3_SECRET);
+        let path = s3_canonical_uri("/bucket/./x/../y%2Fz");
+        let headers = [("x-amz-content-sha256", UNSIGNED_PAYLOAD)];
+        let req = s3_request("GET", &path, &headers, b"");
+        let headers = canonical_headers(&creds, &req, "20130524T000000Z");
+        let canonical =
+            canonical_request_with(&req, &headers, &signed_headers(&headers), UNSIGNED_PAYLOAD);
+        assert!(canonical.starts_with("GET\n/bucket/./x/../y%252Fz\n\n"), "{canonical}");
+        assert!(canonical.ends_with("\nUNSIGNED-PAYLOAD"), "{canonical}");
     }
 }

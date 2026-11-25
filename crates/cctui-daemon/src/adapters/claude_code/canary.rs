@@ -60,15 +60,25 @@ impl Verdict {
         }
     }
 
+    /// Hookless workers are routine (pre-warmed spares) and not actionable: log only.
+    const fn posts(&self) -> bool {
+        !matches!(self, Self::HooksBlocked { .. })
+    }
+
     const fn cleared_notice(&self) -> Option<&'static str> {
         match self {
-            Self::HooksBlocked { .. } => {
-                Some("cctui hooks are firing; the earlier warning is cleared.")
-            }
+            Self::HooksBlocked { .. } => Some("cctui hooks are firing"),
             Self::McpBlocked => Some("cctui MCP server connected; the earlier warning is cleared."),
             Self::ExitedEarly(_) => None,
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct Notice {
+    pub local_id: String,
+    pub text: String,
+    pub post: bool,
 }
 
 /// One roster entry as the canary needs it.
@@ -158,14 +168,12 @@ impl Canary {
         matches!(self.flagged(local_id), Some(Verdict::HooksBlocked { .. }))
     }
 
-    /// Advance every watch against one roster poll; returns the notices to
-    /// post, keyed by `local_id`.
     pub(super) fn observe(
         &mut self,
         roster: &[Observed],
         now: Instant,
         mcp_ready: &impl Fn(&str) -> bool,
-    ) -> Vec<(String, String)> {
+    ) -> Vec<Notice> {
         let mut notices = Vec::new();
         self.watches.retain(|local_id, watch| {
             let job = roster.iter().find(|j| j.short == watch.short);
@@ -174,14 +182,22 @@ impl Canary {
                 Step::Done => false,
                 Step::Flag(verdict) => {
                     if self.warned.insert((local_id.clone(), verdict.kind())) {
-                        notices.push((local_id.clone(), verdict.notice()));
+                        notices.push(Notice {
+                            local_id: local_id.clone(),
+                            text: verdict.notice(),
+                            post: verdict.posts(),
+                        });
                     }
                     let keep = !matches!(verdict, Verdict::ExitedEarly(_));
                     watch.flagged = Some(verdict);
                     keep
                 }
-                Step::Clear(text) => {
-                    notices.push((local_id.clone(), text.to_owned()));
+                Step::Clear { text, post } => {
+                    notices.push(Notice {
+                        local_id: local_id.clone(),
+                        text: text.to_owned(),
+                        post,
+                    });
                     false
                 }
             }
@@ -194,7 +210,7 @@ enum Step {
     Wait,
     Done,
     Flag(Verdict),
-    Clear(&'static str),
+    Clear { text: &'static str, post: bool },
 }
 
 fn step(
@@ -211,7 +227,7 @@ fn step(
             Verdict::ExitedEarly(_) => true,
         };
         return match (recovered, flag.cleared_notice()) {
-            (true, Some(text)) => Step::Clear(text),
+            (true, Some(text)) => Step::Clear { text, post: flag.posts() },
             (true, None) => Step::Done,
             (false, _) if job.is_none() => Step::Done,
             (false, _) => Step::Wait,
@@ -291,7 +307,7 @@ pub(super) fn flagged_notice(local_id: &str) -> Option<String> {
     CANARY.lock().ok()?.flagged(local_id).map(Verdict::notice)
 }
 
-pub(super) fn observe(roster: &[Observed]) -> Vec<(String, String)> {
+pub(super) fn observe(roster: &[Observed]) -> Vec<Notice> {
     CANARY.lock().map_or_else(
         |_| Vec::new(),
         |mut c| c.observe(roster, Instant::now(), &crate::mcpready::is_ready),
@@ -326,16 +342,17 @@ mod tests {
     }
 
     #[test]
-    fn a_live_worker_without_any_hook_ping_is_flagged_after_the_window() {
+    fn a_live_worker_without_any_hook_ping_is_flagged_and_logged_after_the_window() {
         let (mut c, t0) = armed(None);
         let roster = [live("abcd1234")];
         assert!(c.observe(&roster, t0, &never).is_empty());
         assert!(c.observe(&roster, t0 + JUST_UNDER, &never).is_empty());
         let notices = c.observe(&roster, t0 + WINDOW, &never);
         assert_eq!(notices.len(), 1);
-        assert_eq!(notices[0].0, "loc-1");
-        assert!(notices[0].1.contains("cctui hooks not loaded"), "{}", notices[0].1);
-        assert!(notices[0].1.contains("/status"), "{}", notices[0].1);
+        assert_eq!(notices[0].local_id, "loc-1");
+        assert!(notices[0].text.contains("cctui hooks not loaded"), "{}", notices[0].text);
+        assert!(notices[0].text.contains("/status"), "{}", notices[0].text);
+        assert!(!notices[0].post, "a hookless worker is logged, not posted");
         assert_eq!(c.flagged("loc-1"), Some(&Verdict::HooksBlocked { spare: false }));
         assert!(c.observe(&roster, t0 + WINDOW * 2, &never).is_empty(), "flagged once");
     }
@@ -348,8 +365,9 @@ mod tests {
         c.observe(&roster, t0, &never);
         let notices = c.observe(&roster, t0 + WINDOW, &never);
         assert_eq!(notices.len(), 1);
-        assert!(notices[0].1.contains("pre-warmed spare"), "{}", notices[0].1);
-        assert!(!notices[0].1.contains("allowManagedHooksOnly"), "{}", notices[0].1);
+        assert!(notices[0].text.contains("pre-warmed spare"), "{}", notices[0].text);
+        assert!(!notices[0].text.contains("allowManagedHooksOnly"), "{}", notices[0].text);
+        assert!(!notices[0].post);
         assert_eq!(c.flagged("loc-1"), Some(&Verdict::HooksBlocked { spare: true }));
     }
 
@@ -361,8 +379,8 @@ mod tests {
         c.observe(&roster, t0, &never);
         let notices = c.observe(&roster, t0 + WINDOW, &never);
         assert_eq!(notices.len(), 1);
-        assert!(notices[0].1.contains(HOOKS_LOST), "{}", notices[0].1);
-        assert!(!notices[0].1.to_lowercase().contains("restart"), "{}", notices[0].1);
+        assert!(notices[0].text.contains(HOOKS_LOST), "{}", notices[0].text);
+        assert!(!notices[0].text.to_lowercase().contains("restart"), "{}", notices[0].text);
 
         let t1 = t0 + WINDOW * 3;
         c.arm("loc-1", "abcd1234", "claude-1", None, t1, T0_MS + 90_000);
@@ -384,7 +402,8 @@ mod tests {
         c.observe(&roster, t1, &never);
         let notices = c.observe(&roster, t1 + WINDOW, &never);
         assert_eq!(notices.len(), 1);
-        assert!(notices[0].1.contains("cctui MCP server not connected"), "{}", notices[0].1);
+        assert!(notices[0].text.contains("cctui MCP server not connected"), "{}", notices[0].text);
+        assert!(notices[0].post, "a blocked MCP relay is still posted");
     }
 
     #[test]
@@ -433,7 +452,7 @@ mod tests {
         assert!(c.observe(&roster, t0, &never).is_empty());
         let notices = c.observe(&roster, t0 + WINDOW, &never);
         assert_eq!(notices.len(), 1);
-        assert!(notices[0].1.contains("cctui MCP server not connected"), "{}", notices[0].1);
+        assert!(notices[0].text.contains("cctui MCP server not connected"), "{}", notices[0].text);
         assert_eq!(c.flagged("loc-1"), Some(&Verdict::McpBlocked));
     }
 
@@ -454,7 +473,8 @@ mod tests {
         c.ping("claude-1");
         let notices = c.observe(&roster, t0 + WINDOW * 2, &never);
         assert_eq!(notices.len(), 1);
-        assert!(notices[0].1.contains("cleared"), "{}", notices[0].1);
+        assert!(notices[0].text.contains("hooks are firing"), "{}", notices[0].text);
+        assert!(!notices[0].post);
         assert_eq!(c.flagged("loc-1"), None);
     }
 
@@ -467,7 +487,8 @@ mod tests {
         assert_eq!(c.observe(&roster, t0 + WINDOW, &never).len(), 1);
         let notices = c.observe(&roster, t0 + WINDOW * 2, &|s| s == "loc-1");
         assert_eq!(notices.len(), 1);
-        assert!(notices[0].1.contains("MCP server connected"), "{}", notices[0].1);
+        assert!(notices[0].text.contains("MCP server connected"), "{}", notices[0].text);
+        assert!(notices[0].post);
     }
 
     #[test]
@@ -493,9 +514,10 @@ mod tests {
         let notices = c.observe(&roster, t0 + Duration::from_secs(1), &never);
         assert_eq!(notices.len(), 1);
         assert_eq!(
-            notices[0].1,
+            notices[0].text,
             "worker exited before cctui hooks loaded: --mcp-config is disabled by policy"
         );
+        assert!(notices[0].post);
         assert!(c.watches.is_empty());
     }
 
@@ -518,7 +540,23 @@ mod tests {
         c.observe(&[live("abcd1234")], t0, &never);
         let notices = c.observe(&[], t0 + Duration::from_secs(3), &never);
         assert_eq!(notices.len(), 1);
-        assert!(notices[0].1.contains("disableSideloadFlags"), "{}", notices[0].1);
+        assert!(notices[0].text.contains("disableSideloadFlags"), "{}", notices[0].text);
+    }
+
+    #[test]
+    fn a_hookless_spare_posts_nothing_to_the_session_but_still_logs() {
+        let (mut c, t0) = armed(None);
+        c.mark_spare("claude-1");
+        let roster = [live("abcd1234")];
+        let mut seen = Vec::new();
+        seen.extend(c.observe(&roster, t0, &never));
+        seen.extend(c.observe(&roster, t0 + WINDOW, &never));
+        seen.extend(c.observe(&roster, t0 + WINDOW * 2, &never));
+        c.ping("claude-1");
+        seen.extend(c.observe(&roster, t0 + WINDOW * 3, &never));
+        assert_eq!(seen.len(), 2, "flag and clear are both logged: {seen:?}");
+        assert!(seen[0].text.contains("pre-warmed spare"), "{}", seen[0].text);
+        assert!(seen.iter().all(|n| !n.post), "nothing reaches the session: {seen:?}");
     }
 
     #[test]

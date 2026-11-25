@@ -49,7 +49,6 @@ describe("mentionableSessions", () => {
     const list = [
       sess({ id: "w", bucket: "working" }),
       sess({ id: "b", bucket: "blocked" }),
-      sess({ id: "r", bucket: "review" }),
       sess({ id: "d", bucket: "done" }),
       sess({ id: "a", status: "archived" }),
       sess({ id: "dr", status: "draft" }),
@@ -58,13 +57,11 @@ describe("mentionableSessions", () => {
     expect(mentionableSessions(list, "me").map((s) => s.id)).toEqual([
       "w",
       "b",
-      "r",
       "d",
     ]);
     expect(mentionableSessions(list).map((s) => s.id)).toEqual([
       "w",
       "b",
-      "r",
       "d",
       "me",
     ]);

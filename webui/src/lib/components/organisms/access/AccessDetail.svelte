@@ -9,6 +9,7 @@
 		Heading,
 		Icon,
 		Menu,
+		Switch,
 		Tabs,
 		Text,
 		Timestamp
@@ -124,15 +125,6 @@
 						disabled: !!user.revoked_at,
 						onselect: () => toggleDisabled()
 					},
-					...(hideable
-						? [
-								{
-									label: hidden ? m.hidden_owners_unhide() : m.hidden_owners_hide(),
-									icon: hidden ? ('eye' as const) : ('eye-off' as const),
-									onselect: () => toggleHidden()
-								}
-							]
-						: []),
 					user.revoked_at
 						? {
 								label: m.access_menu_purge(),
@@ -227,6 +219,15 @@
 			</div>
 		</div>
 		<div class="spacer"></div>
+		{#if hideable && !user.revoked_at}
+			<Switch
+				bind:checked={() => !hidden, () => toggleHidden()}
+				label={m.settings_visibility_title()}
+				labelVisible
+				data-visibility="user"
+				data-target={user.id}
+			/>
+		{/if}
 		{#if menuItems.length}
 			<Menu label={m.common_actions()} items={menuItems} placement="bottom-end" box="sm">
 				{#snippet trigger()}<Icon name="more" size={16} />{/snippet}

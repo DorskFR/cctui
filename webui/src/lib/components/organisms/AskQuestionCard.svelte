@@ -255,7 +255,7 @@
 		display: flex;
 		flex-direction: column;
 		gap: var(--sp-1);
-		--opt-accent: var(--c-violet);
+		--accent: var(--c-violet);
 	}
 	.send {
 		display: flex;

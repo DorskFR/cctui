@@ -263,6 +263,22 @@ describe('gateway tool block', () => {
 	});
 });
 
+describe('dictated message', () => {
+	it('keeps the plain user bubble and shows the mic beside its badge', async () => {
+		const el = await render(line({ dictated: true, html: '<p>fix the bug</p>', text: 'fix the bug' }));
+		expect(el.querySelector('[data-testid="voice-message"]')).toBeNull();
+		const mic = el.querySelector('.lmeta .dictated');
+		expect(mic?.textContent).toBe('🎙');
+		expect(mic?.getAttribute('aria-label')).toContain('Dictated');
+		expect(el.querySelector('.bubble')?.textContent).toContain('fix the bug');
+	});
+
+	it('shows no mic on a typed turn', async () => {
+		const el = await render(line({ html: '<p>fix the bug</p>', text: 'fix the bug' }));
+		expect(el.querySelector('.lmeta .dictated')).toBeNull();
+	});
+});
+
 describe('voice message', () => {
 	it('badges a spoken turn VOICE and puts the mic before the transcript', async () => {
 		const el = await render(line({ voice: true, html: '<p>what time is it</p>', text: 'what time is it' }));

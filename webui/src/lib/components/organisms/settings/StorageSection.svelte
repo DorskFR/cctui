@@ -2,7 +2,7 @@
 	// What this browser holds locally: the IndexedDB attachment cache behind
 	// unsent drafts. The readout is recomputed after a clear so the figure
 	// never lies.
-	import { Button, Text } from '@dorsk/tsumikit';
+	import { Badge, Button, Text } from '@dorsk/tsumikit';
 	import SettingGroup from '#lib/components/molecules/SettingGroup.svelte';
 	import SettingRow from '#lib/components/molecules/SettingRow.svelte';
 	import { attachmentStore } from '#lib/attachmentStore.ts';
@@ -32,11 +32,12 @@
 	}
 </script>
 
+{#snippet storageHelp()}
+	{m.settings_storage_attachments_help()} <Badge size="xs" border>{m.settings_this_device()}</Badge>
+{/snippet}
+
 <SettingGroup title={m.settings_storage_title()}>
-	<SettingRow
-		label={m.settings_storage_attachments_label()}
-		help={m.settings_storage_attachments_help()}
-	>
+	<SettingRow label={m.settings_storage_attachments_label()} helpSlot={storageHelp}>
 		<div class="ctl">
 			<Text size="sm" tone="faint">
 				{bytes > 0 ? m.settings_storage_used({ size: fmtSize(bytes) }) : m.settings_storage_empty()}

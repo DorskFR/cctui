@@ -25,7 +25,7 @@ import { ApiError, errMessage } from "#lib/api.ts";
 import { m } from "#lib/paraglide/messages.js";
 import { awaitSessionRow } from "#lib/awaitSessionRow.ts";
 import { hasFeature } from "#lib/features.svelte.ts";
-import { queryTerms, straightenPhraseQuotes } from "#lib/search.ts";
+import { sessionQueryTerms, straightenPhraseQuotes } from "#lib/search.ts";
 import { BRIEF_FETCH_MAX_BYTES, followupPrefill } from "#lib/followup.ts";
 import { parse, type Schema } from "@dorsk/tsumikit";
 import {
@@ -46,6 +46,7 @@ import {
   PAGE,
   FIRST_PAGE,
   nextSearchPage,
+  matchCountLabel,
   type SearchPageParam,
   nextSort,
   archivedDescendantsOf,
@@ -209,6 +210,7 @@ export class SessionsPage {
           this.serverQuery,
           this.#pagerArchived,
           d.showHidden?.() ?? false,
+          this.excludeDispatched,
         ),
         queryFn: ({ queryKey: [, , key], pageParam, signal }) => {
           const args = [
@@ -219,7 +221,9 @@ export class SessionsPage {
             pageParam.cursor,
             signal,
           ] as const;
-          return "showHidden" in key
+          if (key.excludeDispatched)
+            return d.api.searchSessions(...args, key.showHidden ?? false, true);
+          return key.showHidden
             ? d.api.searchSessions(...args, true)
             : d.api.searchSessions(...args);
         },
@@ -362,6 +366,7 @@ export class SessionsPage {
   }));
   // Drives the paginated archive pager + search scope.
   showArchived = $derived(this.sections.has("archived"));
+  excludeDispatched = $derived(!this.sections.has("dispatched"));
   // Docked panels (Settings › New session / Stats panel): `spawn` null = modal mode.
   docks = $derived.by(() => this.#d.dockLayout());
   dockSide = $derived(this.docks.spawn);
@@ -387,7 +392,7 @@ export class SessionsPage {
   // Highlight only the free-text portion of the query (field clauses excluded).
   searchTerms = $derived.by(() => {
     const input = straightenPhraseQuotes(this.query);
-    return queryTerms(parse(input, this.searchSchema), input);
+    return sessionQueryTerms(parse(input, this.searchSchema), input);
   });
   // Not searching ⇒ browse the archive (empty q, archived scope).
   #pagerArchived = $derived(this.searching ? this.showArchived : true);
@@ -404,6 +409,10 @@ export class SessionsPage {
     this.pagerActive ? mergeParentStubs(this.#pager.data?.pages ?? []) : [],
   );
   pageDone = $derived.by(() => !this.pagerActive || !this.#pager.hasNextPage);
+  searchTotal = $derived.by(
+    () => (this.searching && this.#pager.data?.pages[0]?.total) || null,
+  );
+  matchCount = $derived(matchCountLabel(this.searchTotal));
   // The last page stopped at the server's time budget: older chats are not
   // searched yet, so an empty or short result is not a "no match".
   pagePartial = $derived.by(
@@ -510,13 +519,15 @@ export class SessionsPage {
   };
   followUp = async (s: SessionListItem, instruction?: string) => {
     try {
-      const brief = await this.#d.api.brief(s.id, BRIEF_FETCH_MAX_BYTES);
+      const brief = await this.#d.api.brief(s.id, BRIEF_FETCH_MAX_BYTES, {
+        chain: true,
+      });
       this.openSession = null;
       // Ticked unless the last follow-up launched with it unticked.
       const archiveSource =
         this.#d.store.get(FOLLOWUP_ARCHIVE_SOURCE) !== "0";
       this.openSpawn(
-        followupPrefill(s, brief.markdown, { instruction, archiveSource }),
+        followupPrefill(s, brief, { instruction, archiveSource }),
       );
     } catch (e) {
       this.#d.toasts.error(m.followup_brief_failed({ error: errMessage(e) }));
@@ -533,6 +544,8 @@ export class SessionsPage {
   // live view, on another page, etc.), fetched directly so a pasted link still
   // resolves. `spawned` marks an id handed over by a spawn that just finished,
   // whose row may not exist yet.
+  loadedById = (id: string): SessionListItem | undefined =>
+    this.#loaded.find((s) => s.id === id);
   openById = async (id: string, opts: { spawned?: boolean } = {}) => {
     const req = ++this.#openReq;
     const found = this.#loaded.find((s) => s.id === id);

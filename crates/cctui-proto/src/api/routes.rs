@@ -5,7 +5,7 @@
 //! strand a client. The same table is emitted to TypeScript as `routes.ts`.
 
 use serde::{Deserialize, Serialize};
-#[cfg(feature = "ts")]
+#[cfg(test)]
 use ts_rs::TS;
 
 pub use crate::features::Feature;
@@ -14,7 +14,7 @@ pub use crate::features::Feature;
 pub const API_PREFIX: &str = "/api/v1";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export, rename = "ApiMethod"))]
+#[cfg_attr(test, derive(TS), ts(export, rename = "ApiMethod"))]
 #[serde(rename_all = "UPPERCASE")]
 pub enum Method {
     Get,
@@ -58,7 +58,7 @@ impl std::fmt::Display for Method {
 
 /// One `/api/v1` endpoint.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export, rename = "ApiRoute"))]
+#[cfg_attr(test, derive(TS), ts(export, rename = "ApiRoute"))]
 pub struct Route {
     /// Stable identifier, `{method}_{path}` slugged. What a client names.
     pub id: &'static str,
@@ -529,6 +529,24 @@ pub const ROUTES: &[Route] = &[
         feature: Some(Feature::Voice),
     },
     Route {
+        id: "get_admin_instance_event_retention",
+        method: Method::Get,
+        path: "/admin/instance/event-retention",
+        summary: "Read or set how many days of events are kept (admin).",
+        request: None,
+        response: Some("EventRetentionInfo"),
+        feature: None,
+    },
+    Route {
+        id: "put_admin_instance_event_retention",
+        method: Method::Put,
+        path: "/admin/instance/event-retention",
+        summary: "Read or set how many days of events are kept (admin).",
+        request: Some("EventRetentionRequest"),
+        response: Some("EventRetentionInfo"),
+        feature: None,
+    },
+    Route {
         id: "get_admin_instance_upload_caps",
         method: Method::Get,
         path: "/admin/instance/upload-caps",
@@ -545,6 +563,51 @@ pub const ROUTES: &[Route] = &[
         request: None,
         response: None,
         feature: Some(Feature::Uploads),
+    },
+    Route {
+        id: "get_admin_storage",
+        method: Method::Get,
+        path: "/admin/storage",
+        summary: "Database, per-session and tool-output sizes, and the tool-output lifecycle (admin).",
+        request: None,
+        response: Some("StorageOverview"),
+        feature: None,
+    },
+    Route {
+        id: "put_admin_storage_lifecycle",
+        method: Method::Put,
+        path: "/admin/storage/lifecycle",
+        summary: "Set the tool-output lifecycle rules; none keeps everything (admin).",
+        request: Some("StorageLifecycleRules"),
+        response: Some("StorageLifecycleInfo"),
+        feature: None,
+    },
+    Route {
+        id: "post_admin_storage_lifecycle_preview",
+        method: Method::Post,
+        path: "/admin/storage/lifecycle/preview",
+        summary: "Estimate the rows and bytes a tool-output lifecycle rule set would free (admin).",
+        request: Some("StorageLifecycleRules"),
+        response: Some("StorageLifecyclePreview"),
+        feature: None,
+    },
+    Route {
+        id: "get_admin_redteam",
+        method: Method::Get,
+        path: "/admin/redteam",
+        summary: "The latest red-team T2 and T3 run per reported version, with escapes (admin).",
+        request: None,
+        response: Some("RedteamOverview"),
+        feature: Some(Feature::Observability),
+    },
+    Route {
+        id: "post_redteam_runs",
+        method: Method::Post,
+        path: "/redteam/runs",
+        summary: "Record a red-team T2 or T3 run result.",
+        request: Some("RedteamRunReport"),
+        response: Some("RedteamRunAccepted"),
+        feature: Some(Feature::Observability),
     },
     Route {
         id: "get_admin_harness_autoupdate",
@@ -730,7 +793,7 @@ pub const ROUTES: &[Route] = &[
         id: "get_context",
         method: Method::Get,
         path: "/context",
-        summary: "List the caller's context items, or create one.",
+        summary: "List the caller's context items, create one, or edit the match of many at once.",
         request: None,
         response: Some("ContextItem[]"),
         feature: Some(Feature::Context),
@@ -739,9 +802,18 @@ pub const ROUTES: &[Route] = &[
         id: "post_context",
         method: Method::Post,
         path: "/context",
-        summary: "List the caller's context items, or create one.",
+        summary: "List the caller's context items, create one, or edit the match of many at once.",
         request: Some("ContextItemSpec"),
         response: Some("ContextItem"),
+        feature: Some(Feature::Context),
+    },
+    Route {
+        id: "patch_context",
+        method: Method::Patch,
+        path: "/context",
+        summary: "List the caller's context items, create one, or edit the match of many at once.",
+        request: Some("BulkContextUpdate"),
+        response: Some("BulkContextResponse"),
         feature: Some(Feature::Context),
     },
     Route {
@@ -1906,6 +1978,15 @@ pub const ROUTES: &[Route] = &[
         feature: Some(Feature::Scheduling),
     },
     Route {
+        id: "post_sessions_by_id_schedule_repeat",
+        method: Method::Post,
+        path: "/sessions/{id}/schedule-repeat",
+        summary: "Turn a draft session into a repeating schedule.",
+        request: Some("RepeatDraftRequest"),
+        response: Some("LaunchPreset"),
+        feature: Some(Feature::Automation),
+    },
+    Route {
         id: "post_sessions_by_id_cancel_launch",
         method: Method::Post,
         path: "/sessions/{id}/cancel-launch",
@@ -2209,6 +2290,24 @@ pub const ROUTES: &[Route] = &[
         summary: "List the follow-up thread a session belongs to, oldest first.",
         request: None,
         response: Some("SessionThreadResponse"),
+        feature: Some(Feature::Automation),
+    },
+    Route {
+        id: "post_sessions_by_id_followup",
+        method: Method::Post,
+        path: "/sessions/{id}/followup",
+        summary: "Continue a session in a new one and swap it in once it registers.",
+        request: Some("FollowupRequest"),
+        response: Some("FollowupResponse"),
+        feature: Some(Feature::Automation),
+    },
+    Route {
+        id: "put_sessions_by_id_auto_followup",
+        method: Method::Put,
+        path: "/sessions/{id}/auto-followup",
+        summary: "Set or clear a session's auto follow-up override.",
+        request: Some("AutoFollowupOverride"),
+        response: Some("SessionListItem"),
         feature: Some(Feature::Automation),
     },
     Route {
@@ -2608,6 +2707,96 @@ pub const ROUTES: &[Route] = &[
         feature: Some(Feature::Automation),
     },
     Route {
+        id: "put_presets_by_id_attachments",
+        method: Method::Put,
+        path: "/presets/{id}/attachments",
+        summary: "Replace the files every run of a launch preset gets.",
+        request: None,
+        response: Some("LaunchPreset"),
+        feature: Some(Feature::Automation),
+    },
+    Route {
+        id: "post_presets_by_id_run",
+        method: Method::Post,
+        path: "/presets/{id}/run",
+        summary: "Run a launch preset now, whatever its schedule.",
+        request: None,
+        response: Some("PresetRun"),
+        feature: Some(Feature::Automation),
+    },
+    Route {
+        id: "post_hooks_by_id",
+        method: Method::Post,
+        path: "/hooks/{id}",
+        summary: "Deliver a signed webhook: its HMAC is the only credential.",
+        request: None,
+        response: Some("WebhookReceipt"),
+        feature: Some(Feature::Automation),
+    },
+    Route {
+        id: "get_webhooks",
+        method: Method::Get,
+        path: "/webhooks",
+        summary: "List your inbound webhooks, or create one and read its secret once.",
+        request: None,
+        response: Some("Webhook[]"),
+        feature: Some(Feature::Automation),
+    },
+    Route {
+        id: "post_webhooks",
+        method: Method::Post,
+        path: "/webhooks",
+        summary: "List your inbound webhooks, or create one and read its secret once.",
+        request: Some("WebhookRequest"),
+        response: Some("WebhookSecret"),
+        feature: Some(Feature::Automation),
+    },
+    Route {
+        id: "get_webhooks_by_id",
+        method: Method::Get,
+        path: "/webhooks/{id}",
+        summary: "Read, replace or delete one inbound webhook.",
+        request: None,
+        response: Some("Webhook"),
+        feature: Some(Feature::Automation),
+    },
+    Route {
+        id: "put_webhooks_by_id",
+        method: Method::Put,
+        path: "/webhooks/{id}",
+        summary: "Read, replace or delete one inbound webhook.",
+        request: Some("WebhookRequest"),
+        response: Some("Webhook"),
+        feature: Some(Feature::Automation),
+    },
+    Route {
+        id: "delete_webhooks_by_id",
+        method: Method::Delete,
+        path: "/webhooks/{id}",
+        summary: "Read, replace or delete one inbound webhook.",
+        request: None,
+        response: None,
+        feature: Some(Feature::Automation),
+    },
+    Route {
+        id: "post_webhooks_by_id_secret",
+        method: Method::Post,
+        path: "/webhooks/{id}/secret",
+        summary: "Replace a webhook's signing secret and read the new one once.",
+        request: None,
+        response: Some("WebhookSecret"),
+        feature: Some(Feature::Automation),
+    },
+    Route {
+        id: "get_webhooks_by_id_deliveries",
+        method: Method::Get,
+        path: "/webhooks/{id}/deliveries",
+        summary: "A webhook's delivery log: dispatched, duplicate, rejected, rate limited.",
+        request: None,
+        response: Some("WebhookDelivery[]"),
+        feature: Some(Feature::Automation),
+    },
+    Route {
         id: "post_inbox_lanes_by_id_pause",
         method: Method::Post,
         path: "/inbox/lanes/{id}/pause",
@@ -2737,7 +2926,7 @@ pub const ROUTES: &[Route] = &[
         id: "post_notifications_read_all",
         method: Method::Post,
         path: "/notifications/read-all",
-        summary: "Mark every unread notification without actions read.",
+        summary: "Mark every unread notification read.",
         request: None,
         response: Some("NotificationReadAll"),
         feature: None,
@@ -2764,7 +2953,7 @@ pub const ROUTES: &[Route] = &[
         id: "post_notifications_by_id_dismiss",
         method: Method::Post,
         path: "/notifications/{id}/dismiss",
-        summary: "Dismiss a notification; refused for a blocking approval.",
+        summary: "Dismiss a notification; one a run waits on needs confirm=true and expires.",
         request: None,
         response: Some("NotificationTransition"),
         feature: None,
@@ -3018,7 +3207,7 @@ mod tests {
 /// The TypeScript form of [`ROUTES`], emitted next to the ts-rs bindings so
 /// the webui endpoint helpers read the same table the server is asserted
 /// against.
-#[cfg(feature = "ts")]
+#[cfg(test)]
 #[must_use]
 pub fn typescript() -> String {
     use std::fmt::Write as _;
@@ -3071,7 +3260,7 @@ pub fn typescript() -> String {
     out
 }
 
-#[cfg(all(test, feature = "ts"))]
+#[cfg(test)]
 mod ts_export {
     /// Named to match the `export_bindings` filter `webui/scripts/gen-bindings.sh`
     /// runs, so the table lands beside the ts-rs output.

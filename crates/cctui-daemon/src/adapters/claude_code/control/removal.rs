@@ -230,7 +230,8 @@ pub(super) enum ClaudeRmOutcome {
 
 /// The CLI explains a refusal on **stdout** (`kept <short> — worktree is the
 /// working directory of a live session (pid …)`, then what to do about it)
-/// and reserves stderr for errors (`No job matching`, `couldn't remove …
+/// and reserves stderr for errors (`No job matching` or `No session matching`,
+/// `couldn't remove …
 /// EACCES`). Both go into the detail, whitespace collapsed, so the operator
 /// reads the same message in the daemon log as at the prompt: a bare
 /// `exit 1` cost hours of guesswork on a worktree held by a live session.
@@ -243,7 +244,7 @@ pub(super) fn classify_claude_rm(
     if success {
         return ClaudeRmOutcome::Removed;
     }
-    if stderr.contains("No job matching") {
+    if stderr.contains("No job matching") || stderr.contains("No session matching") {
         return ClaudeRmOutcome::AlreadyGone;
     }
     let code = code.map_or_else(|| "signal".to_owned(), |c| c.to_string());
@@ -357,6 +358,10 @@ mod tests {
         assert_eq!(classify_claude_rm(Some(0), true, "", ""), ClaudeRmOutcome::Removed);
         assert_eq!(
             classify_claude_rm(Some(1), false, "", "No job matching 'ad162ca8'\n"),
+            ClaudeRmOutcome::AlreadyGone
+        );
+        assert_eq!(
+            classify_claude_rm(Some(1), false, "", "No session matching 'f1b30fe0'\n"),
             ClaudeRmOutcome::AlreadyGone
         );
         assert_eq!(

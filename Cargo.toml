@@ -19,15 +19,22 @@ members = [
     "crates/cctui-redteam",
     "crates/cctui-secrets",
     "crates/cctui-server",
-    "crates/cctui-server-core",
-    "crates/cctui-server-workspace",
+    "crates/cctui-server-accounts",
+    "crates/cctui-server-blobs",
+    "crates/cctui-server-dispatch",
+    "crates/cctui-server-extras",
+    "crates/cctui-server-kernel",
+    "crates/cctui-server-notify",
+    "crates/cctui-server-search",
+    "crates/cctui-server-sessions",
+    "crates/cctui-server-voice",
     "crates/cctui-supervisor",
     "crates/cctui-telemetry",
     "crates/cctui-tui",
 ]
 
 [workspace.package]
-version = "0.31.0"
+version = "0.32.0"
 edition = "2024"
 license = "MIT"
 authors = ["DorskFR"]
@@ -48,8 +55,15 @@ missing_panics_doc = "allow"
 
 [workspace.dependencies]
 cctui-aws = { path = "crates/cctui-aws" }
-cctui-server-core = { path = "crates/cctui-server-core" }
-cctui-server-workspace = { path = "crates/cctui-server-workspace" }
+cctui-server-accounts = { path = "crates/cctui-server-accounts" }
+cctui-server-blobs = { path = "crates/cctui-server-blobs" }
+cctui-server-dispatch = { path = "crates/cctui-server-dispatch" }
+cctui-server-extras = { path = "crates/cctui-server-extras" }
+cctui-server-kernel = { path = "crates/cctui-server-kernel" }
+cctui-server-notify = { path = "crates/cctui-server-notify" }
+cctui-server-search = { path = "crates/cctui-server-search" }
+cctui-server-sessions = { path = "crates/cctui-server-sessions" }
+cctui-server-voice = { path = "crates/cctui-server-voice" }
 cctui-client = { path = "crates/cctui-client" }
 cctui-clientcore = { path = "crates/cctui-clientcore" }
 cctui-proto = { path = "crates/cctui-proto" }
@@ -105,3 +119,12 @@ debug = "line-tables-only"
 
 [profile.dev.package."*"]
 debug = false
+
+[profile.dev.package.regex]
+opt-level = 2
+
+[profile.dev.package.regex-automata]
+opt-level = 2
+
+[profile.dev.package.aho-corasick]
+opt-level = 2

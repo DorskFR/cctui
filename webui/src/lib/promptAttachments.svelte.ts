@@ -4,8 +4,11 @@ import { errMessage } from '#lib/api.ts';
 import {
 	attachFiles,
 	fileCapError,
+	fmtSize,
+	isHeic,
 	makeClipboardFiles,
 	maskedPaste,
+	normalizePicked,
 	prefixImageTokens,
 	removeFileByName,
 	removeFileToken,
@@ -95,12 +98,20 @@ export class PromptAttachments {
 
 	/** Stage `incoming`, marking each file's `[name]` at the caret. */
 	add = (incoming: File[], mode: FileTokenMode = 'name'): void => {
-		if (!this.#enabled()) return;
+		if (!(this.#o.enabled?.() ?? true)) return;
+		if (this.uploading) {
+			toasts.error(m.attach_busy());
+			return;
+		}
 		const el = this.#o.el?.();
 		let caret = el ? el.selectionStart : undefined;
 		this.images.add(
-			incoming,
+			incoming.map(normalizePicked),
 			(file) => {
+				if (file.size > uploadCaps.max_file_bytes)
+					toasts.error(
+						m.attach_too_large({ name: file.name, cap: fmtSize(uploadCaps.max_file_bytes) })
+					);
 				const next = attachFiles(this.files, this.#o.input(), [file], mode, caret);
 				caret = next.caret;
 				this.files = next.files;
@@ -110,7 +121,12 @@ export class PromptAttachments {
 					void tick().then(() => el.setSelectionRange(at, at));
 				}
 			},
-			(file) => toasts.error(m.attachments_compression_failed({ name: file.name }))
+			(file) =>
+				toasts.error(
+					isHeic(file)
+						? m.attach_heic_unsupported({ name: file.name })
+						: m.attachments_compression_failed({ name: file.name })
+				)
 		);
 	};
 

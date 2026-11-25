@@ -406,6 +406,7 @@ pub struct Driver {
     status_resend: HashSet<String>,
     /// Per `local_id`, the last turn end read from a hookless worker's transcript.
     hookless_turn_ends: HashMap<String, String>,
+    transcript_reads: HashMap<String, Option<hookless_turn::TranscriptRead>>,
     /// Shorts claude reports dead-but-still-listed. Once we emit the
     /// dead transition (hibernated or `SessionEnded`) we record the short here
     /// and suppress further live-status emits for it, so the still-present
@@ -839,6 +840,7 @@ impl Driver {
             last_status: HashMap::new(),
             status_resend: HashSet::new(),
             hookless_turn_ends: HashMap::new(),
+            transcript_reads: HashMap::new(),
             dead_shorts: HashSet::new(),
             liveness: liveness::Liveness::default(),
             foreign_shorts: HashSet::new(),
@@ -1396,8 +1398,11 @@ impl Driver {
     }
 
     async fn check_canaries(&self, roster: &[super::canary::Observed]) {
-        for (local_id, text) in super::canary::observe(roster) {
-            tracing::warn!(%local_id, %text, "hook canary");
+        for super::canary::Notice { local_id, text, post } in super::canary::observe(roster) {
+            tracing::warn!(%local_id, %text, post, "hook canary");
+            if !post {
+                continue;
+            }
             self.emit(AdapterEvent::Message {
                 local_id,
                 payload: super::canary::marker_payload(&text),

@@ -1,5 +1,5 @@
 <script lang="ts">
-	// Drawer header meta row: status badge, thread links, cwd, branch, token usage, langfuse
+	// Drawer header meta row: status badge, thread links, cwd, branch, context meter, token usage, langfuse
 	// chip, the in-place codex model editor or the claude "fork to change model"
 	// chip, and the adapter logo, which is the trigger of the popover holding
 	// what a narrow row dropped.
@@ -10,6 +10,7 @@
 	import { branchOf } from '../../../../routes/sessions/sessions.logic';
 	import AdapterIcon from '#lib/components/atoms/AdapterIcon.svelte';
 	import ThreadMenu from './ThreadMenu.svelte';
+	import ContextMeter from './ContextMeter.svelte';
 	import TokenUsage from '#lib/components/molecules/TokenUsage.svelte';
 	import LangfuseChip from '#lib/components/molecules/LangfuseChip.svelte';
 	import { Badge, Icon, IconButton, Popover, Select, Switch, Text, WorkingDir } from '@dorsk/tsumikit';
@@ -43,7 +44,8 @@
 		showStatusBadge,
 		box = 'md',
 		onsetmodel,
-		onfork
+		onfork,
+		onthreadjump
 	}: {
 		session: SessionListItem;
 		archived: boolean;
@@ -53,6 +55,7 @@
 		onsetmodel: (model: string, effort: string) => void;
 		/** Omitted → the model chip is a plain readout, not a fork trigger. */
 		onfork?: () => void;
+		onthreadjump?: (sessionId: string) => boolean;
 	} = $props();
 
 	const end = $derived(sessionEnd(session));
@@ -238,7 +241,7 @@
 	{#if showStatusBadge}<Badge tone={statusBadgeTone(session.status)}>{session.status}</Badge>{/if}
 	{#if end}<Badge tone={end.tone} title={sessionEndTitle(end)} style={end.muted ? 'opacity:0.6' : undefined}>{end.label}</Badge>{/if}
 	{#if hasFeature('automation')}
-		<ThreadMenu {session} {box} />
+		<ThreadMenu {session} {box} onjump={onthreadjump} />
 	{/if}
 	<span class="cwd">
 		<WorkingDir
@@ -270,6 +273,7 @@
 		>
 	{/if}
 	<div class="meta-trail">
+	<span class="ctx"><ContextMeter {session} {archived} /></span>
 	<span class="tokens"><TokenUsage usage={session.token_usage} /></span>
 	<span class="langfuse"><LangfuseChip id={session.id} /></span>
 	{@render modelMeta('drawer')}
@@ -419,6 +423,7 @@
 		min-width: 0;
 	}
 	.langfuse,
+	.ctx,
 	.tokens {
 		display: contents;
 	}
@@ -446,6 +451,7 @@
 	@container drawer-head (max-width: 26rem) {
 		.model,
 		.model-edit,
+		.ctx,
 		.tokens {
 			display: none;
 		}

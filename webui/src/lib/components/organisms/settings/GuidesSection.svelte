@@ -4,6 +4,9 @@
 	import SettingRow from '#lib/components/molecules/SettingRow.svelte';
 	import SettingSection from '#lib/components/molecules/SettingSection.svelte';
 	import GuideRow from './GuideRow.svelte';
+	import DiagnosticsGroup from './DiagnosticsGroup.svelte';
+	import StorageSection from './StorageSection.svelte';
+	import { hasFeature } from '#lib/features.svelte.ts';
 	import {
 		buildCurriculum,
 		guideEntries,
@@ -95,12 +98,7 @@
 	}
 </script>
 
-<SettingSection
-	id="guides"
-	icon="◇"
-	title={m.settings_guides_title()}
-	description={m.settings_guides_description()}
->
+<SettingSection id="help" icon="◇" title={m.settings_sec_help()} description={m.settings_guides_description()}>
 	<SettingGroup>
 		<SettingRow label={m.settings_guides_progress_label()} selfLabelled wide>
 			<span class="overall">
@@ -165,6 +163,11 @@
 			</Button>
 		</SettingRow>
 	</SettingGroup>
+
+	{#if hasFeature('uploads')}
+		<StorageSection />
+	{/if}
+	<DiagnosticsGroup />
 </SettingSection>
 
 <ConfirmModal

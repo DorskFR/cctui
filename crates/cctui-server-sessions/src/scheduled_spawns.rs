@@ -1,0 +1,410 @@
+//! Drafts queued to launch later: one `timer` event per draft, on a
+//! `draft:<id>` lane, keyed by the draft id so a reschedule replaces it.
+
+use cctui_proto::ws::{ScheduledLaunchState, ServerEvent};
+use chrono::{DateTime, Utc};
+use uuid::Uuid;
+
+use crate::auth::{AuthContext, Scope};
+use crate::bus::Bus;
+use crate::context::SessionsContext;
+use crate::inbox::claim::BatchEvent;
+use crate::inbox::deliver::Outcome;
+use crate::store::sessions::SessionRowStatus;
+
+pub const LANE_PREFIX: &str = "draft:";
+const EVENT_BODY: &str = "launch the scheduled draft";
+pub const GONE: &str = "draft no longer exists";
+
+#[must_use]
+pub fn lane_key(draft_id: &str) -> String {
+    format!("{LANE_PREFIX}{draft_id}")
+}
+
+/// Reason a draft can never be launched.
+#[must_use]
+pub fn unlaunchable_reason(draft_status: Option<&str>) -> Option<&'static str> {
+    match draft_status {
+        None => Some(GONE),
+        Some(status) if SessionRowStatus::parse(status) == Some(SessionRowStatus::Draft) => None,
+        Some(_) => Some("session is no longer a draft"),
+    }
+}
+
+/// Push the drafts list's view of one transition. `user_id` scopes delivery;
+/// without it the event only reaches admins.
+fn announce(
+    bus: &Bus,
+    draft_id: &str,
+    user_id: Option<Uuid>,
+    state: ScheduledLaunchState,
+    launch_at: Option<DateTime<Utc>>,
+    last_error: Option<&str>,
+) {
+    bus.publish_server(ServerEvent::ScheduledLaunch {
+        draft_id: draft_id.to_owned(),
+        user_id,
+        state,
+        launch_at,
+        last_error: last_error.map(ToOwned::to_owned),
+    });
+}
+
+/// `(status, machine owner)` of the draft row, `None` once it is gone.
+/// A scheduled draft launches as its machine's owner.
+pub(crate) fn scheduled_ctx(owner: Uuid) -> AuthContext {
+    AuthContext {
+        user_id: owner,
+        key_id: Uuid::nil(),
+        machine_id: None,
+        scopes: [Scope::Read, Scope::Dispatch].into_iter().collect(),
+    }
+}
+
+async fn draft_facts(
+    pool: &sqlx::PgPool,
+    draft_id: &str,
+) -> sqlx::Result<Option<(String, Option<Uuid>)>> {
+    sqlx::query_as(
+        "SELECT s.status, m.user_id FROM sessions s \
+         LEFT JOIN machines m ON m.id = s.machine_uuid WHERE s.id = $1",
+    )
+    .bind(draft_id)
+    .fetch_optional(pool)
+    .await
+}
+
+async fn lane(pool: &sqlx::PgPool, owner: Uuid, draft_id: &str) -> sqlx::Result<Uuid> {
+    sqlx::query_scalar(
+        "INSERT INTO inbox_lanes (user_id, key) VALUES ($1, $2) \
+         ON CONFLICT (user_id, key) DO UPDATE SET key = EXCLUDED.key RETURNING id",
+    )
+    .bind(owner)
+    .bind(lane_key(draft_id))
+    .fetch_one(pool)
+    .await
+}
+
+/// Queue a draft to launch at `launch_at`, replacing any existing schedule.
+pub async fn schedule(
+    pool: &sqlx::PgPool,
+    bus: &Bus,
+    draft_id: &str,
+    user_id: Option<Uuid>,
+    launch_at: DateTime<Utc>,
+) -> sqlx::Result<()> {
+    let owner = sqlx::query_scalar::<_, Option<Uuid>>(
+        "SELECT COALESCE(m.user_id, s.user_id) FROM sessions s \
+         LEFT JOIN machines m ON m.id = s.machine_uuid WHERE s.id = $1",
+    )
+    .bind(draft_id)
+    .fetch_optional(pool)
+    .await?
+    .flatten();
+    let owner = owner.or(user_id).ok_or(sqlx::Error::RowNotFound)?;
+    let lane_id = lane(pool, owner, draft_id).await?;
+    sqlx::query(
+        "INSERT INTO inbox_events \
+           (lane_id, user_id, source, source_id, body, payload, not_before, next_attempt_at) \
+         VALUES ($1, $2, 'timer', $3, $4, '{\"kind\": \"draft_launch\"}', $5, $5) \
+         ON CONFLICT (lane_id, source, source_id) DO UPDATE \
+         SET user_id = EXCLUDED.user_id, status = 'pending', not_before = $5, \
+             next_attempt_at = $5, attempts = 0, last_error = NULL, batch_id = NULL, \
+             delivered_at = NULL, delivered_session_id = NULL, delivered_as = NULL",
+    )
+    .bind(lane_id)
+    .bind(user_id.unwrap_or(owner))
+    .bind(draft_id)
+    .bind(EVENT_BODY)
+    .bind(launch_at)
+    .execute(pool)
+    .await?;
+    announce(bus, draft_id, user_id, ScheduledLaunchState::Scheduled, Some(launch_at), None);
+    Ok(())
+}
+
+/// Drop a draft's schedule, leaving the draft itself in place.
+pub async fn cancel(pool: &sqlx::PgPool, bus: &Bus, draft_id: &str) -> sqlx::Result<bool> {
+    let cancelled: Vec<Uuid> = sqlx::query_scalar(
+        "UPDATE inbox_events e SET status = 'cancelled', last_error = 'cancelled by the user' \
+         FROM inbox_lanes l \
+         WHERE l.id = e.lane_id AND l.key = $1 AND e.source = 'timer' AND e.source_id = $2 \
+           AND e.status IN ('pending', 'claimed', 'dead') \
+         RETURNING e.user_id",
+    )
+    .bind(lane_key(draft_id))
+    .bind(draft_id)
+    .fetch_all(pool)
+    .await?;
+    let Some(user_id) = cancelled.first().copied() else { return Ok(false) };
+    announce(bus, draft_id, Some(user_id), ScheduledLaunchState::Cancelled, None, None);
+    Ok(true)
+}
+
+/// `(launch_at, last_error)` per scheduled draft, for the drafts list.
+pub async fn pending_for(
+    pool: &sqlx::PgPool,
+    draft_ids: &[String],
+) -> sqlx::Result<std::collections::HashMap<String, (DateTime<Utc>, Option<String>)>> {
+    let rows: Vec<(String, DateTime<Utc>, Option<String>)> = sqlx::query_as(
+        "SELECT e.source_id, e.not_before, e.last_error \
+         FROM inbox_events e JOIN inbox_lanes l ON l.id = e.lane_id \
+         WHERE e.source = 'timer' AND e.source_id = ANY($1) \
+           AND l.key = 'draft:' || e.source_id \
+           AND e.status IN ('pending', 'claimed', 'dead') \
+           AND EXISTS (SELECT 1 FROM sessions s WHERE s.id = e.source_id)",
+    )
+    .bind(draft_ids)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows.into_iter().map(|(id, at, err)| (id, (at, err))).collect())
+}
+
+/// The lane worker's delivery. A discarded draft takes its schedule with it.
+pub async fn launch<S: SessionsContext>(
+    state: &S,
+    draft_id: &str,
+    events: &[BatchEvent],
+) -> Outcome {
+    let Some(batch_id) = events.first().map(|e| e.batch_id) else { return Outcome::Skip };
+    let facts = match draft_facts(state.pool(), draft_id).await {
+        Ok(facts) => facts,
+        Err(e) => return Outcome::Retry(e.to_string()),
+    };
+    let Some((status, owner)) = facts else {
+        return match drop_batch(state.pool(), batch_id).await {
+            Ok(()) => Outcome::Skip,
+            Err(e) => Outcome::Retry(e.to_string()),
+        };
+    };
+    if let Some(reason) = unlaunchable_reason(Some(&status)) {
+        return Outcome::Dead(reason.to_owned());
+    }
+    let Some(owner) = owner else {
+        return Outcome::Dead("draft's machine no longer exists".to_owned());
+    };
+    let ctx = scheduled_ctx(owner);
+    match crate::routes::spawn::launch_stored_draft(
+        state,
+        &ctx,
+        draft_id,
+        std::collections::BTreeMap::new(),
+    )
+    .await
+    {
+        Ok((_, axum::Json(launched))) => {
+            tracing::info!(draft = %draft_id, "scheduled draft launched");
+            Outcome::Delivered {
+                session_id: launched
+                    .session_id
+                    .map_or_else(|| launched.command_id.to_string(), |id| id.to_string()),
+                delivered_as: "spawn",
+            }
+        }
+        Err(e) => Outcome::Retry(e.to_string()),
+    }
+}
+
+async fn drop_batch(pool: &sqlx::PgPool, batch_id: Uuid) -> sqlx::Result<()> {
+    sqlx::query(
+        "UPDATE inbox_events SET status = 'cancelled', last_error = $2 \
+         WHERE batch_id = $1 AND status = 'claimed'",
+    )
+    .bind(batch_id)
+    .bind(GONE)
+    .execute(pool)
+    .await
+    .map(|_| ())
+}
+
+/// Announce where a lane worker's attempt left the draft's schedule.
+pub async fn announce_settled<S: SessionsContext>(
+    state: &S,
+    lane_id: Uuid,
+    draft_id: &str,
+) -> sqlx::Result<()> {
+    let settled: Option<(String, Uuid, Option<String>)> = sqlx::query_as(
+        "SELECT status, user_id, last_error FROM inbox_events \
+         WHERE lane_id = $1 AND source = 'timer' AND source_id = $2",
+    )
+    .bind(lane_id)
+    .bind(draft_id)
+    .fetch_optional(state.pool())
+    .await?;
+    let Some((status, user_id, last_error)) = settled else { return Ok(()) };
+    let launch_state = match (status.as_str(), last_error.is_some()) {
+        ("delivered", _) => ScheduledLaunchState::Launched,
+        ("dead", _) => ScheduledLaunchState::Dead,
+        ("pending", true) => ScheduledLaunchState::Failed,
+        _ => return Ok(()),
+    };
+    announce(state.bus(), draft_id, Some(user_id), launch_state, None, last_error.as_deref());
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::bus::NoopTransport;
+    use crate::scheduled_messages::{DeliverAtError, MAX_HORIZON_DAYS, parse_deliver_at};
+
+    fn test_bus() -> Bus {
+        Bus::new(Box::new(NoopTransport))
+    }
+
+    fn now() -> DateTime<Utc> {
+        DateTime::parse_from_rfc3339("2026-09-24T10:00:00Z").unwrap().with_timezone(&Utc)
+    }
+
+    #[test]
+    fn launch_at_shares_the_scheduled_message_window() {
+        assert_eq!(parse_deliver_at("soon", now()), Err(DeliverAtError::Malformed));
+        assert_eq!(parse_deliver_at("2026-09-24T09:59:59Z", now()), Err(DeliverAtError::Past));
+        assert_eq!(parse_deliver_at("2026-10-24T10:00:01Z", now()), Err(DeliverAtError::TooFar));
+        assert_eq!(
+            parse_deliver_at("2026-10-24T10:00:00Z", now()),
+            Ok(now() + chrono::Duration::days(MAX_HORIZON_DAYS))
+        );
+    }
+
+    #[test]
+    fn a_discarded_or_promoted_draft_is_unlaunchable() {
+        assert_eq!(unlaunchable_reason(Some("draft")), None);
+        assert!(unlaunchable_reason(None).is_some());
+        assert!(unlaunchable_reason(Some("active")).is_some());
+        assert!(unlaunchable_reason(Some("ended")).is_some());
+    }
+
+    async fn seed_draft(pool: &sqlx::PgPool, name: &str) -> String {
+        seed_owned_draft(pool, name).await.0
+    }
+
+    async fn seed_owned_draft(pool: &sqlx::PgPool, name: &str) -> (String, uuid::Uuid) {
+        let uid = uuid::Uuid::new_v4();
+        let machine = uuid::Uuid::new_v4();
+        sqlx::query("INSERT INTO users (id, name, key_hash) VALUES ($1, $2, $3)")
+            .bind(uid)
+            .bind(format!("{name}-{uid}"))
+            .bind(format!("h-{uid}"))
+            .execute(pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO machines (id, user_id, name, key_hash) VALUES ($1, $2, 'm', $3)")
+            .bind(machine)
+            .bind(uid)
+            .bind(format!("mk-{machine}"))
+            .execute(pool)
+            .await
+            .unwrap();
+        let sid = uuid::Uuid::new_v4().to_string();
+        sqlx::query(
+            "INSERT INTO sessions (id, machine_id, machine_uuid, user_id, working_dir, status, \
+             adapter_id) VALUES ($1, $2, $2, $3, '/w', 'draft', 'claude-code')",
+        )
+        .bind(&sid)
+        .bind(machine)
+        .bind(uid)
+        .execute(pool)
+        .await
+        .unwrap();
+        (sid, uid)
+    }
+
+    async fn lane_of(pool: &sqlx::PgPool, draft: &str) -> Uuid {
+        sqlx::query_scalar("SELECT id FROM inbox_lanes WHERE key = $1")
+            .bind(lane_key(draft))
+            .fetch_one(pool)
+            .await
+            .unwrap()
+    }
+
+    async fn event_of(pool: &sqlx::PgPool, draft: &str) -> (String, i32, Option<String>) {
+        sqlx::query_as(
+            "SELECT e.status, e.attempts, e.last_error FROM inbox_events e \
+             JOIN inbox_lanes l ON l.id = e.lane_id \
+             WHERE l.key = $1 AND e.source = 'timer' AND e.source_id = $2",
+        )
+        .bind(lane_key(draft))
+        .bind(draft)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+    }
+
+    async fn claim(pool: &sqlx::PgPool, draft: &str) -> Vec<BatchEvent> {
+        let lane = lane_of(pool, draft).await;
+        let filter = crate::inbox::claim::LaneFilter { lane: Some(lane), machine: None };
+        let lanes = crate::inbox::claim::claim_lanes(pool, 1, filter).await.unwrap();
+        if lanes.is_empty() {
+            return Vec::new();
+        }
+        let events = crate::inbox::claim::claim_batch(pool, lane).await.unwrap();
+        crate::inbox::claim::release_lane(pool, lane).await.unwrap();
+        events
+    }
+
+    #[tokio::test]
+    async fn a_draft_schedule_is_one_timer_event_claimed_once_then_backs_off_and_dead_letters() {
+        let name = "scheduled_spawn_claim";
+        let Some(url) = cctui_server_kernel::test_support::db_url(name) else { return };
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(4)
+            .connect(&url)
+            .await
+            .expect("connect test db");
+        let (due, owner) = seed_owned_draft(&pool, name).await;
+        let later = seed_draft(&pool, name).await;
+        let bus = test_bus();
+        schedule(&pool, &bus, &due, None, Utc::now() + chrono::Duration::hours(5)).await.unwrap();
+        schedule(&pool, &bus, &due, None, now()).await.unwrap();
+        schedule(&pool, &bus, &later, None, Utc::now() + chrono::Duration::hours(1)).await.unwrap();
+        let lanes: (Uuid, String) =
+            sqlx::query_as("SELECT user_id, key FROM inbox_lanes WHERE id = $1")
+                .bind(lane_of(&pool, &due).await)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(lanes, (owner, format!("draft:{due}")), "the lane belongs to the machine owner");
+        assert_eq!(event_of(&pool, &due).await, ("pending".to_owned(), 0, None));
+
+        let (a, b) = tokio::join!(claim(&pool, &due), claim(&pool, &due));
+        assert_eq!(a.len() + b.len(), 1, "a reschedule replaced the event; it is claimed once");
+        assert!(claim(&pool, &later).await.is_empty(), "the future draft is not due");
+        let batch = a.iter().chain(&b).map(|e| e.batch_id).next().unwrap();
+
+        crate::inbox::claim::record_failure(&pool, batch, 0, "machine offline").await.unwrap();
+        assert_eq!(
+            event_of(&pool, &due).await,
+            ("pending".to_owned(), 1, Some("machine offline".to_owned()))
+        );
+        assert!(claim(&pool, &due).await.is_empty(), "backing off");
+
+        sqlx::query(
+            "UPDATE inbox_events SET next_attempt_at = now() \
+             WHERE source = 'timer' AND source_id = $1",
+        )
+        .bind(&due)
+        .execute(&pool)
+        .await
+        .unwrap();
+        let batch = claim(&pool, &due).await.first().map(|e| e.batch_id).expect("due again");
+        crate::inbox::claim::record_failure(&pool, batch, 10, "still offline").await.unwrap();
+        let dead = event_of(&pool, &due).await.0;
+        assert_eq!(dead, "dead", "a dead-lettered schedule keeps its draft");
+        let still_there: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM sessions WHERE id = $1 AND status = 'draft'")
+                .bind(&due)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(still_there, 1);
+
+        let pending = pending_for(&pool, &[due.clone(), later.clone()]).await.unwrap();
+        assert_eq!(pending.len(), 2);
+        assert_eq!(pending[&due].1.as_deref(), Some("still offline"));
+
+        assert!(cancel(&pool, &bus, &later).await.unwrap());
+        assert!(!cancel(&pool, &bus, &later).await.unwrap());
+        assert!(pending_for(&pool, std::slice::from_ref(&later)).await.unwrap().is_empty());
+    }
+}

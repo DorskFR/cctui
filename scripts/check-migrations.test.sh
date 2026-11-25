@@ -26,9 +26,11 @@ core=""
 fresh() {
   n=$((n + 1))
   dir="$tmp/$n"
-  core="$dir/crates/cctui-server-core"
-  local ws="$dir/crates/cctui-server-workspace"
-  mkdir -p "$dir/migrations" "$core/schema" "$core/src" "$ws/schema" "$ws/src" "$dir/crates/cctui-guard/schema"
+  core="$dir/crates/cctui-package"
+  local ws="$dir/crates/cctui-server"
+  mkdir -p "$dir/migrations" "$core/schema" "$core/src" "$ws/schema" "$ws/src" "$dir/crates/cctui-guard/schema" \
+    "$dir/crates/cctui-server-kernel/src"
+  echo 'pub const LEGACY_BASELINE: i64 = 191;' >"$dir/crates/cctui-server-kernel/src/schema.rs"
   touch "$dir/migrations/001_create_sessions.sql" \
     "$dir/migrations/191_file_blobs.up.sql" "$dir/migrations/191_file_blobs.down.sql" \
     "$core/schema/0001_execution.sql" "$core/schema/0002_machine_launches.sql" \
@@ -45,7 +47,6 @@ core_entries() {
   {
     cat <<'EOF'
 pub const BOOTSTRAP: &str = include_str!("../schema/0001_execution.sql");
-pub const LEGACY_BASELINE: i64 = 191;
 pub struct Migration {
     pub version: i64,
     pub sql: &'static str,
@@ -63,7 +64,7 @@ EOF
 }
 entry() { printf '    Migration { version: %s, sql: include_str!("../schema/%s") },' "$1" "$2"; }
 search_stream() {
-  local ws="$dir/crates/cctui-server-workspace"
+  local ws="$dir/crates/cctui-server"
   mkdir -p "$ws/schema/search" "$ws/src/schema"
   touch "$ws/schema/search/0001_transcript_search.sql"
   search_entries "$(search_entry 1 0001_transcript_search.sql)" "$@"
@@ -73,7 +74,7 @@ search_entries() {
     echo 'pub const SEARCH: &[Migration] = &['
     printf '%s\n' "$@"
     echo '];'
-  } >"$dir/crates/cctui-server-workspace/src/schema/search.rs"
+  } >"$dir/crates/cctui-server/src/schema/search.rs"
 }
 search_entry() {
   printf '    Migration { version: %s, sql: include_str!("../../schema/search/%s") },' "$1" "$2"
@@ -114,7 +115,7 @@ check "an unregistered package migration fails" fails
 check "the unregistered file is named" says "0003_execution_stops.sql: not registered"
 
 fresh
-touch "$dir/crates/cctui-server-workspace/schema/0002_tiles.sql"
+touch "$dir/crates/cctui-server/schema/0002_tiles.sql"
 check "an unregistered workspace migration fails" fails
 
 fresh
@@ -148,7 +149,7 @@ touch "$core/schema/0003_execution_stops.sql"
 core_entries "$(entry 3 0003_execution_stops.sql)"
 check "the next package version passes" passes
 
-ws="crates/cctui-server-workspace"
+ws="crates/cctui-server"
 
 fresh
 search_stream

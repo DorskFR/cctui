@@ -3,9 +3,12 @@ import {
 	BackendHealth,
 	DEBOUNCE_MS,
 	QUIET_MS,
+	RECONNECT_SCREEN_AFTER_MS,
 	RETRY_MAX_MS,
 	isNetworkError,
 	isOutageStatus,
+	outageView,
+	retryCountdown,
 	retryDelay
 } from './backendHealth.svelte';
 
@@ -126,5 +129,86 @@ describe('BackendHealth', () => {
 		await vi.advanceTimersByTimeAsync(DEBOUNCE_MS);
 		expect(probe).toHaveBeenCalledTimes(2);
 		expect(waited).toHaveBeenCalledTimes(1);
+	});
+});
+
+describe('outage view', () => {
+	it('maps state, contact and escalation to none, banner or screen', () => {
+		expect(outageView('up', false, false)).toBe('none');
+		expect(outageView('suspect', true, false)).toBe('none');
+		expect(outageView('down', true, false)).toBe('reconnecting');
+		expect(outageView('down', true, true)).toBe('offline');
+		expect(outageView('down', false, false)).toBe('offline');
+	});
+
+	it('counts down whole seconds and reads as retrying when due or probing', () => {
+		expect(retryCountdown(18_000, false, 10_000)).toBe(8);
+		expect(retryCountdown(10_400, false, 10_000)).toBe(1);
+		expect(retryCountdown(10_000, false, 10_000)).toBeNull();
+		expect(retryCountdown(18_000, true, 10_000)).toBeNull();
+		expect(retryCountdown(null, false, 10_000)).toBeNull();
+	});
+
+	const neverUp = () => new BackendHealth(vi.fn(async () => false));
+
+	async function goDown(health: BackendHealth) {
+		health.reportFailure();
+		await vi.advanceTimersByTimeAsync(DEBOUNCE_MS);
+		expect(health.state).toBe('down');
+	}
+
+	it('a fresh load that never reached the server goes straight to the screen', async () => {
+		const health = neverUp();
+		expect(health.connected).toBe(false);
+		await goDown(health);
+		expect(health.outage).toBe('offline');
+	});
+
+	it('losing a connected server shows the banner, then escalates past the threshold', async () => {
+		const health = neverUp();
+		health.reportOk();
+		expect(health.outage).toBe('none');
+		await goDown(health);
+		expect(health.outage).toBe('reconnecting');
+		await vi.advanceTimersByTimeAsync(RECONNECT_SCREEN_AFTER_MS - 1);
+		expect(health.outage).toBe('reconnecting');
+		await vi.advanceTimersByTimeAsync(1);
+		expect(health.outage).toBe('offline');
+		expect(health.nextRetryAt).not.toBeNull();
+	});
+
+	it('recovery clears the banner, resyncs once, and restarts the threshold', async () => {
+		let answer = false;
+		const health = new BackendHealth(vi.fn(async () => answer));
+		const recovered = vi.fn();
+		health.onRecover(recovered);
+		health.reportOk();
+		await goDown(health);
+		await vi.advanceTimersByTimeAsync(RECONNECT_SCREEN_AFTER_MS);
+		expect(health.outage).toBe('offline');
+
+		answer = true;
+		health.retryNow();
+		await vi.advanceTimersByTimeAsync(0);
+		expect(health.outage).toBe('none');
+		expect(health.escalated).toBe(false);
+		expect(recovered).toHaveBeenCalledTimes(1);
+
+		answer = false;
+		await vi.advanceTimersByTimeAsync(QUIET_MS);
+		await goDown(health);
+		expect(health.outage).toBe('reconnecting');
+		await vi.advanceTimersByTimeAsync(RECONNECT_SCREEN_AFTER_MS - 1);
+		expect(health.outage).toBe('reconnecting');
+	});
+
+	it('a good probe counts as contact even without a prior request', async () => {
+		const { health } = healthWith([true, false]);
+		health.reportFailure();
+		await vi.advanceTimersByTimeAsync(DEBOUNCE_MS);
+		expect(health.connected).toBe(true);
+		await vi.advanceTimersByTimeAsync(QUIET_MS);
+		await goDown(health);
+		expect(health.outage).toBe('reconnecting');
 	});
 });

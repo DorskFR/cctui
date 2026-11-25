@@ -63,6 +63,10 @@ function optimisticDispatchCard(
     last_activity_at: null,
     cache_cold: false,
     estimated_burst_tokens: null,
+    context_tokens: null,
+    context_window: null,
+    auto_followup_at: null,
+    auto_followup_override: null,
     hibernated: false,
     pinned: false,
     labels: [],
@@ -213,8 +217,8 @@ export function useSessionActions() {
     },
     spawn: (body: SpawnRequest, files: File[] = []) =>
       endpoints.spawn(body, files),
-    // Draft sessions: launch promotes a draft to a live spawn (env
-    // entered fresh), discard deletes it. Both refetch the roster.
+    // Draft sessions: launch promotes a draft to a live spawn, discard
+    // deletes it. Both refetch the roster.
     launchDraft: async (id: string, env: Record<string, string> = {}) => {
       const res = await endpoints.launchDraft(id, env);
       inval();

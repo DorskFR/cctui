@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 /// One release published since the running build: tag, page and Markdown notes.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export))]
 pub struct ReleaseNote {
     pub version: String,
     pub url: String,
@@ -16,7 +16,7 @@ pub struct ReleaseNote {
 }
 
 #[derive(Serialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export))]
 pub struct VersionInfo {
     pub version: &'static str,
     pub git_hash: &'static str,
@@ -46,7 +46,7 @@ pub struct VersionInfo {
 }
 
 #[derive(Serialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export))]
 pub struct ChangelogResponse {
     pub version: &'static str,
     /// Releases published since `version`, newest first (capped server-side).

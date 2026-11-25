@@ -23,7 +23,9 @@
 		onAttach,
 		onDetach,
 		onUpdate,
-		onDelete
+		onDelete,
+		onOpenChange,
+		addHidden = false
 	}: {
 		labels: Label[];
 		editable?: boolean;
@@ -33,6 +35,10 @@
 		onDetach?: (labelId: string) => void | Promise<void>;
 		onUpdate?: (labelId: string, patch: { name?: string; color?: string }) => Promise<Label>;
 		onDelete?: (labelId: string) => void | Promise<void>;
+		/** The picker popover opened or closed. */
+		onOpenChange?: (open: boolean) => void;
+		/** Keep the picker trigger out of the layout until the host reveals it. */
+		addHidden?: boolean;
 	} = $props();
 
 	let busy = $state(false);
@@ -101,7 +107,7 @@
 			</span>
 		{/if}
 
-		{#if editable}
+		{#if editable && !addHidden}
 			<span class="add">
 				<Popover
 					label={m.sessions_edit_labels()}
@@ -109,9 +115,13 @@
 					variant="ghost"
 					box="xs"
 					hitArea="compact"
-					onopen={() => menu?.focusSearch()}
+					onopen={() => {
+						menu?.focusSearch();
+						onOpenChange?.(true);
+					}}
+					onclose={() => onOpenChange?.(false)}
 				>
-					{#snippet trigger()}<Icon name="tag" />{/snippet}
+					{#snippet trigger()}<Icon name="tag" size={14} />{/snippet}
 					<LabelMenu
 						bind:this={menu}
 						labels={allLabels}

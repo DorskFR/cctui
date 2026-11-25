@@ -1,6 +1,6 @@
 import { flushSync } from 'svelte';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { DEFAULT_VOICE } from '#lib/settings.svelte.ts';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { DEFAULT_VOICE, type VoiceSettings } from '#lib/settings.svelte.ts';
 import {
 	ECHO_TAIL_MS,
 	LiveVoice,
@@ -71,6 +71,7 @@ function harness(opts: { vadFails?: boolean; bargeIn?: boolean; language?: 'auto
 		chunk: vi.fn(),
 		end: vi.fn(),
 		stop: vi.fn(),
+		hold: vi.fn(),
 		onIdleChange: vi.fn((fn: (idle: boolean) => void) => {
 			idle = fn;
 			return () => {};
@@ -113,6 +114,65 @@ function harness(opts: { vadFails?: boolean; bargeIn?: boolean; language?: 'auto
 		idle: (v: boolean) => idle(v)
 	};
 }
+
+/** A loop over a real player, recording which lines start playing. */
+function realVoice(prefs: Partial<VoiceSettings> = {}) {
+	const played: string[] = [];
+	const player = new SpeechPlayer({
+		mime: () => 'audio/ogg',
+		createAudio: () => {
+			const a: AudioLike = {
+				src: '',
+				playbackRate: 1,
+				onended: null,
+				onerror: null,
+				play: async () => {
+					if (a.src.startsWith('blob:')) played.push(a.src);
+				},
+				pause: vi.fn()
+			};
+			return a;
+		},
+		createUrl: (blob) => `blob:${blob.size}`,
+		revokeUrl: () => {}
+	});
+	let socket: FakeSocket | null = null;
+	let cb: VadCallbacks | null = null;
+	const voice = new LiveVoice({
+		connect: (url) => (socket = new FakeSocket(url)),
+		vad: async (c) => {
+			cb = c;
+			return { start: vi.fn(), pause: vi.fn(), destroy: vi.fn() };
+		},
+		player,
+		wakeLock: async () => () => {},
+		prefs: () => ({ ...DEFAULT_VOICE, bargeIn: true, ...prefs }),
+		chunker: { sampleRate: 1000, minPartMs: 100, pauseMs: 20, maxPartMs: 300, preRollMs: 50 }
+	});
+	return {
+		voice,
+		played,
+		get sock() {
+			return socket as FakeSocket;
+		},
+		get cb() {
+			return cb as VadCallbacks;
+		},
+		async open() {
+			await voice.start('sess');
+			(socket as FakeSocket).open();
+			for (let i = 0; i < 4; i++) await Promise.resolve();
+		},
+		line(id: string, size: number) {
+			const sock = socket as FakeSocket;
+			sock.frame({ type: 'speak_start', line_id: id, text: id });
+			sock.frame(new Uint8Array(size).buffer);
+			sock.frame({ type: 'speak_end', line_id: id });
+		}
+	};
+}
+
+const types = (sock: FakeSocket) => sock.texts().map((m) => (m as { type: string }).type);
 
 describe('LiveVoice', () => {
 	beforeEach(() => vi.clearAllMocks());
@@ -304,7 +364,7 @@ describe('LiveVoice', () => {
 			},
 			player,
 			wakeLock: async () => () => {},
-			prefs: () => ({ ...DEFAULT_VOICE, bargeIn: true })
+			prefs: () => ({ ...DEFAULT_VOICE, bargeIn: true, replyDelayMs: 0 })
 		});
 		await voice.start('sess');
 		const sock = socket as unknown as FakeSocket;
@@ -327,6 +387,8 @@ describe('LiveVoice', () => {
 		expect(played).toEqual(['blob:1']);
 
 		line('2-1', 5);
+		expect(played).toEqual(['blob:1']);
+		(cb as unknown as VadCallbacks).onSpeechEnd();
 		expect(played).toEqual(['blob:1', 'blob:5']);
 		voice.stop();
 	});
@@ -534,6 +596,85 @@ describe('LiveVoice', () => {
 		expect(vads[1].start).toHaveBeenCalled();
 		voice.stop();
 		expect(vads[1].destroy).toHaveBeenCalled();
+	});
+	describe('never speaks over the user', () => {
+		beforeEach(() => vi.useFakeTimers());
+		afterEach(() => vi.useRealTimers());
+
+		it('holds a reply that lands while the user talks until they stop and the delay passes', async () => {
+			const r = realVoice({ replyDelayMs: 800 });
+			await r.open();
+			r.cb.onSpeechStart();
+			r.sock.frame({ type: 'state', state: 'speaking' });
+			r.line('1-1', 1);
+			expect(r.played).toEqual([]);
+			expect(r.voice.status).toBe('listening');
+
+			r.cb.onSpeechEnd();
+			vi.advanceTimersByTime(799);
+			expect(r.played).toEqual([]);
+			vi.advanceTimersByTime(1);
+			expect(r.played).toEqual(['blob:1']);
+			expect(r.voice.status).toBe('speaking');
+			expect(types(r.sock)).not.toContain('skip');
+			expect(types(r.sock)).not.toContain('interrupt');
+			r.voice.stop();
+		});
+
+		it('drops a held reply once the user sends a new message, without cutting the turn', async () => {
+			const r = realVoice({ replyDelayMs: 800 });
+			await r.open();
+			r.cb.onSpeechStart();
+			r.line('1-1', 1);
+			r.cb.onSpeechEnd();
+			r.sock.frame({ type: 'transcript', text: 'and also this' });
+			expect(types(r.sock).at(-1)).toBe('skip');
+			expect(types(r.sock)).not.toContain('interrupt');
+
+			vi.advanceTimersByTime(5000);
+			r.line('1-2', 2);
+			expect(r.played).toEqual([]);
+			r.line('2-1', 3);
+			expect(r.played).toEqual(['blob:3']);
+			r.sock.frame({ type: 'transcript', text: 'thanks' });
+			expect(types(r.sock).filter((t) => t === 'skip')).toHaveLength(1);
+			r.voice.stop();
+		});
+
+		it('talking again before a held reply starts neither cuts it nor counts as its echo', async () => {
+			for (const bargeIn of [true, false]) {
+				const r = realVoice({ replyDelayMs: 800, bargeIn });
+				await r.open();
+				r.cb.onSpeechStart();
+				r.sock.frame({ type: 'state', state: 'speaking' });
+				r.line('1-1', 1);
+				r.cb.onSpeechEnd();
+				vi.advanceTimersByTime(400);
+
+				const before = r.sock.sent.length;
+				speak(r, [0.5, 0.5]);
+				const sent = r.sock.sent.slice(before);
+				expect(sent.some((s) => s instanceof ArrayBuffer), `${bargeIn}`).toBe(true);
+				expect(types(r.sock), `${bargeIn}`).not.toContain('interrupt');
+				vi.advanceTimersByTime(799);
+				expect(r.played, `${bargeIn}`).toEqual([]);
+				vi.advanceTimersByTime(1);
+				expect(r.played, `${bargeIn}`).toEqual(['blob:1']);
+				r.voice.stop();
+			}
+		});
+
+		it('a reply after the user finished plays at once and survives their next message', async () => {
+			const r = realVoice({ replyDelayMs: 800 });
+			await r.open();
+			speak(r, [0.5, 0.5]);
+			vi.advanceTimersByTime(800);
+			r.line('1-1', 1);
+			expect(r.played).toEqual(['blob:1']);
+			r.sock.frame({ type: 'transcript', text: 'go' });
+			expect(types(r.sock)).not.toContain('skip');
+			r.voice.stop();
+		});
 	});
 });
 

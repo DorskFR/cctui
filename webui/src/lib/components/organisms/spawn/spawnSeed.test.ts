@@ -37,4 +37,18 @@ describe('seedForm', () => {
 			auto: false
 		});
 	});
+
+	it('sends auto-archive only once ticked', () => {
+		const { form } = seedForm(null, 'fresh');
+		expect(buildSpawnBody(form, undefined, {}, null).auto_archive).toBe(false);
+		expect(buildSpawnBody({ ...form, auto_archive: true }, undefined, {}, null).auto_archive).toBe(true);
+	});
+
+	it('reads auto-archive from the slot unless the prefill names it', () => {
+		slots.set('armed', { working_dir: '/w', auto_archive: true });
+		expect(seedForm(null, 'armed').form.auto_archive).toBe(true);
+		expect(seedForm({ working_dir: '/w', auto_archive: '0' }, 'armed').form.auto_archive).toBe(false);
+		slots.set('junk', { working_dir: '/w', auto_archive: 'yes' });
+		expect(seedForm(null, 'junk').form.auto_archive).toBe(false);
+	});
 });

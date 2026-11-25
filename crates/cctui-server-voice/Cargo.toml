@@ -1,0 +1,32 @@
+[package]
+name = "cctui-server-voice"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+doctest = false
+
+[lints]
+workspace = true
+
+[dependencies]
+cctui-proto.workspace = true
+cctui-server-kernel.workspace = true
+axum.workspace = true
+bytes = "1"
+futures-util.workspace = true
+http = "1"
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-tungstenite.workspace = true
+tokio-util.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+cctui-server-kernel = { workspace = true, features = ["test-support"] }
+tokio = { workspace = true, features = ["test-util"] }
+tower.workspace = true

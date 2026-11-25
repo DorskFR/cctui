@@ -12,10 +12,10 @@ fail() {
   errors=$((errors + 1))
 }
 
-core_rs="$root/crates/cctui-server-core/src/schema.rs"
-baseline="$(grep -oE 'LEGACY_BASELINE: i64 = [0-9]+' "$core_rs" 2>/dev/null | grep -oE '[0-9]+$' || true)"
+kernel_rs="$root/crates/cctui-server-kernel/src/schema.rs"
+baseline="$(grep -oE 'LEGACY_BASELINE: i64 = [0-9]+' "$kernel_rs" 2>/dev/null | grep -oE '[0-9]+$' || true)"
 if [ -z "$baseline" ]; then
-  echo "check-migrations: no LEGACY_BASELINE in crates/cctui-server-core/src/schema.rs" >&2
+  echo "check-migrations: no LEGACY_BASELINE in crates/cctui-server-kernel/src/schema.rs" >&2
   exit 1
 fi
 

@@ -3,14 +3,14 @@
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-#[cfg(feature = "ts")]
+#[cfg(test)]
 use ts_rs::TS;
 use uuid::Uuid;
 
 /// One service token of an account, without its secret.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "sqlx", derive(sqlx::FromRow))]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct ServiceTokenRow {
     pub id: Uuid,
     pub label: String,
@@ -23,7 +23,7 @@ pub struct ServiceTokenRow {
 
 /// `POST /api/v1/accounts/{id}/service-tokens` payload.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct MintServiceTokenRequest {
     pub label: String,
     /// One of the account's `account_providers` ids.
@@ -32,7 +32,7 @@ pub struct MintServiceTokenRequest {
 
 /// The minted token. `token` is shown exactly once; only its hash is stored.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct MintServiceTokenResponse {
     pub token: String,
     pub row: ServiceTokenRow,

@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::time::{Duration, SystemTime};
 
 use axum::extract::Path;
@@ -273,6 +273,12 @@ impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for CaptureWriter {
 /// current-thread runtime so spawned tasks log into it too.
 #[must_use]
 pub fn capture_logs() -> LogCapture {
+    // With a single registered dispatcher, tracing-core caches callsite
+    // interest from whichever thread hits it first, so a callsite first hit by
+    // a concurrent test is cached as `never` and drops this capture's events.
+    static SECOND_DISPATCHER: OnceLock<tracing::Dispatch> = OnceLock::new();
+    SECOND_DISPATCHER
+        .get_or_init(|| tracing::Dispatch::new(tracing::subscriber::NoSubscriber::new()));
     let buf = Arc::new(Mutex::new(Vec::new()));
     let subscriber = tracing_subscriber::fmt()
         .with_writer(CaptureWriter(buf.clone()))

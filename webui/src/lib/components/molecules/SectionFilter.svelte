@@ -40,7 +40,6 @@
 		{items}
 		placement="bottom-end"
 		title={m.sessions_filter_sections_count({ count, total: options.length })}
-		style="--pop-box: var(--control-height)"
 	>
 		{#snippet trigger()}
 			<Icon name="filter" size={18} />
@@ -48,7 +47,7 @@
 	</Menu>
 	{#if filtering}
 		<span class="count" aria-hidden="true">
-			<Badge size="xs" numeric tone="accent" style="--badge-bg: var(--accent); --badge-fg: var(--text-on-accent); --badge-border: var(--accent)">{count}</Badge>
+			<Badge size="xs" numeric tone="accent" variant="solid">{count}</Badge>
 		</span>
 	{/if}
 </div>

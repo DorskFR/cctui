@@ -30,6 +30,7 @@ pub mod release_sig;
 pub mod resources;
 pub mod session_end;
 pub mod silence;
+pub mod thread;
 pub mod updatehook;
 pub mod uploads;
 pub mod util;

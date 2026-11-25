@@ -25,7 +25,15 @@ describe('conversation voice entry points follow the speech capabilities', () =>
 	it('routes an auto-sent dictation like Send, so a cold session is not sent to in place', () => {
 		const body = composer.slice(composer.indexOf('async function dictated('));
 		const fn = body.slice(0, body.indexOf('\n\t}\n'));
-		expect(fn).toContain("if (route === 'send') return sendText(text);");
-		expect(fn).toContain('submit();');
+		expect(fn).toContain("if (settings.voice.autoSend && route === 'send') return sendText(text, true);");
+		expect(fn).toContain('if (settings.voice.autoSend) submit();');
+	});
+
+	it('sends a draft that went through the mic as dictated', () => {
+		expect(composer).toContain('dictatedDraft = true;');
+		expect(composer).toContain('onsend(text, dictatedDraft, followup);');
+		expect(pane).toContain(
+			'onsend={(body, dictated, followup) => stream.sendBody(body, dictated, followup)}'
+		);
 	});
 });

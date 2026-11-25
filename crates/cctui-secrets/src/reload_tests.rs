@@ -103,6 +103,19 @@ async fn rotation_logs_never_carry_values() {
     assert!(!text.contains("first-value") && !text.contains("second-value"), "{text}");
 }
 
+fn shared_callsite() {
+    tracing::info!("shared-callsite-marker");
+}
+
+#[test]
+fn capture_sees_a_callsite_first_hit_on_another_thread() {
+    let logs = capture_logs();
+    std::thread::spawn(shared_callsite).join().unwrap();
+    shared_callsite();
+    let text = logs.contents();
+    assert!(text.contains("shared-callsite-marker"), "{text}");
+}
+
 #[tokio::test]
 async fn register_failure_names_the_variable_and_ref_not_a_value() {
     let fixture = Fixture::start().await;

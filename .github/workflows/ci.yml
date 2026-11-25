@@ -1,7 +1,9 @@
 name: ci
 
 on:
-  pull_request: {}
+  pull_request:
+    # labeled: adding run-e2e reruns the checks with the e2e job.
+    types: [opened, synchronize, reopened, labeled]
   # Version branches too: release.yml refuses to publish a tag whose commit has
   # no green ci run, and a tag push does not trigger ci.yml.
   push:
@@ -28,6 +30,9 @@ env:
   # Save only where later runs can read the cache: main and version branches,
   # never PRs or tags. Must not start with RUST/CARGO/CC: those are hashed.
   SAVE_RUST_CACHE: ${{ github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/0.') || startsWith(github.ref, 'refs/heads/1.') || startsWith(github.ref, 'refs/heads/release/')) }}
+  # Releases are tagged on version branches, whose pushes build the binaries a
+  # release takes over; main keeps only the caches its own checks use.
+  SAVE_RELEASE_CACHE: ${{ github.event_name != 'pull_request' && (startsWith(github.ref, 'refs/heads/0.') || startsWith(github.ref, 'refs/heads/1.') || startsWith(github.ref, 'refs/heads/release/')) }}
   CARGO_INCREMENTAL: "0"
 
 jobs:
@@ -42,11 +47,16 @@ jobs:
       webui: ${{ steps.scope.outputs.webui }}
       deps: ${{ steps.scope.outputs.deps }}
       deploy: ${{ steps.scope.outputs.deploy }}
+      worker: ${{ steps.scope.outputs.worker }}
+      e2e: ${{ steps.scope.outputs.e2e }}
+      playwright: ${{ steps.scope.outputs.playwright }}
+      crates: ${{ steps.crates.outputs.crates }}
+      save: ${{ env.SAVE_RUST_CACHE }}
       # false when a green run already tested this exact tree, e.g. the push
       # of a squash merge whose pull request run passed.
       check: ${{ steps.tested.outputs.check != 'false' }}
-      # A skipped push still builds what clippy, test and bindings cache when
-      # their key has no exact match, so pull requests into the branch restore it.
+      # A skipped push still builds what clippy and test cache when their key
+      # has no exact match, so pull requests into the branch restore it.
       warm: ${{ steps.tested.outputs.check == 'false' && env.SAVE_RUST_CACHE == 'true' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -78,8 +88,32 @@ jobs:
             out="$(bash scripts/ci-changes.sh --all)"
           fi
           echo "$out"
-          echo "$out" >> "$GITHUB_OUTPUT"
-          echo "tree=$(git rev-parse 'HEAD^{tree}')" >> "$GITHUB_OUTPUT"
+          {
+            echo "$out"
+            echo "base=$base"
+            echo "tree=$(git rev-parse 'HEAD^{tree}')"
+            echo "playwright=$(jq -r '.packages["node_modules/@playwright/test"].version' webui/package-lock.json)"
+          } >> "$GITHUB_OUTPUT"
+
+      # Pull requests test the crates they change and their dependents. Pushes
+      # test everything: they save the caches and gate the release.
+      - name: Crates to test
+        id: crates
+        if: steps.scope.outputs.rust == 'true'
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ steps.scope.outputs.base }}
+          WHOLE: ${{ steps.scope.outputs.ci }}
+          # Skips installing the pinned toolchain: cargo metadata --no-deps only.
+          RUSTUP_TOOLCHAIN: stable
+        run: |
+          if [ "$EVENT" = pull_request ] && [ -n "$BASE" ] && [ "$WHOLE" != true ]; then
+            crates="$(bash scripts/affected-crates.sh "$BASE" HEAD | tr '\n' ' ')"
+          else
+            crates="$(bash scripts/affected-crates.sh --all | tr '\n' ' ')"
+          fi
+          echo "crates: ${crates:-none}"
+          echo "crates=${crates% }" >> "$GITHUB_OUTPUT"
 
       - name: Skip checks a green run already passed on this tree
         id: tested
@@ -170,12 +204,47 @@ jobs:
         with:
           save-if: ${{ env.SAVE_RUST_CACHE }}
 
+      # Always the whole workspace: a -p selection changes dependency features
+      # and recompiles them past the cache.
       - name: cargo clippy
         if: steps.cached.outputs.cache-hit != 'true'
-        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+        run: cargo clippy --workspace --all-targets --locked --keep-going -- -D warnings
 
-      - name: Core library builds independently of workspace services
-        run: cargo check -p cctui-server-core --all-targets --locked
+      - name: Kernel builds independently of every other server crate
+        if: env.WARM_ONLY != 'true' && contains(format(' {0} ', needs.changes.outputs.crates), ' cctui-server-kernel ')
+        run: cargo check -p cctui-server-kernel --all-targets --locked
+
+      - name: Search builds on the kernel alone
+        if: env.WARM_ONLY != 'true' && contains(format(' {0} ', needs.changes.outputs.crates), ' cctui-server-search ')
+        run: cargo check -p cctui-server-search --all-targets --locked
+
+      - name: Blobs builds on the kernel alone
+        if: env.WARM_ONLY != 'true' && contains(format(' {0} ', needs.changes.outputs.crates), ' cctui-server-blobs ')
+        run: cargo check -p cctui-server-blobs --all-targets --locked
+
+      - name: Voice builds on the kernel alone
+        if: env.WARM_ONLY != 'true' && contains(format(' {0} ', needs.changes.outputs.crates), ' cctui-server-voice ')
+        run: cargo check -p cctui-server-voice --all-targets --locked
+
+      - name: Extras builds on the kernel alone
+        if: env.WARM_ONLY != 'true' && contains(format(' {0} ', needs.changes.outputs.crates), ' cctui-server-extras ')
+        run: cargo check -p cctui-server-extras --all-targets --locked
+
+      - name: Accounts builds on the kernel alone
+        if: env.WARM_ONLY != 'true' && contains(format(' {0} ', needs.changes.outputs.crates), ' cctui-server-accounts ')
+        run: cargo check -p cctui-server-accounts --all-targets --locked
+
+      - name: Dispatch builds on the kernel alone
+        if: env.WARM_ONLY != 'true' && contains(format(' {0} ', needs.changes.outputs.crates), ' cctui-server-dispatch ')
+        run: cargo check -p cctui-server-dispatch --all-targets --locked
+
+      - name: Notify builds on the kernel alone
+        if: env.WARM_ONLY != 'true' && contains(format(' {0} ', needs.changes.outputs.crates), ' cctui-server-notify ')
+        run: cargo check -p cctui-server-notify --all-targets --locked
+
+      - name: Sessions builds on the kernel alone
+        if: env.WARM_ONLY != 'true' && contains(format(' {0} ', needs.changes.outputs.crates), ' cctui-server-sessions ')
+        run: cargo check -p cctui-server-sessions --all-targets --locked
 
   test:
     name: cargo test
@@ -204,6 +273,9 @@ jobs:
       TEST_ADMIN_TOKEN: test-admin
       CARGO_PROFILE_DEV_DEBUG: line-tables-only
       WARM_ONLY: ${{ needs.changes.outputs.check != 'true' }}
+      AFFECTED_CRATES: ${{ needs.changes.outputs.crates }}
+      SERVER_AFFECTED: ${{ contains(format(' {0} ', needs.changes.outputs.crates), ' cctui-server ') }}
+      BINDINGS_AFFECTED: ${{ contains(format(' {0} ', needs.changes.outputs.crates), ' cctui-proto ') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -225,33 +297,34 @@ jobs:
         with:
           save-if: ${{ env.SAVE_RUST_CACHE }}
 
-      - name: Provision the test database
+      # The one compile of the job: every cargo test below keeps the --workspace
+      # selection, so feature unification and the artifacts stay identical.
+      # affected-crates.sh runs a subset of these binaries without rebuilding.
+      - name: cargo test --no-run
         if: steps.cached.outputs.cache-hit != 'true'
-        run: cargo run -p cctui-server --locked -- init-db
-
-      - name: cargo test --no-run (warm the cache)
-        if: env.WARM_ONLY == 'true' && steps.cached.outputs.cache-hit != 'true'
         run: cargo test --workspace --locked --no-run
 
-      # Every cargo test below keeps the same --workspace package selection so
-      # feature unification (and therefore the compiled artifacts) is identical
-      # and the workspace compiles once.
-      - name: cargo test (workspace)
+      - name: Provision the test database
         if: env.WARM_ONLY != 'true'
-        run: cargo test --workspace --locked
+        run: ./target/debug/cctui-server init-db
+
+      - name: cargo test (affected crates)
+        if: env.WARM_ONLY != 'true'
+        run: |
+          read -ra pkgs <<<"$AFFECTED_CRATES"
+          bash scripts/affected-crates.sh test "${pkgs[@]}" -- --locked
 
       # Ignored tests that only need the CI database or a throwaway runner. The
       # rest need a live claude/codex/opencode binary and stay manual-only.
       - name: cargo test --ignored (database, fake harness shims)
         if: env.WARM_ONLY != 'true'
         run: |
-          cargo test --workspace --locked --bins --lib -- --ignored routes::gateway::mint::db_tests harness_update::
+          read -ra pkgs <<<"$AFFECTED_CRATES"
+          bash scripts/affected-crates.sh test "${pkgs[@]}" -- --locked --bins --lib \
+            -- --ignored routes::gateway::mint::db_tests harness_update::
 
-      # `cargo test --workspace` already linked target/debug/cctui-server for the
-      # integration test target; do not rebuild it with a different package
-      # selection.
       - name: Start the server
-        if: env.WARM_ONLY != 'true'
+        if: env.WARM_ONLY != 'true' && env.SERVER_AFFECTED == 'true'
         run: |
           test -x ./target/debug/cctui-server || { echo "cargo test did not produce target/debug/cctui-server" >&2; exit 1; }
           ./target/debug/cctui-server > /tmp/cctui-server.log 2>&1 &
@@ -268,53 +341,25 @@ jobs:
 
       - name: cargo test --ignored (against the running server)
         if: env.WARM_ONLY != 'true'
-        run: cargo test --workspace --locked --test integration -- --ignored
+        run: |
+          read -ra pkgs <<<"$AFFECTED_CRATES"
+          bash scripts/affected-crates.sh test "${pkgs[@]}" -- --locked --test integration -- --ignored
 
       - name: Server log
-        if: always() && env.WARM_ONLY != 'true'
+        if: always() && env.WARM_ONLY != 'true' && env.SERVER_AFFECTED == 'true'
         run: cat /tmp/cctui-server.log 2>/dev/null || true
 
-  bindings:
-    name: webui bindings
-    needs: changes
-    if: needs.changes.outputs.rust == 'true' && (needs.changes.outputs.check == 'true' || needs.changes.outputs.warm == 'true')
-    runs-on: ubuntu-latest
-    env:
-      CARGO_PROFILE_DEV_DEBUG: line-tables-only
-      WARM_ONLY: ${{ needs.changes.outputs.check != 'true' }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
-        with:
-          toolchain: ${{ env.RUST_VERSION }}
-
-      - name: Keep only the pinned toolchain
-        run: rustup toolchain list --quiet | awk -v pinned="$RUST_VERSION" '$1 != pinned && index($1, pinned "-") != 1 { print $1 }' | while read -r tc; do rustup toolchain uninstall "$tc"; done
-      - uses: Swatinem/rust-cache@eedcf2fb1c22f010a0eb66b92f378c110977f266 # v2
-        id: cached
-        if: env.WARM_ONLY == 'true'
-        with:
-          lookup-only: true
-          save-if: false
-      - uses: Swatinem/rust-cache@eedcf2fb1c22f010a0eb66b92f378c110977f266 # v2
-        if: steps.cached.outputs.cache-hit != 'true'
-        with:
-          save-if: ${{ env.SAVE_RUST_CACHE }}
-
-      # cctui-query's ts exports are not part of the webui bindings.
+      # Reuses the build above: the ts-rs exports are cctui-proto test targets.
       - name: Regenerate webui bindings
-        if: steps.cached.outputs.cache-hit != 'true'
+        if: env.WARM_ONLY != 'true' && env.BINDINGS_AFFECTED == 'true'
         env:
-          CCTUI_BINDINGS_CARGO_ARGS: --workspace --locked --lib --bins --exclude cctui-query
-        run: |
-          bash webui/scripts/gen-bindings.sh
-          node webui/scripts/gen-scrub-detectors.mjs
+          CCTUI_BINDINGS_CARGO_ARGS: --workspace --locked --lib
+        run: bash webui/scripts/gen-bindings.sh
 
       - name: Committed bindings match the generators
         if: env.WARM_ONLY != 'true'
         run: |
+          node webui/scripts/gen-scrub-detectors.mjs
           git add --intent-to-add webui/src/lib/bindings
           if ! git diff --exit-code webui/src/lib/bindings webui/src/lib/scrubDetectors.generated.ts; then
             echo "::error::webui bindings are stale. Run 'make bindings' and commit the result."
@@ -382,7 +427,7 @@ jobs:
       - uses: Swatinem/rust-cache@eedcf2fb1c22f010a0eb66b92f378c110977f266 # v2
         with:
           shared-key: release-${{ matrix.target }}
-          save-if: ${{ env.SAVE_RUST_CACHE }}
+          save-if: ${{ env.SAVE_RELEASE_CACHE }}
 
       - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
       - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2
@@ -429,7 +474,7 @@ jobs:
       - uses: Swatinem/rust-cache@eedcf2fb1c22f010a0eb66b92f378c110977f266 # v2
         with:
           shared-key: release-server
-          save-if: ${{ env.SAVE_RUST_CACHE }}
+          save-if: ${{ env.SAVE_RELEASE_CACHE }}
       - name: Build cctui-server for the image
         env:
           SQLX_OFFLINE: "true"
@@ -502,11 +547,16 @@ jobs:
             exit 1
           }
 
+  # ci-changes.sh sets e2e when a spec, its fixtures or the build change, or a
+  # webui/src path names a spec's area.
   e2e:
-    name: webui e2e (hermetic) ${{ matrix.shard }}/2
+    name: webui e2e (hermetic; on e2e-area changes or the run-e2e label) ${{ matrix.shard }}/2
     needs: changes
-    if: needs.changes.outputs.check == 'true' && needs.changes.outputs.webui == 'true'
+    if: needs.changes.outputs.check == 'true' && (needs.changes.outputs.e2e == 'true' || contains(github.event.pull_request.labels.*.name, 'run-e2e'))
     runs-on: ubuntu-latest
+    container:
+      image: mcr.microsoft.com/playwright:v${{ needs.changes.outputs.playwright }}-noble
+      options: --user 1001 --ipc=host
     strategy:
       fail-fast: false
       matrix:
@@ -519,26 +569,6 @@ jobs:
       - name: Build
         working-directory: webui
         run: npm run build
-
-      - name: Playwright version
-        id: playwright
-        run: echo "version=$(jq -r '.packages["node_modules/@playwright/test"].version' webui/package-lock.json)" >> "$GITHUB_OUTPUT"
-
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        id: browsers
-        with:
-          path: ~/.cache/ms-playwright
-          key: playwright-${{ runner.os }}-${{ runner.arch }}-${{ steps.playwright.outputs.version }}-chromium
-
-      - name: Install chromium
-        if: steps.browsers.outputs.cache-hit != 'true'
-        working-directory: webui
-        run: npx playwright install --with-deps chromium
-
-      - name: Install chromium system dependencies
-        if: steps.browsers.outputs.cache-hit == 'true'
-        working-directory: webui
-        run: npx playwright install-deps chromium
 
       # These projects stub every request; no server, no seeded database, no
       # journeys/.auth/state.json. The other projects need the local stack.
@@ -582,7 +612,7 @@ jobs:
 
       - name: Ignored advisories are still unreachable
         run: |
-          for crate in rsa libsqlite3-sys; do
+          for crate in libsqlite3-sys; do
             if cargo tree --workspace --all-features --target all -i "$crate" 2>/dev/null | grep -q "^$crate v"; then
               echo "$crate is in the build graph; drop its ignore in .cargo/audit.toml" >&2
               exit 1
@@ -730,6 +760,9 @@ jobs:
       - name: Path scoping classifies changes
         run: bash scripts/ci-changes.test.sh
 
+      - name: Crate scoping follows dependents and runs only their tests
+        run: bash scripts/affected-crates.test.sh
+
       - name: The heavy wrapper caps local runs and stays out of CI's way
         run: bash scripts/heavy.test.sh
 
@@ -741,6 +774,9 @@ jobs:
 
       - name: The release takes push CI's binaries or builds its own
         run: bash scripts/release-ci-bins.test.sh
+
+      - name: Darwin binaries get a pinned Mach-O UUID
+        run: bash scripts/pin-macho-uuid.test.sh
 
       - name: Path scoping tests did not leak into this checkout
         run: bash scripts/check-git-untouched.sh
@@ -795,6 +831,74 @@ jobs:
             exit 1
           fi
 
+  # The base is built on stub cctui binaries: the sample only adds agents. The
+  # default docker driver (no setup-buildx) lets the sample's FROM resolve the
+  # local base image.
+  worker-agents:
+    name: worker agents sample (${{ matrix.name }})
+    needs: changes
+    if: needs.changes.outputs.check == 'true' && needs.changes.outputs.worker == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: all
+            args: WITH_CLAUDE=1 WITH_CODEX=1 WITH_OPENCODE=1 WITH_ACP_AGENTS=1 WITH_GOOSE=1 WITH_TOOLS=1
+          - name: defaults
+            args: ""
+          - name: none
+            args: WITH_CLAUDE=0 WITH_CODEX=0 WITH_OPENCODE=0 WITH_ACP_AGENTS=0 WITH_GOOSE=0 WITH_TOOLS=0
+          - name: claude
+            args: WITH_CLAUDE=1 WITH_CODEX=0 WITH_TOOLS=0
+          - name: codex
+            args: WITH_CLAUDE=0 WITH_CODEX=1 WITH_TOOLS=0
+          - name: opencode
+            args: WITH_CLAUDE=0 WITH_CODEX=0 WITH_OPENCODE=1 WITH_TOOLS=0
+          - name: acp-agents
+            args: WITH_CLAUDE=0 WITH_CODEX=0 WITH_ACP_AGENTS=1 WITH_TOOLS=0
+          - name: goose
+            args: WITH_CLAUDE=0 WITH_CODEX=0 WITH_GOOSE=1 WITH_TOOLS=0
+          - name: tools
+            args: WITH_CLAUDE=0 WITH_CODEX=0 WITH_TOOLS=1
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Build the barebone worker on stub binaries
+        run: |
+          bins="$RUNNER_TEMP/stub-bins"
+          mkdir -p "$bins"
+          for b in cctui-daemon cctui-guard-proxy cctui-supervisor cctui-guard; do
+            printf '#!/bin/sh\nexit 0\n' > "$bins/$b"
+            chmod 0755 "$bins/$b"
+          done
+          docker build -f deploy/worker.Dockerfile --build-context "bins=$bins" -t cctui-worker:ci .
+
+      - name: Build the sample
+        env:
+          ARGS: ${{ matrix.args }}
+        run: |
+          flags=(--build-arg BASE_IMAGE=cctui-worker:ci)
+          for a in $ARGS; do flags+=(--build-arg "$a"); done
+          docker build "${flags[@]}" -t cctui-worker-agents:ci deploy/examples/worker-agents
+
+      - name: Verify harness version floors
+        if: matrix.name == 'all'
+        run: bash scripts/check-worker-image-harness.sh cctui-worker-agents:ci
+
+      - name: An agent-less worker refuses to boot
+        if: matrix.name == 'none'
+        run: |
+          set +e
+          out="$(timeout 60 docker run --rm -e CCTUI_URL=http://cctui.invalid -e CCTUI_MACHINE_KEY=k \
+            -e SESSION_ID=00000000-0000-4000-8000-000000000000 cctui-worker-agents:ci 2>&1)"
+          code=$?
+          set -e
+          echo "$out"
+          [ "$code" -ne 0 ] || { echo "::error::exit 0 without an agent"; exit 1; }
+          grep -qF 'no agent CLI installed in this image' <<<"$out" \
+            || { echo "::error::no warning printed"; exit 1; }
+
   actionlint:
     name: actionlint
     needs: changes
@@ -810,6 +914,43 @@ jobs:
       - name: actionlint
         run: ./actionlint -color
 
+  # rust-cache and setup-zig save a new entry per lock hash or run, and tag
+  # runs' buildkit caches are only readable by that tag: keep the newest entry
+  # per kind on this branch and the latest tag's. Never fails the run, which
+  # check-ci-green.sh requires to succeed.
+  cache-prune:
+    name: prune superseded caches
+    needs: [changes, clippy, test, audit, release-cache, release-cache-server, webui, webui-test, webui-build, e2e]
+    if: always() && needs.changes.outputs.save == 'true'
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    permissions:
+      actions: write
+    steps:
+      - name: Delete superseded caches
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REF: ${{ github.ref }}
+        run: |
+          gh cache list --repo "$GITHUB_REPOSITORY" --limit 1000 --json id,key,ref,createdAt,sizeInBytes >caches.json
+          jq -r --arg ref "$REF" '
+            def kind: .key | sub("-[0-9a-f]{8}-[0-9a-f]{8}$"; "") | sub("--[0-9]+-[0-9]+$"; "") | sub("-v[0-9.]+-[0-9a-f]{32}$"; "");
+            (map(select(.ref == $ref and (.key | test("^(v0-rust-|setup-zig-cache-|webui-node_modules-)"))))
+              | group_by(kind) | map(sort_by(.createdAt) | .[:-1][])),
+            (map(select(.ref | contains("refs/tags/"))) as $tags
+              | if ($tags | length) == 0 then [] else
+                  ($tags | max_by(.createdAt) | .ref) as $latest | $tags | map(select(.ref != $latest))
+                end)
+            | .[] | "\(.id)\t\(.sizeInBytes)\t\(.ref)\t\(.key)"' caches.json >stale.tsv
+          freed=0
+          while IFS=$'\t' read -r id size ref key; do
+            if gh cache delete --repo "$GITHUB_REPOSITORY" "$id" >/dev/null; then
+              echo "deleted $key ($ref, $((size / 1000000)) MB)"
+              freed=$((freed + size))
+            fi
+          done <stale.tsv
+          echo "freed $((freed / 1000000)) MB"
+
   # The single required check for branch protection: skipped jobs count as
   # passing, failed or cancelled ones do not.
   ci-ok:
@@ -821,7 +962,6 @@ jobs:
       - biome
       - clippy
       - test
-      - bindings
       - release-scope
       - release-cache
       - release-cache-server
@@ -838,6 +978,7 @@ jobs:
       - release-channel
       - local-seed
       - deploy-tests
+      - worker-agents
       - actionlint
     runs-on: ubuntu-latest
     steps:

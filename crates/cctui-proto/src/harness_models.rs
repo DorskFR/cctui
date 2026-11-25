@@ -5,14 +5,14 @@
 //! set, derived from the same catalog.
 
 use serde::{Deserialize, Serialize};
-#[cfg(feature = "ts")]
+#[cfg(test)]
 use ts_rs::TS;
 
 use crate::codex_catalog::CodexModelCatalog;
 
 /// Why a model is annotated in the picker. The client words it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ModelHint {
     /// The catalog view in use is older than the model needs, so it cannot be
@@ -28,12 +28,12 @@ pub enum ModelHint {
 /// `v` is the wire value; the empty string means "leave the harness its own
 /// default".
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct ModelOption {
     pub v: String,
     pub label: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(feature = "ts", ts(optional))]
+    #[cfg_attr(test, ts(optional))]
     pub hint: Option<ModelHint>,
     #[serde(default)]
     pub disabled: bool,
@@ -47,7 +47,7 @@ impl ModelOption {
 
 /// Body of `GET /api/v1/models/{harness}`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct HarnessModels {
     pub harness: String,
     pub models: Vec<ModelOption>,

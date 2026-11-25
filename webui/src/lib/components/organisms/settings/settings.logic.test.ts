@@ -4,27 +4,31 @@ import {
 	applySettingsFilter,
 	availableSettingsPages,
 	DEFAULT_SETTINGS_PAGE,
+	EVENTS_PAGE,
 	firstMatchingPage,
 	firstMatchingRow,
 	fuzzyMatches,
+	hrefForHash,
 	isFiltered,
 	isSettingsPage,
+	LEGACY_PAGES,
+	NON_ADMIN_INSTANCE_FALLBACK,
 	normalizeForFilter,
-	pageForHash,
-	pagerNeighbours,
 	pagesInScope,
-	MOVED_OUT,
 	SETTINGS_PAGES,
 	SETTINGS_SCOPES,
+	SETTINGS_SECTIONS,
 	settingsHref,
 	settingsPageFeature,
+	settingsRedirect,
+	settingsRouteSlugs,
 	settingsScope
 } from './settings.logic';
 
 function tree(): HTMLElement {
 	const root = document.createElement('div');
 	root.innerHTML = `
-		<div data-settings-page="appearance">
+		<div data-settings-page="interface">
 			<section data-setting-section>
 				<div data-setting-group>
 					<div data-setting-row>Theme</div>
@@ -32,7 +36,7 @@ function tree(): HTMLElement {
 				</div>
 			</section>
 		</div>
-		<div data-settings-page="security">
+		<div data-settings-page="accounts">
 			<section data-setting-section>
 				<div data-setting-group>
 					<div data-setting-row>Passkeys</div>
@@ -68,48 +72,122 @@ describe('applySettingsFilter', () => {
 });
 
 describe('page map', () => {
-	it('starts on the default page and knows every slug', () => {
+	it('navigates exactly the five areas, then the admin-only Instance', () => {
+		expect([...SETTINGS_PAGES]).toEqual([
+			'interface',
+			'accounts',
+			'sessions',
+			'notifications',
+			'plugins',
+			'instance'
+		]);
 		expect(SETTINGS_PAGES[0]).toBe(DEFAULT_SETTINGS_PAGE);
 		expect(SETTINGS_PAGES.every(isSettingsPage)).toBe(true);
 		expect(isSettingsPage('nope')).toBe(false);
 		expect(isSettingsPage(undefined)).toBe(false);
 	});
 
-	it('maps a page slug to its route', () => {
-		expect(settingsHref('security')).toBe('/settings/security');
+	it('maps a page and an optional sub-area to its route', () => {
+		expect(settingsHref('accounts')).toBe('/settings/accounts');
+		expect(settingsHref('accounts', 'security')).toBe('/settings/accounts#security');
 	});
 
-	it('keeps old /settings#anchor deep links working', () => {
-		expect(pageForHash('#security')).toBe('security');
-		expect(pageForHash('passkeys')).toBe('security');
-		expect(pageForHash('#Storage')).toBe('sessions');
-		expect(pageForHash('#passkey-sign-in')).toBe('instance');
-		expect(pageForHash('#self-update')).toBe('instance');
-		expect(pageForHash('#upstreams')).toBe('instance');
-		expect(pageForHash('#spawn-limits')).toBe('instance');
-		expect(pageForHash('#redaction')).toBe('privacy');
-		expect(pageForHash('')).toBe(DEFAULT_SETTINGS_PAGE);
-		expect(pageForHash(null)).toBe(DEFAULT_SETTINGS_PAGE);
-		expect(pageForHash('#whatever')).toBe(DEFAULT_SETTINGS_PAGE);
-		expect(pageForHash('#memory')).toBe('context');
-		expect(pageForHash('#skills')).toBe('plugins');
+	it('gives every sub-area a unique anchor across pages', () => {
+		const ids = SETTINGS_PAGES.flatMap((p) => [...SETTINGS_SECTIONS[p]]);
+		expect(ids).toEqual([...new Set(ids)]);
 	});
 
-	it('groups every page under exactly one scope, you before instance', () => {
-		const grouped = SETTINGS_SCOPES.flatMap(pagesInScope);
-		expect(grouped).toEqual([...SETTINGS_PAGES]);
-		expect(settingsScope('appearance')).toBe('you');
-		expect(settingsScope('guides')).toBe('you');
+	it('groups every page under exactly one scope, Instance last', () => {
+		expect(SETTINGS_SCOPES.flatMap(pagesInScope)).toEqual([...SETTINGS_PAGES]);
+		expect(pagesInScope('instance')).toEqual(['instance']);
+		expect(settingsScope('interface')).toBe('you');
 		expect(settingsScope('instance')).toBe('instance');
 	});
+});
 
-	it('pages in order, with no neighbour past either end', () => {
-		const first = SETTINGS_PAGES[0];
-		const last = SETTINGS_PAGES[SETTINGS_PAGES.length - 1];
-		expect(pagerNeighbours(first).prev).toBeNull();
-		expect(pagerNeighbours(first).next).toBe(SETTINGS_PAGES[1]);
-		expect(pagerNeighbours(last).next).toBeNull();
-		expect(pagerNeighbours('privacy')).toEqual({ prev: 'execution', next: 'notifications' });
+describe('old settings URLs', () => {
+	const OLD_PAGES: Record<string, string> = {
+		appearance: '/settings/interface#theme',
+		monitoring: '/settings/interface#layout',
+		guides: '/settings/interface#help',
+		storage: '/settings/interface#help',
+		security: '/settings/accounts#security',
+		macros: '/settings/sessions#launch',
+		execution: '/settings/sessions#launch',
+		context: '/settings/sessions#context',
+		privacy: '/settings/sessions#privacy',
+		voice: '/settings/notifications#voice',
+		users: '/settings/instance#instance-users',
+		dispatchers: '/settings/instance#instance-users',
+		uploads: '/settings/instance#instance-limits'
+	};
+
+	it.each(Object.entries(OLD_PAGES))('redirects /settings/%s to %s', (slug, target) => {
+		expect(settingsRedirect(slug)).toBe(target);
+	});
+
+	it('covers every former page that is not a page any more', () => {
+		expect(Object.keys(LEGACY_PAGES).sort()).toEqual(Object.keys(OLD_PAGES).sort());
+		for (const target of Object.values(LEGACY_PAGES)) {
+			const [path, hash] = target.replace('/settings/', '').split('#');
+			expect(isSettingsPage(path)).toBe(true);
+			expect(SETTINGS_SECTIONS[path as (typeof SETTINGS_PAGES)[number]]).toContain(hash);
+		}
+	});
+
+	it('serves the current pages and the event log as they are', () => {
+		for (const page of SETTINGS_PAGES) expect(settingsRedirect(page)).toBeNull();
+		expect(settingsRedirect(EVENTS_PAGE)).toBeNull();
+	});
+
+	it('sends an unknown slug to the first page', () => {
+		expect(settingsRedirect('nope')).toBe('/settings/interface');
+		expect(settingsRedirect('')).toBe('/settings/interface');
+		expect(settingsRedirect(undefined)).toBe('/settings/interface');
+	});
+
+	it('prerenders every slug the route answers, redirects included', () => {
+		const slugs = settingsRouteSlugs();
+		for (const slug of [...SETTINGS_PAGES, EVENTS_PAGE, ...Object.keys(OLD_PAGES)])
+			expect(slugs).toContain(slug);
+	});
+
+	it('sends a non-admin away from Instance to their own identity', () => {
+		expect(NON_ADMIN_INSTANCE_FALLBACK).toBe('/settings/accounts#profile');
+	});
+});
+
+describe('old /settings#anchor links', () => {
+	it.each([
+		['#passkeys', '/settings/accounts#security'],
+		['#Storage', '/settings/interface#help'],
+		['#version', '/settings/interface#help'],
+		['#passkey-sign-in', '/settings/instance#instance-general'],
+		['#self-update', '/settings/instance#instance-general'],
+		['#upstreams', '/settings/instance#instance-gateway'],
+		['#spawn-limits', '/settings/instance#instance-limits'],
+		['#redaction', '/settings/sessions#privacy'],
+		['#memory', '/settings/sessions#context'],
+		['#skills', '/settings/plugins'],
+		['#resources', '/settings/interface#layout'],
+		['#access', '/settings/instance#instance-users'],
+		['#keys', '/settings/instance#instance-users'],
+		['#machines', '/settings/instance#instance-users'],
+		['#tokens', '/settings/instance#instance-users']
+	])('forwards %s to %s', (hash, target) => {
+		expect(hrefForHash(hash)).toBe(target);
+	});
+
+	it('takes a page slug or a current sub-area as is', () => {
+		expect(hrefForHash('#accounts')).toBe('/settings/accounts');
+		expect(hrefForHash('#automation')).toBe('/settings/sessions#automation');
+		expect(hrefForHash('instance-limits')).toBe('/settings/instance#instance-limits');
+	});
+
+	it('falls back to the first page', () => {
+		expect(hrefForHash('')).toBe('/settings/interface');
+		expect(hrefForHash(null)).toBe('/settings/interface');
+		expect(hrefForHash('#whatever')).toBe('/settings/interface');
 	});
 });
 
@@ -133,7 +211,7 @@ describe('fuzzyMatches', () => {
 	it('drives the tree filter word by word', () => {
 		const root = tree();
 		expect(applySettingsFilter(root, 'language interface')).toBe(1);
-		expect(firstMatchingRow(root, 'appearance')?.textContent).toBe('Interface language');
+		expect(firstMatchingRow(root, 'interface')?.textContent).toBe('Interface language');
 	});
 });
 
@@ -141,16 +219,16 @@ describe('cross-page search', () => {
 	it('filters rows on every page at once', () => {
 		const root = tree();
 		expect(applySettingsFilter(root, 'passkeys')).toBe(1);
-		expect(firstMatchingPage(root)).toBe('security');
-		expect(firstMatchingRow(root, 'security')?.textContent).toBe('Passkeys');
-		expect(firstMatchingRow(root, 'appearance')).toBeNull();
+		expect(firstMatchingPage(root)).toBe('accounts');
+		expect(firstMatchingRow(root, 'accounts')?.textContent).toBe('Passkeys');
+		expect(firstMatchingRow(root, 'interface')).toBeNull();
 	});
 
 	it('jumps to the first page in navigation order that still matches', () => {
 		const root = tree();
 		applySettingsFilter(root, 'e');
-		expect(firstMatchingPage(root)).toBe('appearance');
-		expect(firstMatchingRow(root, 'appearance')?.textContent).toBe('Theme');
+		expect(firstMatchingPage(root)).toBe('interface');
+		expect(firstMatchingRow(root, 'interface')?.textContent).toBe('Theme');
 	});
 
 	it('reports no page when nothing matches', () => {
@@ -163,67 +241,39 @@ describe('cross-page search', () => {
 		expect(normalizeForFilter('Réglages')).toBe('reglages');
 		const root = tree();
 		expect(applySettingsFilter(root, 'THEME')).toBe(1);
-		expect(firstMatchingPage(root)).toBe('appearance');
+		expect(firstMatchingPage(root)).toBe('interface');
 	});
 });
 
-describe('the admin screens moved out of the main nav', () => {
-	it('routes users and dispatchers as instance-scoped settings pages', () => {
-		for (const page of ['users', 'dispatchers'] as const) {
-			expect(isSettingsPage(page)).toBe(true);
-			expect(settingsScope(page)).toBe('instance');
-			expect(settingsHref(page)).toBe(`/settings/${page}`);
-		}
+describe('settings pages by announced features and role', () => {
+	it('lists every page with every feature on, for an admin', () => {
+		expect(availableSettingsPages(() => true, true)).toEqual([...SETTINGS_PAGES]);
 	});
 
-	it('forwards the old access anchors to the users page', () => {
-		for (const hash of ['#access', '#keys', '#machines', '#tokens']) {
-			expect(pageForHash(hash)).toBe('users');
-		}
-	});
-
-	it('scopes the event log to you, and sends accounts back to its own screen', () => {
-		expect(settingsScope('events')).toBe('you');
-		expect(isSettingsPage('accounts')).toBe(false);
-		expect(MOVED_OUT.accounts).toBe('/accounts');
-	});
-});
-
-describe('settings pages by announced features', () => {
-	it('lists every page with every feature on', () => {
-		expect(availableSettingsPages(() => true)).toEqual([...SETTINGS_PAGES]);
-	});
-
-	it('drops the macros, context, plugins, monitoring, security and uploads pages on a core server', () => {
-		expect(availableSettingsPages(() => false)).toEqual([
-			'appearance',
+	it('hides Instance from a non-admin', () => {
+		expect(availableSettingsPages(() => true, false)).toEqual([
+			'interface',
+			'accounts',
 			'sessions',
-			'execution',
-			'privacy',
 			'notifications',
-			'events',
-			'guides',
-			'users',
-			'dispatchers',
+			'plugins'
+		]);
+	});
+
+	it('drops only the plugins page on a core server', () => {
+		expect(availableSettingsPages(() => false)).toEqual([
+			'interface',
+			'accounts',
+			'sessions',
+			'notifications',
 			'instance'
 		]);
 	});
 
-	it('keeps the core pages a core server is tested on', () => {
-		const core = availableSettingsPages(() => false);
-		for (const page of ['dispatchers', 'users', 'instance', 'appearance'] as const) {
-			expect(core).toContain(page);
-		}
-	});
-
 	it('names the feature behind each gated page', () => {
 		expect(settingsPageFeature('plugins')).toBe('plugins');
-		expect(settingsPageFeature('security')).toBe('passkeys');
-		expect(settingsPageFeature('context')).toBe('context');
-		expect(settingsPageFeature('uploads')).toBe('uploads');
-		expect(settingsPageFeature('monitoring')).toBe('machine_spawn');
-		expect(settingsPageFeature('macros')).toBe('machine_spawn');
-		expect(settingsPageFeature('dispatchers')).toBeNull();
+		expect(settingsPageFeature('accounts')).toBeNull();
+		expect(settingsPageFeature('instance')).toBeNull();
 		expect(settingsPageFeature('nope')).toBeNull();
 	});
 });

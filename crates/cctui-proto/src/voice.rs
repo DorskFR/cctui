@@ -2,12 +2,12 @@
 //! as binary frames in both directions: utterances up, synthesized speech down.
 
 use serde::{Deserialize, Serialize};
-#[cfg(feature = "ts")]
+#[cfg(test)]
 use ts_rs::TS;
 
 /// How long a spoken reply should be; mirrors the webui `spokenStyle` pref.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 #[serde(rename_all = "snake_case")]
 pub enum SpokenStyle {
     #[default]
@@ -17,7 +17,7 @@ pub enum SpokenStyle {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 #[serde(rename_all = "snake_case")]
 pub enum VoiceState {
     Listening,
@@ -29,11 +29,14 @@ pub enum VoiceState {
 
 /// Browser → server.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum VoiceClientMsg {
     /// Barge-in: stop speaking now and, when `barge_in` is on, cut the turn.
     Interrupt {},
+    /// Stop speaking the reply in progress, which the user talked over,
+    /// without cutting the turn.
+    Skip {},
     /// The next binary frame is a non-final part of the utterance; a binary
     /// frame without this marker ends it, so a bare binary is a whole utterance.
     Part {},
@@ -58,7 +61,7 @@ pub enum VoiceClientMsg {
 
 /// Server → browser.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum VoiceServerMsg {
     /// What the utterance was heard as, before it goes to the session.
@@ -98,6 +101,8 @@ mod tests {
     fn frames_use_a_type_tag() {
         let json = serde_json::to_string(&VoiceClientMsg::Interrupt {}).unwrap();
         assert_eq!(json, r#"{"type":"interrupt"}"#);
+        let skip: VoiceClientMsg = serde_json::from_str(r#"{"type":"skip"}"#).unwrap();
+        assert_eq!(skip, VoiceClientMsg::Skip {});
         let mode: VoiceClientMsg =
             serde_json::from_str(r#"{"type":"mode","barge_in":false,"spoken_style":"verbose"}"#)
                 .unwrap();

@@ -2,11 +2,13 @@
 import { flushSync, mount, unmount, type Component } from 'svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import AppearanceSection from './AppearanceSection.svelte';
-import ExecutionSection from './ExecutionSection.svelte';
+import AutomationSection from './AutomationSection.svelte';
+import ConversationDisplaySection from './ConversationDisplaySection.svelte';
+import ConversationSection from './ConversationSection.svelte';
+import LayoutSection from './LayoutSection.svelte';
 import NotificationsSection from './NotificationsSection.svelte';
 import PrivacySection from './PrivacySection.svelte';
 import SectionHost from './section.host.test.svelte';
-import SessionsSection from './SessionsSection.svelte';
 
 type Control = HTMLElement;
 
@@ -50,9 +52,11 @@ afterEach(() => {
 });
 
 const sections: [string, Component<Record<string, never>>][] = [
-	['Appearance', AppearanceSection as Component<Record<string, never>>],
-	['Sessions', SessionsSection as Component<Record<string, never>>],
-	['Execution', ExecutionSection as Component<Record<string, never>>],
+	['Theme & look', AppearanceSection as Component<Record<string, never>>],
+	['Layout & panels', LayoutSection as Component<Record<string, never>>],
+	['Conversation display', ConversationDisplaySection as Component<Record<string, never>>],
+	['Conversation', ConversationSection as Component<Record<string, never>>],
+	['Automation', AutomationSection as Component<Record<string, never>>],
 	['Privacy', PrivacySection as Component<Record<string, never>>],
 	['Notifications', NotificationsSection as Component<Record<string, never>>]
 ];
@@ -83,7 +87,7 @@ describe('settings sections', () => {
 		expect(ids).toEqual([...new Set(ids)]);
 	});
 
-	it('names the Appearance selects after their row label', () => {
+	it('names the Theme & look selects after their row label', () => {
 		component = mount(AppearanceSection as Component<Record<string, never>>, {
 			target: document.body,
 			props: {}

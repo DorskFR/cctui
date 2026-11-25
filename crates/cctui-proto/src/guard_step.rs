@@ -4,7 +4,7 @@
 //! `GET /state` reports and relays transition requests to it.
 
 use serde::{Deserialize, Serialize};
-#[cfg(feature = "ts")]
+#[cfg(test)]
 use ts_rs::TS;
 
 /// The exit pseudo-step, as the guard persists it.
@@ -12,7 +12,7 @@ pub const STEP_EXITED: i64 = -1;
 
 /// One snapshot of the pod's workflow step.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct GuardStepState {
     /// `-1` once the session exited the workflow.
     pub step: i64,

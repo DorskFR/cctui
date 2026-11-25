@@ -2,18 +2,18 @@
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-#[cfg(feature = "ts")]
+#[cfg(test)]
 use ts_rs::TS;
 use uuid::Uuid;
 
 #[derive(Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct CreateUserRequest {
     pub name: String,
 }
 
 #[derive(Serialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct CreateUserResponse {
     pub id: Uuid,
     pub name: String,
@@ -22,7 +22,7 @@ pub struct CreateUserResponse {
 
 #[derive(Serialize)]
 #[cfg_attr(feature = "sqlx", derive(sqlx::FromRow))]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct UserRow {
     pub id: Uuid,
     pub name: String,
@@ -41,7 +41,7 @@ pub struct UserRow {
 
 #[derive(Serialize)]
 #[cfg_attr(feature = "sqlx", derive(sqlx::FromRow))]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct MachineRow {
     pub id: Uuid,
     pub user_id: Uuid,
@@ -66,7 +66,7 @@ pub struct MachineRow {
 }
 
 #[derive(Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct RenameMachineRequest {
     /// `None` clears the override so the UI falls back to `name`.
     pub display_name: Option<String>,
@@ -79,7 +79,7 @@ pub struct RenameMachineRequest {
 /// Partial update of a user. Any field left `None` is unchanged, so
 /// the same endpoint serves both rename and the dispatch-permission toggle.
 #[derive(Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct UpdateUserRequest {
     /// Blank/whitespace is rejected (name is `NOT NULL`); `None` leaves it.
     pub name: Option<String>,
@@ -89,7 +89,7 @@ pub struct UpdateUserRequest {
 }
 
 #[derive(Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct RelabelTokenRequest {
     /// `None`/blank clears the label.
     pub label: Option<String>,
@@ -97,7 +97,7 @@ pub struct RelabelTokenRequest {
 
 #[derive(Serialize)]
 #[cfg_attr(feature = "sqlx", derive(sqlx::FromRow))]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct UserTokenRow {
     pub id: Uuid,
     pub label: Option<String>,
@@ -110,14 +110,14 @@ pub struct UserTokenRow {
 }
 
 #[derive(Serialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct RotateResponse {
     pub id: Uuid,
     pub key: String,
 }
 
 #[derive(Serialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct UserAclsResponse {
     pub user_id: Uuid,
     /// The user's ceiling (what its keys may be granted), as scope strings.
@@ -125,7 +125,7 @@ pub struct UserAclsResponse {
 }
 
 #[derive(Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct SetAclsRequest {
     /// The full desired scope set (replaces the existing rows). Strings from the
     /// `read|dispatch|enroll|admin` set; unknown values are rejected.
@@ -134,7 +134,7 @@ pub struct SetAclsRequest {
 
 #[derive(Serialize)]
 #[cfg_attr(feature = "sqlx", derive(sqlx::FromRow))]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct ApiKeyRow {
     pub id: Uuid,
     pub label: Option<String>,
@@ -150,7 +150,7 @@ pub struct ApiKeyRow {
 }
 
 #[derive(Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct MintKeyRequest {
     pub label: Option<String>,
     /// Scopes to grant — must be ⊆ the owner's ceiling (enforced server-side).
@@ -159,7 +159,7 @@ pub struct MintKeyRequest {
 }
 
 #[derive(Serialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct MintKeyResponse {
     pub id: Uuid,
     /// The plaintext token — returned ONCE, never recoverable after.
@@ -168,14 +168,14 @@ pub struct MintKeyResponse {
 }
 
 #[derive(Deserialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export))]
 pub struct MintTokenRequest {
     pub label: Option<String>,
     pub expires_at: Option<chrono::DateTime<Utc>>,
 }
 
 #[derive(serde::Serialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export))]
 pub struct MintTokenResponse {
     pub token: String,
     pub label: Option<String>,
@@ -188,15 +188,15 @@ pub struct MintTokenResponse {
 /// A pinned `git_ref` or `subdir` must match exactly; an unpinned one accepts
 /// any value.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct ContextPackGrant {
     pub name: String,
     pub url: String,
     #[serde(default, rename = "ref", skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(feature = "ts", ts(optional))]
+    #[cfg_attr(test, ts(optional))]
     pub git_ref: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(feature = "ts", ts(optional))]
+    #[cfg_attr(test, ts(optional))]
     pub subdir: Option<String>,
 }
 
@@ -205,7 +205,7 @@ pub struct ContextPackGrant {
 /// Every list restricts its dimension when non-empty and leaves it open when
 /// empty; every limit applies only when set.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct DispatchPolicyRules {
     /// Dispatcher names, resolved across owners.
     #[serde(default)]
@@ -223,20 +223,20 @@ pub struct DispatchPolicyRules {
     pub context_packs: Vec<ContextPackGrant>,
     /// Ceiling on the request `timeout`; a request without one gets it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(feature = "ts", ts(optional))]
+    #[cfg_attr(test, ts(optional))]
     pub max_timeout_minutes: Option<u32>,
     /// Live dispatched sessions allowed at once.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(feature = "ts", ts(optional))]
+    #[cfg_attr(test, ts(optional))]
     pub max_concurrent: Option<u32>,
     /// Dispatches allowed per UTC day.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(feature = "ts", ts(optional))]
+    #[cfg_attr(test, ts(optional))]
     pub daily_cap: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct DispatchPolicy {
     pub user_id: Uuid,
     pub updated_at: DateTime<Utc>,

@@ -51,8 +51,8 @@
 								><Badge
 									size="xs"
 									numeric
-									tone="danger"
-									style="--badge-bg: var(--danger); --badge-fg: var(--text-on-accent); --badge-border: var(--danger)"
+									tone="accent"
+									variant="solid"
 									>{unread > 99 ? '99+' : unread}</Badge
 								></span
 							>{/if}</span

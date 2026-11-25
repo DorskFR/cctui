@@ -56,6 +56,7 @@ EOF
   printf '#!/bin/sh\nexit 0\n' > "$_b/gpg"
   printf '#!/bin/sh\nexit 0\n' > "$_b/gpgconf"
   printf '#!/bin/sh\necho "SUPERVISOR $*"\necho "supervisor $*" >> "$CALLS"\n' > "$_b/cctui-supervisor"
+  printf '#!/bin/sh\n' > "$_b/claude"
   chmod +x "$_b"/*
   # The entrypoint runs under PATH=$R/bin:/usr/bin:/bin; git may live elsewhere.
   ln -sf "$GIT_BIN" "$_b/git"

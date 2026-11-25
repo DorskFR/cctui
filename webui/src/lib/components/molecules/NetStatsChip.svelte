@@ -17,7 +17,7 @@
 	placement="bottom-end"
 	title={m.net_stats_title()}
 	bare
-	style="--pop-trigger-pad: 0 var(--sp-1)"
+	style="padding: 0 var(--sp-1)"
 	panelStyle="min-width:280px;max-width:min(90vw,32rem);padding:var(--sp-2) var(--sp-3)"
 >
 	{#snippet trigger()}

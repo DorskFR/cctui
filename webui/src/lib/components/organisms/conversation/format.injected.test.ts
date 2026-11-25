@@ -102,6 +102,32 @@ describe('splitInjected', () => {
 	});
 });
 
+describe('a follow-up chain container', () => {
+	const CHAIN =
+		'<cctui-session-context>\nx\n</cctui-session-context>\n\n' +
+		'<cctui-previous-sessions>\n' +
+		'<cctui-previous-conversation n="1" session="a" id="s1">\nold\n</cctui-previous-conversation>\n' +
+		'<cctui-previous-conversation n="2" session="b" id="s2">\nnewer\n</cctui-previous-conversation>\n' +
+		'</cctui-previous-sessions>\n\nContinue from this.';
+
+	it('is one previous-conversation block holding every session', () => {
+		const { blocks, prose } = splitInjected(CHAIN);
+		expect(blocks.map((b) => [b.kind, b.tag])).toEqual([
+			['session-context', CCTUI_TAGS.sessionContext],
+			['previous-conversation', CCTUI_TAGS.previousSessions]
+		]);
+		expect(prose).toBe('Continue from this.');
+		const inner = splitInjected(blocks[1].body);
+		expect(inner.blocks.map((b) => b.attrs.id)).toEqual(['s1', 's2']);
+		expect(inner.prose).toBe('');
+	});
+
+	it('quoted mid-text stays prose', () => {
+		const quoted = 'see <cctui-previous-sessions>\nx\n</cctui-previous-sessions>';
+		expect(splitInjected(quoted)).toEqual({ blocks: [], prose: quoted });
+	});
+});
+
 describe('peer wrappers under either name', () => {
 	it('reads the namespaced and the legacy tag alike', () => {
 		for (const tag of [CCTUI_TAGS.peerMessage, LEGACY_TAGS.peerMessage]) {

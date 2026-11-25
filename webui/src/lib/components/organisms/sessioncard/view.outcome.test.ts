@@ -49,3 +49,17 @@ describe('the session row headline', () => {
 		expect(buildView(row({}), OPTS).lastMsg).toBe('last words');
 	});
 });
+
+describe('the session row unread count', () => {
+	it('drops the unread count once the session is done', () => {
+		expect(buildView(row({ bucket: 'done' }), { ...OPTS, unreadCount: 3 }).unreadCount).toBe(0);
+		expect(buildView(row({ bucket: 'blocked' }), { ...OPTS, unreadCount: 3 }).unreadCount).toBe(3);
+	});
+});
+
+describe('the session row status tag', () => {
+	it('tags a new session but not an archived one', () => {
+		expect(buildView(row({ status: 'new' }), OPTS).showStatusBadge).toBe(true);
+		expect(buildView(row({ status: 'archived' }), OPTS).showStatusBadge).toBe(false);
+	});
+});

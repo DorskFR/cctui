@@ -7,7 +7,7 @@ use uuid::Uuid;
 /// resource is shared with and since when.
 #[derive(Debug, serde::Serialize)]
 #[cfg_attr(feature = "sqlx", derive(sqlx::FromRow))]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export, rename = "ResourceShareInfo"))]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export, rename = "ResourceShareInfo"))]
 pub struct ShareInfo {
     pub resource_type: String,
     pub resource_id: Uuid,
@@ -22,10 +22,10 @@ pub struct ShareInfo {
 /// accepted as either a UUID or a login (`users.name`). `action` defaults to
 /// `use` (the only action today).
 #[derive(Debug, serde::Deserialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export))]
 pub struct GrantShare {
     pub user: String,
     #[serde(default)]
-    #[cfg_attr(feature = "ts", ts(type = "string", optional))]
+    #[cfg_attr(test, ts(type = "string", optional))]
     pub action: Option<String>,
 }

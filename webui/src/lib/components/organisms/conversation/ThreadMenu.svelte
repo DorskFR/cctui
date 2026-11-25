@@ -8,7 +8,16 @@
 	import { m } from '#lib/paraglide/messages.js';
 	import { threadEntries, type ThreadEntry } from './thread';
 
-	let { session, box = 'md' }: { session: SessionListItem; box?: 'sm' | 'md' } = $props();
+	let {
+		session,
+		box = 'md',
+		onjump
+	}: {
+		session: SessionListItem;
+		box?: 'sm' | 'md';
+		/** Scrolls to a session already in the pane's thread; false → navigate. */
+		onjump?: (sessionId: string) => boolean;
+	} = $props();
 
 	const thread = useSessionThread(
 		() => session.id,
@@ -27,6 +36,7 @@
 			content: row,
 			attrs: e.current ? { 'aria-current': 'page' } : {},
 			onselect: () => {
+				if (onjump?.(e.id)) return;
 				if (!e.current) void goto(sessionHref(e.id), { replace: true, state: page.state });
 			}
 		}))

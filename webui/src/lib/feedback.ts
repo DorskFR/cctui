@@ -19,7 +19,6 @@ export const feedbackLabels = (): Labels => ({
 	attach: m.feedback_attach(),
 	pick: m.feedback_pick(),
 	shot: m.feedback_shot(),
-	upload: m.feedback_upload(),
 	pickHint: m.feedback_pick_hint(),
 	capturing: m.feedback_capturing(),
 	itemPlaceholder: m.feedback_item_placeholder(),
@@ -41,10 +40,11 @@ export const feedbackLabels = (): Labels => ({
 	queuedTitle: m.feedback_queued_title(),
 	queued: m.feedback_queued(),
 	failed: m.feedback_failed(),
-	rejected: m.feedback_rejected(),
 	blocked: m.feedback_blocked(),
 	shotFailed: m.feedback_shot_failed(),
-	uploadFailed: m.feedback_upload_failed(),
 	full: m.feedback_full(),
+	upload: m.feedback_upload(),
+	rejected: m.feedback_rejected(),
+	uploadFailed: m.feedback_upload_failed(),
 	done: m.feedback_done()
 });

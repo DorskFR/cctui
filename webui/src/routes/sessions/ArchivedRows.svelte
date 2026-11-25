@@ -27,31 +27,52 @@
 	const segments = $derived(groupUnderParents(rows, sp.pageParents));
 </script>
 
-{#each segments as seg (seg.key)}
-	{#if seg.kind === 'rows'}
-		<SessionRows {sp} rows={seg.rows} {childGroups} allowSelect={false} {hl} {pending} />
-	{:else}
-		{@const open = parentGroupOpen(sp.list.expanded, seg.parent.id, sp.searching)}
-		<ParentGroupHeader
-			parent={seg.parent}
-			count={seg.rows.length}
-			{open}
-			ontoggle={() => sp.list.toggleGroup(seg.parent.id, parentGroupKey(sp.searching))}
-			onopenparent={sp.openById}
-		/>
-		{#if open}
-			<div class="parent-group-rows">
-				<SessionRows {sp} rows={seg.rows} {childGroups} allowSelect={false} {hl} {pending} />
-			</div>
+{#snippet segmentRows()}
+	{#each segments as seg (seg.key)}
+		{#if seg.kind === 'rows'}
+			<SessionRows {sp} rows={seg.rows} {childGroups} allowSelect={false} {hl} {pending} framed={false} />
+		{:else}
+			{@const open = parentGroupOpen(sp.list.expanded, seg.parent.id, sp.searching)}
+			<ParentGroupHeader
+				parent={seg.parent}
+				session={sp.loadedById(seg.parent.id)}
+				count={seg.rows.length}
+				{open}
+				ontoggle={() => sp.list.toggleGroup(seg.parent.id, parentGroupKey(sp.searching))}
+				onopenparent={sp.openById}
+			/>
+			{#if open}
+				<SessionRows
+					{sp}
+					rows={seg.rows}
+					{childGroups}
+					allowSelect={false}
+					{hl}
+					{pending}
+					framed={false}
+					baseDepth={1}
+				/>
+			{/if}
 		{/if}
-	{/if}
-{/each}
+	{/each}
+{/snippet}
+
+{#if sp.cardView}
+	{#each segments as seg (seg.key)}
+		<SessionRows {sp} rows={seg.rows} {childGroups} allowSelect={false} {hl} {pending} />
+	{/each}
+{:else if segments.length > 0}
+	<div class="frame"><div class="frame-in">{@render segmentRows()}</div></div>
+{/if}
 
 <style>
-	.parent-group-rows {
-		margin-left: var(--sp-2);
-		display: flex;
-		flex-direction: column;
-		gap: var(--sp-1);
+	.frame {
+		border: 1px solid var(--border);
+		border-radius: var(--r-md);
+		overflow: hidden;
+		background: var(--bg-elevated);
+	}
+	.frame-in {
+		margin-bottom: -1px;
 	}
 </style>

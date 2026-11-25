@@ -431,11 +431,20 @@ git:push (defined in --capabilities)
 
 ## Proxy policy output
 
-On startup and on every transition, the engine writes `--policy-out`:
+On startup and on every transition, the engine atomically replaces `--policy-out`
+(temp file + rename) with a document stamped with an increasing `generation`:
 
 ```json
-{ "allowed_hosts": ["api.example.com:443", "github.example.com:443"], "default": "deny" }
+{ "allowed_hosts": ["api.example.com:443", "github.example.com:443"], "default": "deny", "generation": 4 }
 ```
+
+A transition that rewrote the policy answers only once guard-proxy's `/ready` on
+`--proxy-ready` (default `127.0.0.1:15002`, empty to disable) reports that
+generation or a newer one, or after `--proxy-ready-timeout-ms` (default 2000)
+with a warning in the log. A proxy that is unreachable or does not report a
+generation is not waited on. With an external guard pod the worker entrypoint
+points `--proxy-ready` at the guard pod's health port and pushes each rewrite
+there within 0.2 s.
 
 A guarded step with no `[network]` writes `{"allowed_hosts": [<always-allow>],
 "default": "deny"}` unless a document `[network-default]: allow` header opts back

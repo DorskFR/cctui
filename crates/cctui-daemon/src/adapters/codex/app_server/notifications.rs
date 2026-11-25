@@ -906,9 +906,7 @@ mod tests {
             tempo: tempo.as_deref(),
             state: state.as_deref(),
             activity: activity.as_deref(),
-            children: &[],
-            q: None,
-            soft_limit_blocked: None,
+            ..ClassifyInput::default()
         };
         let empty: std::collections::HashMap<String, PrStatus> = std::collections::HashMap::new();
         assert_eq!(bucket_of(&input, &empty), Bucket::Blocked);

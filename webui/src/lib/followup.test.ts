@@ -1,12 +1,14 @@
 import { describe, expect, it, vi } from 'vitest';
+import type { BriefSession } from '@bindings/BriefSession';
+import type { FollowupResponse } from '@bindings/FollowupResponse';
 import type { SessionListItem } from '@bindings/SessionListItem';
 import {
 	BRIEF_FILE_NAME,
 	INLINE_BRIEF_MAX_BYTES,
 	clampFollowupWhenCold,
+	followupName,
 	followupPrefill,
 	followupPrompt,
-	followupSpawnRequest,
 	launchFollowup,
 	migrateFollowupWhenCold,
 	nestsUnderParent,
@@ -14,8 +16,8 @@ import {
 	resolveFollowupWhenCold,
 	routeEnter,
 	showColdOffer,
-	type FollowupLaunchDeps,
-	type FollowupWhenCold
+	type FollowupWhenCold,
+	type PostFollowup
 } from './followup';
 import { splitInjected } from '#lib/components/organisms/conversation/format.ts';
 
@@ -58,6 +60,144 @@ describe('followupPrompt', () => {
 		expect(file).toContain(brief);
 		expect(file?.startsWith('<cctui-previous-conversation session="my &quot;run&quot;" id="s1">')).toBe(true);
 		expect(file?.endsWith('</cctui-previous-conversation>\n')).toBe(true);
+		expect(prompt).toContain('Read all of it before you continue');
+	});
+
+	it('keeps the newest turns of an oversized lone parent inline beside the pointer', () => {
+		const markdown = 'x'.repeat(INLINE_BRIEF_MAX_BYTES + 1);
+		const lone: BriefSession = { id: 's1', name: 'n', markdown, turns: 9, omitted: 0, truncated: false, tail: '**User:**\n\nlast' };
+		const { prompt, file } = followupPrompt(src, { markdown, sessions: [lone] }, 'go');
+		expect(prompt).toContain(`${BRIEF_FILE_NAME}. Read all of it`);
+		expect(prompt).toContain('keep reading until the end of the file.\n\n**User:**\n\nlast\n</cctui-previous-conversation>\n\ngo');
+		expect(file).toContain(markdown);
+	});
+});
+
+describe('followupPrompt for a follow-up chain', () => {
+	const part = (id: string, name: string | null, markdown: string): BriefSession => ({
+		id,
+		name,
+		markdown,
+		turns: 2,
+		omitted: 0,
+		truncated: false
+	});
+	const chain = [
+		part('s-a', 'first "run"', '**User:**\n\nask A'),
+		part('s-x', null, '(session s-x could not be included)'),
+		part('s-c', 'c', '**User:**\n\nask C')
+	];
+
+	const READ =
+		'The whole conversation is in the attached file previous-conversation.md. Read all of it before you continue: ' +
+		'it can be longer than one Read call returns, so keep reading until the end of the file.';
+
+	it('always ships the whole chain as the file, oldest first, with pointers inline', () => {
+		const { prompt, file } = followupPrompt(src, { markdown: 'LEGACY-MARKDOWN', sessions: chain }, 'Go on.');
+		expect(file).toBe(
+			[
+				'<cctui-previous-sessions>',
+				'<cctui-previous-conversation n="1" session="first &quot;run&quot;" id="s-a">',
+				'**User:**\n\nask A',
+				'</cctui-previous-conversation>',
+				'<cctui-previous-conversation n="2" id="s-x">',
+				'(session s-x could not be included)',
+				'</cctui-previous-conversation>',
+				'<cctui-previous-conversation n="3" session="c" id="s-c">',
+				'**User:**\n\nask C',
+				'</cctui-previous-conversation>',
+				'</cctui-previous-sessions>',
+				''
+			].join('\n')
+		);
+		expect(prompt).toBe(
+			[
+				'<cctui-previous-sessions>',
+				'<cctui-previous-conversation n="1" session="first &quot;run&quot;" id="s-a">',
+				`In the attached file ${BRIEF_FILE_NAME}.`,
+				'</cctui-previous-conversation>',
+				'<cctui-previous-conversation n="2" id="s-x">',
+				`In the attached file ${BRIEF_FILE_NAME}.`,
+				'</cctui-previous-conversation>',
+				'<cctui-previous-conversation n="3" session="c" id="s-c">',
+				READ,
+				'</cctui-previous-conversation>',
+				'</cctui-previous-sessions>',
+				'',
+				'Go on.'
+			].join('\n')
+		);
+		expect(prompt).not.toContain('LEGACY-MARKDOWN');
+		const { blocks, prose } = splitInjected(prompt);
+		expect(blocks.map((b) => [b.kind, b.tag])).toEqual([['previous-conversation', 'cctui-previous-sessions']]);
+		expect(splitInjected(blocks[0].body).blocks.map((b) => b.attrs.id)).toEqual(['s-a', 's-x', 's-c']);
+		expect(prose).toBe('Go on.');
+	});
+
+	it('ships the file even for a tiny chain of two', () => {
+		const sessions = [part('s-a', 'a', '**User:**\n\nhi'), part('s-b', 'b', '**User:**\n\nyo')];
+		const { file } = followupPrompt(src, { markdown: '', sessions });
+		expect(file).toContain('**User:**\n\nhi');
+		expect(file).toContain('**User:**\n\nyo');
+	});
+
+	it('builds the same envelope as the server for the shared fixture', () => {
+		const sessions: BriefSession[] = [
+			{
+				...part('s-a', 'n-s-a', '**User:**\n\nask A\n\n**Assistant:**\n\nanswer A'),
+				tail: '**User:**\n\nask A\n\n**Assistant:**\n\nanswer A'
+			},
+			part('s-x', null, '(session s-x could not be included)'),
+			{ ...part('s-c', 'c "x"', '**User:**\n\nask C'), tail: '**User:**\n\nask C' }
+		];
+		const { prompt, file } = followupPrompt(src, { markdown: '', sessions }, 'go');
+		expect(prompt).toBe(
+			'<cctui-previous-sessions>\n' +
+				'<cctui-previous-conversation n="1" session="n-s-a" id="s-a">\n' +
+				'In the attached file previous-conversation.md.\n\n' +
+				'**User:**\n\nask A\n\n**Assistant:**\n\nanswer A\n' +
+				'</cctui-previous-conversation>\n' +
+				'<cctui-previous-conversation n="2" id="s-x">\n' +
+				'In the attached file previous-conversation.md.\n' +
+				'</cctui-previous-conversation>\n' +
+				'<cctui-previous-conversation n="3" session="c &quot;x&quot;" id="s-c">\n' +
+				`${READ}\n\n` +
+				'**User:**\n\nask C\n' +
+				'</cctui-previous-conversation>\n' +
+				'</cctui-previous-sessions>\n\ngo'
+		);
+		expect(file).toBe(
+			'<cctui-previous-sessions>\n' +
+				'<cctui-previous-conversation n="1" session="n-s-a" id="s-a">\n' +
+				'**User:**\n\nask A\n\n**Assistant:**\n\nanswer A\n' +
+				'</cctui-previous-conversation>\n' +
+				'<cctui-previous-conversation n="2" id="s-x">\n' +
+				'(session s-x could not be included)\n' +
+				'</cctui-previous-conversation>\n' +
+				'<cctui-previous-conversation n="3" session="c &quot;x&quot;" id="s-c">\n' +
+				'**User:**\n\nask C\n' +
+				'</cctui-previous-conversation>\n' +
+				'</cctui-previous-sessions>\n'
+		);
+	});
+
+	it('keeps the single-block shape when the chain is just the parent', () => {
+		const lone = followupPrompt(src, { markdown: 'whole', sessions: [part('s1', 'n', 'only')] });
+		expect(lone.prompt).toBe(followupPrompt(src, 'only').prompt);
+		expect(followupPrompt(src, { markdown: 'legacy' }).prompt).toBe(followupPrompt(src, 'legacy').prompt);
+	});
+
+	it('keeps a large chain in the file and only the newest turns inline', () => {
+		const big = 'x'.repeat(INLINE_BRIEF_MAX_BYTES);
+		const sessions = [part('s-a', 'a', big), { ...part('s-b', 'b', 'tail'), tail: '… 3 earlier turns are in the file\n\nnewest' }];
+		const { prompt, file } = followupPrompt(src, { markdown: '', sessions });
+		expect(prompt).not.toContain(big);
+		expect(prompt.startsWith('<cctui-previous-sessions>\n<cctui-previous-conversation n="1" session="a" id="s-a">\n')).toBe(true);
+		expect(prompt).toContain(`${READ}\n\n… 3 earlier turns are in the file\n\nnewest\n</cctui-previous-conversation>`);
+		expect(prompt.endsWith('</cctui-previous-sessions>\n\nContinue from this.')).toBe(true);
+		expect(file).toContain(big);
+		expect(file).toContain('<cctui-previous-conversation n="2" session="b" id="s-b">\ntail\n');
+		expect(file?.endsWith('</cctui-previous-sessions>\n')).toBe(true);
 	});
 });
 
@@ -92,6 +232,51 @@ describe('followupPrefill', () => {
 		expect(p.prompt).toContain('brief');
 		expect(p).not.toHaveProperty('permission_mode');
 		expect(p).not.toHaveProperty('followup_file');
+		expect(p).not.toHaveProperty('name');
+	});
+
+	it('prefills the bumped custom label', () => {
+		const custom = { ...session, name: 'deploy fix 2', metadata: { name_source: 'user' } } as SessionListItem;
+		expect(followupPrefill(custom, 'brief').name).toBe('deploy fix 3');
+	});
+});
+
+describe('followupName parses the parent name, not the thread', () => {
+	const named = (name: string | null, metadata: Record<string, unknown> | null = { name_source: 'user' }) => ({
+		name,
+		metadata
+	}) as unknown as SessionListItem;
+
+	it('appends 2 to a custom label', () => {
+		expect(followupName(named('deploy fix'))).toBe('deploy fix 2');
+	});
+
+	it('bumps a trailing counter instead of stacking a second one', () => {
+		expect(followupName(named('deploy fix 2'))).toBe('deploy fix 3');
+		expect(followupName(named('deploy fix 9'))).toBe('deploy fix 10');
+	});
+
+	it('leaves an auto title or a missing name unnamed', () => {
+		expect(followupName(named('Fix the parser', { agent_title: 'Fix the parser' }))).toBe('');
+		expect(followupName(named('Fix the parser', null))).toBe('');
+		expect(followupName(named(null))).toBe('');
+		expect(followupName(named('   '))).toBe('');
+	});
+
+	it('takes the pinned title when the row lost its name', () => {
+		expect(followupName(named(null, { name_source: 'user', custom_title: 'lane d' }))).toBe('lane d 2');
+	});
+
+	it('treats a version or a ticket-like number as part of the label', () => {
+		expect(followupName(named('v0.32'))).toBe('v0.32 2');
+		expect(followupName(named('release 0.32'))).toBe('release 0.32 2');
+		expect(followupName(named('CCT 1940'))).toBe('CCT 1940 2');
+		expect(followupName(named('run 05'))).toBe('run 05 2');
+	});
+
+	it('names two follow-ups of one parent alike', () => {
+		const parent = named('deploy fix');
+		expect(followupName(parent)).toBe(followupName(parent));
 	});
 });
 
@@ -141,126 +326,56 @@ describe('settings routing', () => {
 	});
 });
 
-describe('followupSpawnRequest', () => {
-	const source = {
-		id: 's1',
-		name: 'n',
-		working_dir: '/w',
-		machine_id: 'm1',
-		adapter_id: 'claude-code',
-		model: 'opus',
-		effort: 'high',
-		account_name: 'acct',
-		permission_mode: 'yolo',
-		labels: [{ id: 'l1' }]
-	} as unknown as SessionListItem;
-
-	it('spawns on the source machine, cwd, model and account, linked as its follow-up', () => {
-		const { body, files } = followupSpawnRequest(followupPrefill(source, 'brief', { instruction: 'go on' }));
-		expect(body).toMatchObject({
-			machine_id: 'm1',
-			working_dir: '/w',
-			adapter_id: 'claude-code',
-			model: 'opus',
-			effort: 'high',
-			account: 'acct',
-			auto_account: false,
-			permission_mode: 'yolo',
-			label_ids: ['l1'],
-			relation: 'followup',
-			parent_session_id: 's1'
-		});
-		expect(body.prompt?.endsWith('go on')).toBe(true);
-		expect(files).toEqual([]);
-	});
-
-	it('lets the server pick an account when the source had none, and ships an oversized brief as a file', () => {
-		const brief = 'x'.repeat(INLINE_BRIEF_MAX_BYTES + 1);
-		const bare = { ...source, account_name: null, permission_mode: 'nope' } as unknown as SessionListItem;
-		const { body, files } = followupSpawnRequest(followupPrefill(bare, brief));
-		expect(body.account).toBeNull();
-		expect(body.auto_account).toBe(true);
-		expect(body.permission_mode).toBeNull();
-		expect(files.map((f) => f.name)).toEqual([BRIEF_FILE_NAME]);
-	});
-});
-
 describe('launchFollowup', () => {
-	const source = {
-		id: 'src',
-		name: 'n',
-		working_dir: '/w',
-		machine_id: 'm1',
-		adapter_id: 'claude-code',
-		labels: []
-	} as unknown as SessionListItem;
+	const response = (over: Partial<FollowupResponse> = {}): FollowupResponse => ({
+		followup_id: 'f1',
+		from: 'src',
+		to: null,
+		state: 'pending',
+		error: null,
+		...over
+	});
 
-	function deps(over: Partial<FollowupLaunchDeps> = {}) {
-		return {
-			brief: vi.fn(async () => ({ markdown: 'brief' })),
-			spawn: vi.fn(async () => ({ command_id: 'c1', status: 'dispatched', session_id: 'new' })),
-			awaitSpawn: vi.fn(async () => ({ ok: true })),
-			archive: vi.fn(async () => {}),
-			...over
-		};
-	}
+	it('launchFollowup posts the atomic endpoint with an idempotency key', async () => {
+		const post = vi.fn<PostFollowup>(async () => response());
+		const out = await launchFollowup('src', 'next step', 'cold', post);
+		expect(out).toEqual({ status: 'accepted', followup: response() });
+		expect(post).toHaveBeenCalledTimes(1);
+		const [id, body] = post.mock.calls[0];
+		expect(id).toBe('src');
+		expect(body).toEqual({
+			instruction: 'next step',
+			reason: 'cold',
+			archive_source: true,
+			idempotency_key: expect.stringMatching(/^[0-9a-f-]{36}$/)
+		});
+		await launchFollowup('src', 'next step', 'manual', post);
+		const second = post.mock.calls[1][1];
+		expect(second.reason).toBe('manual');
+		expect(second.idempotency_key).not.toBe(body.idempotency_key);
+	});
 
-	it('spawns with the draft as instruction, then archives the source', async () => {
-		const d = deps();
-		const out = await launchFollowup(source, 'next step', d);
-		expect(out).toEqual({ status: 'launched', sessionId: 'new' });
-		expect(d.spawn).toHaveBeenCalledTimes(1);
-		expect(d.spawn).toHaveBeenCalledWith(
-			expect.objectContaining({ prompt: expect.stringMatching(/next step$/), parent_session_id: 'src' }),
-			[]
+	it('reuses a caller-held key, so a retried launch is the same follow-up', async () => {
+		const post = vi.fn<PostFollowup>(async () => response());
+		await launchFollowup('src', 'x', 'cold', post, 'k-1');
+		await launchFollowup('src', 'x', 'cold', post, 'k-1');
+		expect(post.mock.calls.map(([, b]) => b.idempotency_key)).toEqual(['k-1', 'k-1']);
+	});
+
+	it('a failed follow-up returns the instruction', async () => {
+		const err = Object.assign(new Error('no daemon on m1'), { status: 502 });
+		const rejected = await launchFollowup('src', 'keep me', 'cold', async () => Promise.reject(err));
+		expect(rejected).toEqual({ status: 'failed', error: err, instruction: 'keep me' });
+		const refused = await launchFollowup('src', 'keep me', 'cold', async () =>
+			response({ state: 'failed', error: 'spawn refused' })
 		);
-		expect(d.awaitSpawn).toHaveBeenCalledWith('c1', 'new');
-		expect(d.archive).toHaveBeenCalledWith('src');
+		expect(refused).toEqual({ status: 'failed', error: 'spawn refused', instruction: 'keep me' });
 	});
 
-	it('does not archive when the spawn fails', async () => {
-		const d = deps({ awaitSpawn: vi.fn(async () => ({ ok: false, error: 'boom' })) });
-		expect(await launchFollowup(source, 'x', d)).toEqual({ status: 'failed', error: 'boom' });
-		expect(d.archive).not.toHaveBeenCalled();
-	});
-
-	it('does not archive when the spawn request or the brief is rejected', async () => {
-		const err = new Error('500');
-		const rejected = deps({ spawn: vi.fn(async () => Promise.reject(err)) });
-		expect(await launchFollowup(source, 'x', rejected)).toEqual({ status: 'failed', error: err });
-		expect(rejected.archive).not.toHaveBeenCalled();
-		const noBrief = deps({ brief: vi.fn(async () => Promise.reject(err)) });
-		expect((await launchFollowup(source, 'x', noBrief)).status).toBe('failed');
-		expect(noBrief.spawn).not.toHaveBeenCalled();
-		expect(noBrief.archive).not.toHaveBeenCalled();
-	});
-
-	it('leaves the source alone while the spawn is unconfirmed', async () => {
-		const d = deps({ awaitSpawn: vi.fn(async () => ({ ok: false, timedOut: true })) });
-		expect(await launchFollowup(source, 'x', d)).toEqual({
-			status: 'unconfirmed',
-			sessionId: 'new',
-			commandId: 'c1'
-		});
-		expect(d.archive).not.toHaveBeenCalled();
-	});
-
-	it('takes the id the probe found for an adapter without a pre-minted one', async () => {
-		const d = deps({
-			spawn: vi.fn(async () => ({ command_id: 'c1', status: 'dispatched', session_id: null })),
-			awaitSpawn: vi.fn(async () => ({ ok: true, sessionId: 'probed' }))
-		});
-		expect(await launchFollowup(source, 'x', d)).toEqual({ status: 'launched', sessionId: 'probed' });
-	});
-
-	it('reports a failed archive without failing the launch', async () => {
-		const err = new Error('403');
-		const d = deps({ archive: vi.fn(async () => Promise.reject(err)) });
-		expect(await launchFollowup(source, 'x', d)).toEqual({
-			status: 'launched',
-			sessionId: 'new',
-			archiveError: err
-		});
+	it('a 409 reports the follow-up in progress', async () => {
+		const err = Object.assign(new Error('a follow-up of this session is in progress'), { status: 409 });
+		const out = await launchFollowup('src', 'x', 'cold', async () => Promise.reject(err));
+		expect(out).toEqual({ status: 'in_progress', error: err });
 	});
 });
 

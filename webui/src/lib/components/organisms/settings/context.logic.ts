@@ -1,6 +1,9 @@
 import type { ContextItem } from '@bindings/ContextItem';
 import type { ContextItemSpec } from '@bindings/ContextItemSpec';
 import type { ContextMatch } from '@bindings/ContextMatch';
+import type { BulkContextOutcome } from '@bindings/BulkContextOutcome';
+import type { BulkContextUpdate } from '@bindings/BulkContextUpdate';
+import type { ContextReach } from '@bindings/ContextReach';
 
 export const CONTEXT_KINDS = ['rule', 'memory', 'prompt'] as const;
 export const MATCH_KEYS = ['machines', 'paths', 'labels', 'adapters'] as const;
@@ -82,19 +85,108 @@ export function contextProblems(spec: ContextItemSpec): string[] {
 export const matchIsEmpty = (m: ContextMatch | null | undefined) =>
 	!m || MATCH_KEYS.every((k) => !(m[k]?.length ?? 0));
 
+export const reachOf = (m: ContextMatch | null | undefined): ContextReach => m?.reach ?? 'owner';
+
+/** How a summary names the reach: never a bare "everywhere". */
+export type ReachWords = { mine: string; allUsers: string; dispatches: string };
+
 export function matchSummary(
 	m: ContextMatch | null | undefined,
-	always: string,
+	words: ReachWords,
 	names: { machine?: (id: string) => string; label?: (id: string) => string } = {}
 ): string {
-	if (!m || matchIsEmpty(m)) return always;
-	const parts: string[] = [];
+	const head = [reachOf(m) === 'all_users' ? words.allUsers : words.mine];
+	if (m?.dispatch) head.push(words.dispatches);
+	const parts = [head.join(' ')];
+	if (!m) return parts[0];
 	if (m.machines.length) parts.push(m.machines.map(names.machine ?? ((x) => x)).join(' | '));
 	if (m.paths.length) parts.push(m.paths.join(' | '));
 	if (m.labels.length) parts.push(m.labels.map(names.label ?? ((x) => x)).join(' | '));
 	if (m.adapters.length) parts.push(m.adapters.join(' | '));
+	if (m.dispatchers?.length) parts.push(m.dispatchers.join(' | '));
+	if (m.profiles?.length) parts.push(m.profiles.join(' | '));
 	return parts.join(' · ');
 }
+
+export type OwnedMachine = { id: string; owner: string; name: string };
+export type MachineGroup = { owner: string; mine: boolean; machines: OwnedMachine[] };
+
+/** The caller's machines first, then one group per other owner by name. */
+export function groupMachines(
+	machines: readonly OwnedMachine[],
+	me: string | null | undefined,
+	ownerName: (id: string) => string = (id) => id
+): MachineGroup[] {
+	const byOwner = new Map<string, OwnedMachine[]>();
+	for (const mc of machines) byOwner.set(mc.owner, [...(byOwner.get(mc.owner) ?? []), mc]);
+	const groups = [...byOwner].map(([owner, list]) => ({
+		owner,
+		mine: owner === me,
+		machines: [...list].sort((a, b) => a.name.localeCompare(b.name))
+	}));
+	return groups.sort(
+		(a, b) => Number(b.mine) - Number(a.mine) || ownerName(a.owner).localeCompare(ownerName(b.owner))
+	);
+}
+
+/** Listed machines that belong to someone else: they need the all-users reach. */
+export const foreignMachines = (m: ContextMatch, machines: readonly OwnedMachine[], me: string | null | undefined) =>
+	m.machines.filter((id) => {
+		const owner = machines.find((x) => x.id === id)?.owner;
+		return owner !== undefined && owner !== me;
+	});
+
+export type BulkKey = 'machines' | 'paths' | 'labels' | 'adapters';
+export type BulkOp =
+	| { op: 'add' | 'remove'; key: BulkKey; values: string[] }
+	| { op: 'clear_machines' }
+	| { op: 'reach'; reach: ContextReach }
+	| { op: 'dispatch'; on: boolean };
+
+export function bulkRequest(ids: readonly string[], change: BulkOp): BulkContextUpdate {
+	const req: BulkContextUpdate = { ids: [...new Set(ids)] };
+	switch (change.op) {
+		case 'add':
+		case 'remove':
+			req[change.op] = { [change.key]: change.values.map((v) => v.trim()).filter(Boolean) };
+			break;
+		case 'clear_machines':
+			req.set = { clear_machines: true };
+			break;
+		case 'reach':
+			req.set = { reach: change.reach };
+			break;
+		case 'dispatch':
+			req.set = { dispatch: change.on };
+			break;
+	}
+	return req;
+}
+
+export type BulkResult = { updated: number; failed: { id: string; error: string }[] };
+
+export const bulkResult = (outcomes: readonly BulkContextOutcome[]): BulkResult => ({
+	updated: outcomes.filter((o) => o.item).length,
+	failed: outcomes
+		.filter((o) => !o.item)
+		.map((o) => ({ id: o.id, error: o.error ?? String(o.status ?? '') }))
+});
+
+export function toggleAll(selected: ReadonlySet<string>, shown: readonly string[]): Set<string> {
+	const all = shown.length > 0 && shown.every((id) => selected.has(id));
+	const next = new Set(selected);
+	for (const id of shown) {
+		if (all) next.delete(id);
+		else next.add(id);
+	}
+	return next;
+}
+
+export const itemFilter = (q: string) => {
+	const needle = q.trim().toLowerCase();
+	return (i: Pick<ContextItem, 'title' | 'name'>) =>
+		!needle || i.title.toLowerCase().includes(needle) || i.name.includes(needle);
+};
 
 export const toggleIn = (list: readonly string[], v: string) =>
 	list.includes(v) ? list.filter((x) => x !== v) : [...list, v];

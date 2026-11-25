@@ -14,7 +14,8 @@ const KINDS: Record<string, () => string> = {
 	needs_input: m.notif_kind_needs_input,
 	session_stuck: m.notif_kind_session_stuck,
 	system_alert: m.notif_kind_system_alert,
-	inbox_stuck: m.notif_kind_inbox_stuck
+	inbox_stuck: m.notif_kind_inbox_stuck,
+	dispatch_failed: m.notif_kind_dispatch_failed
 };
 
 export const channelLabel = (channel: string): string => CHANNELS[channel]?.() ?? channel;

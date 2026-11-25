@@ -55,44 +55,102 @@ function render(props: Record<string, unknown>): HTMLElement {
 }
 
 describe('SessionCard modes', () => {
-	it('the compact row has no preview clamp and carries the machine badge, cwd and branch inline', () => {
+	it('the row puts identity on line 1 and machine · cwd · branch · preview, then model · tokens, on line 2', () => {
 		const el = render({ variant: 'row', pendingCount: 2 });
 		expect(el.querySelector('.sc-wrap.compact')).not.toBeNull();
-		expect(el.querySelector('.preview')).toBeNull();
-		expect(el.querySelector('[data-tsu="WorkingDir"]')).not.toBeNull();
-		expect(el.querySelector('.branch')?.getAttribute('title')).toContain('cct-925-sessions-modes');
-		const machine = el.querySelector('.badge[style*="--mh"]');
-		expect(machine?.querySelector('.full')?.textContent).toBe('dev1');
-		expect(machine?.querySelector('.initial')?.textContent).toBe('D1');
-		expect(machine?.getAttribute('title')).toBe('dev1');
+		expect(el.querySelector('.l1 .title')).not.toBeNull();
+		expect(el.querySelector('.l2 .machine .m-full')?.textContent).toBe('dev1');
+		expect(el.querySelector('.l2 .cwd')?.textContent).toBe('cctui');
+		expect(el.querySelector('.l2 .cwd')?.getAttribute('title')).toContain('/home/dorsk/Documents/cctui');
+		expect(el.querySelector('.l2 .branch')?.textContent).toContain('cct-925-sessions-modes');
+		expect(el.querySelector('.l2 .preview')?.textContent).toBe('hello');
+		expect(el.querySelector('.m2 .model')?.textContent).toBe('opus-4-8 · high');
 		expect(el.textContent).toContain('2 perm');
 	});
 
-	// jsdom does not evaluate the container queries that pick between these, so
-	// the assertion is that every step exists for the stylesheet to choose from.
-	it('carries every degradation step of the model chip, and a capped title', () => {
-		const el = render({ variant: 'row' });
-		const model = el.querySelector('.model');
-		expect(model?.querySelector('.full')?.textContent).toBe('opus-4-8');
-		expect(model?.querySelector('.fam')?.textContent).toBe('opus');
-		expect(model?.querySelector('.abbr')?.textContent).toBe('Op.');
-		expect(model?.getAttribute('title')).toBe('opus-4-8 · high');
-		expect(el.querySelector('.title.capped')).not.toBeNull();
+	it('spells the subagent toggle out as a count and the group name', () => {
+		const ontoggle = vi.fn();
+		const el = render({
+			variant: 'row',
+			subagentToggles: [{ key: 'plain', count: 3, running: 1, open: false, label: 'subagents', ontoggle }]
+		});
+		const sub = el.querySelector<HTMLButtonElement>('.l1 .sub');
+		expect(sub?.textContent?.replace(/\s+/g, ' ').trim()).toBe('3 subagents');
+		expect(sub?.getAttribute('aria-expanded')).toBe('false');
+		sub?.click();
+		expect(ontoggle).toHaveBeenCalledOnce();
 	});
 
-	it('hides the machine badge when the section header already names it', () => {
+	it('indents a subagent row past the gutter and names its model', () => {
+		const el = render({ variant: 'row', child: true, session: session({ parent_id: 'p-1' }) });
+		expect(el.querySelector('.gut')?.textContent?.trim()).toBe('');
+		expect(el.querySelector('.l1 .arrow')?.textContent).toBe('↳');
+		expect(el.querySelector('.m1 .model')?.textContent).toContain('opus-4-8');
+	});
+
+	it('marks unread messages with a ring on the status dot, not a count', () => {
+		const el = render({ variant: 'row', unreadCount: 4 });
+		const slot = el.querySelector('.l1 .slot.unread');
+		expect(slot?.getAttribute('title')).toContain('4');
+		expect(el.querySelector('.m1')?.textContent).not.toContain('4');
+	});
+
+	it('keeps the model in a compact row', async () => {
+		const { settings } = await import('#lib/settings.svelte.ts');
+		settings.setSessionList({ density: 'compact' });
+		try {
+			const el = render({ variant: 'row' });
+			expect(el.querySelector('.sr.one .m1 .model')?.textContent).toContain('opus-4-8');
+		} finally {
+			settings.setSessionList({ density: 'normal' });
+		}
+	});
+
+	it('paints a needs-input row with the attention bar and a crashed one with the danger bar', () => {
+		const waiting = render({ variant: 'row', session: session({ attention: 'needs_input' }) });
+		expect(waiting.querySelector<HTMLElement>('[data-journey="session"]')?.style.borderLeft).toContain('var(--attention-bar)');
+		unmount(comp!);
+		comp = null;
+		const crashed = render({
+			variant: 'row',
+			session: session({ status: 'inactive', end_reason: 'crashed', liveness: 'dead', bucket: 'done' })
+		});
+		expect(crashed.querySelector<HTMLElement>('[data-journey="session"]')?.style.borderLeft).toContain('var(--danger)');
+	});
+
+	it('marks a lost daemon with the danger bar instead of a badge', () => {
+		const lost = render({
+			variant: 'row',
+			session: session({ status: 'inactive', end_reason: 'daemon_lost', liveness: 'dead', bucket: 'done' })
+		});
+		expect(lost.querySelector<HTMLElement>('[data-journey="session"]')?.style.borderLeft).toContain('var(--danger)');
+		expect(lost.querySelector('.end-badge')).toBeNull();
+		expect(lost.querySelector('.l1 .title')?.parentElement?.querySelector('[data-tsu="Badge"]')).toBeNull();
+	});
+
+	it('rounds only the corners a row shares with its list frame', () => {
+		const top = render({ variant: 'row', listTop: true });
+		const style = top.querySelector<HTMLElement>('[data-journey="session"]')?.getAttribute('style') ?? '';
+		expect(style).toMatch(/border-radius: ?var\(--row-r\) var\(--row-r\) 0(px)? 0(px)?;/);
+	});
+
+	it('hides the machine when the section header already names it', () => {
 		const el = render({ variant: 'row', showMachine: false });
-		expect(el.querySelector('.badge[style*="--mh"]')).toBeNull();
+		expect(el.querySelector('.l2 .machine')).toBeNull();
+		expect(el.querySelector('.l2 .cwd')?.textContent).toBe('cctui');
 	});
 
-	it('the detailed card pins a footer with cwd, branch and the PR link', () => {
+	it('the detailed card footer reads project · branch in sans, with the PR link', () => {
 		const el = render({ variant: 'card' });
 		expect(el.querySelector('.preview')?.textContent).toBe('hello');
-		expect(el.querySelector('.branch')?.getAttribute('title')).toContain('cct-925-sessions-modes');
+		const where = el.querySelector('.where');
+		expect(where?.textContent?.trim()).toBe('cctui · cct-925-sessions-modes');
+		expect(where?.getAttribute('title')).toContain('/home/dorsk/Documents/cctui');
+		expect(el.querySelector('[data-tsu="WorkingDir"]')).toBeNull();
 		const pr = el.querySelector('a.pr-link');
 		expect(pr?.textContent?.trim()).toBe('DorskFR/cctui#311');
 		expect(pr?.getAttribute('href')).toBe('https://github.com/DorskFR/cctui/pull/311');
-		expect(el.textContent).toContain('opus-4-8');
+		expect(el.querySelector('.model .full')?.textContent).toBe('opus-4-8');
 	});
 
 	it('is the sess-card size container every readout degrades against', () => {

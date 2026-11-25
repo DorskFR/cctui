@@ -78,7 +78,12 @@ start_signing_agent() {
     log "gpg-agent up; extra socket forwarded at $GPG_EXTRA_SOCKET (signingkey=${_fpr:-unknown})"
 }
 
-fetch_gpg_key
-start_signing_agent
+# A guard pod has no worker to forward the agent socket to.
+if [ -n "${GUARD_PROXY_AUTH_TOKEN_FILE:-}" ]; then
+    log "guard pod: no signing agent (gpg is not forwarded to an external-pod worker)"
+else
+    fetch_gpg_key
+    start_signing_agent
+fi
 
 exec cctui-guard-proxy "$@"

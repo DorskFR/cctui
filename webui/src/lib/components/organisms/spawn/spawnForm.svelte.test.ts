@@ -29,6 +29,8 @@ const updateDraft = vi.fn();
 const setDraftAttachments = vi.fn();
 const listSessions = vi.fn();
 const discardDraft = vi.fn();
+const launchDraft = vi.fn();
+const scheduleDraftLaunch = vi.fn();
 
 vi.mock('#lib/queries/index.ts', () => {
 	const q = <T>(data: T) => ({ data, isLoading: false, isError: false });
@@ -51,7 +53,9 @@ vi.mock('#lib/queries/index.ts', () => {
 			spawn,
 			updateDraft,
 			setDraftAttachments,
-			discardDraft
+			discardDraft,
+			launchDraft,
+			scheduleDraftLaunch
 		}),
 		endpoints: { machineDirs: async () => [], sessions: () => listSessions() }
 	};
@@ -106,6 +110,8 @@ beforeEach(() => {
 	setDraftAttachments.mockReset();
 	listSessions.mockReset().mockResolvedValue({ sessions: [] });
 	discardDraft.mockReset().mockResolvedValue(undefined);
+	launchDraft.mockReset();
+	scheduleDraftLaunch.mockReset().mockResolvedValue(undefined);
 });
 afterEach(() => {
 	stop?.();
@@ -278,8 +284,8 @@ describe('SpawnForm prefill', () => {
 		expect(sf.form.working_dir).toBe('/w');
 		expect(sf.draftId).toBe('d-9');
 		expect(sf.envRows).toEqual([
-			{ key: 'A', value: '' },
-			{ key: 'B', value: '' }
+			{ key: 'A', value: '', stored: true },
+			{ key: 'B', value: '', stored: true }
 		]);
 		expect(sf.form.labels).toEqual(['l1', 'l2']);
 	});
@@ -368,14 +374,66 @@ describe('SpawnForm spawn body', () => {
 		expect(body.account).toBeNull();
 	});
 
-	it('mirrors env keys and attachment names into the draft body', () => {
+	it('sends env names and new values for the server to seal, with attachment names', () => {
 		const sf = open();
 		sf.envRows = [{ key: ' K1 ', value: 'v' }, { key: '', value: '' }];
 		sf.files = [new File(['x'], 'notes.md')];
 		const body = sf.draftBody();
-		expect(body.env).toEqual({});
+		expect(body.env).toEqual({ K1: 'v' });
 		expect(body.env_keys).toEqual(['K1']);
 		expect(body.attachment_names).toEqual(['notes.md']);
+	});
+
+	it('keeps a stored value by name, replaces it with a typed one and drops a removed one', () => {
+		const sf = open({ prefill: { machine_id: 'm-uuid-1', working_dir: '/w', prompt: 'go', draft_id: 'd-1', env_keys: 'KEEP,SWAP,GONE' } });
+		expect(sf.envRows.every((r) => r.stored)).toBe(true);
+		sf.envRows = sf.envRows
+			.filter((r) => r.key !== 'GONE')
+			.map((r) => (r.key === 'SWAP' ? { ...r, value: 'new' } : r));
+		const body = sf.draftBody();
+		expect(body.env_keys).toEqual(['KEEP', 'SWAP']);
+		expect(body.env).toEqual({ SWAP: 'new' });
+	});
+});
+
+describe('SpawnForm auto-archive', () => {
+	it('is off by default and rides the spawn and draft bodies once ticked', () => {
+		const sf = open();
+		sf.form.working_dir = '/w';
+		expect(sf.form.auto_archive).toBe(false);
+		expect(sf.buildSpawnBody().auto_archive).toBe(false);
+		sf.form.auto_archive = true;
+		expect(sf.buildSpawnBody().auto_archive).toBe(true);
+		expect(sf.draftBody().auto_archive).toBe(true);
+	});
+
+	it('is restored from the local slot', () => {
+		drafts.set(SLOT, JSON.stringify({ machine_id: 'm-uuid-1', working_dir: '/w', prompt: 'p', auto_archive: true }));
+		drafts.set(SPAWN_SLOT, SLOT);
+		expect(open().form.auto_archive).toBe(true);
+	});
+
+	it("follows an edited draft's flag over the slot", () => {
+		const base = { machine_id: 'm-uuid-1', working_dir: '/w', draft_id: 'd-1' };
+		drafts.set(SLOT, JSON.stringify({ machine_id: 'm-uuid-1', working_dir: '/w', auto_archive: true }));
+		expect(open({ prefill: { ...base, auto_archive: '0' } }).form.auto_archive).toBe(false);
+		stop?.();
+		localStorage.clear();
+		expect(open({ prefill: { ...base, auto_archive: '1' } }).form.auto_archive).toBe(true);
+	});
+
+	it('is stored on the draft a scheduled launch replays, then cleared', async () => {
+		spawn.mockResolvedValue({ command_id: 'draft-7', status: 'draft' });
+		const sf = open();
+		sf.form.working_dir = '/w';
+		sf.form.prompt = 'nightly digest';
+		sf.form.auto_archive = true;
+		flushSync();
+		await sf.scheduleLaunch(new Date(Date.now() + 3_600_000));
+		expect(spawn).toHaveBeenCalledTimes(1);
+		expect(spawn.mock.calls[0][0]).toMatchObject({ save_draft: true, auto_archive: true });
+		expect(scheduleDraftLaunch).toHaveBeenCalledWith('draft-7', expect.any(String));
+		expect(sf.form.auto_archive).toBe(false);
 	});
 });
 
@@ -486,6 +544,37 @@ describe('SpawnForm native-id launch confirmation', () => {
 		expect(reopened.form.prompt).toBe('');
 	});
 
+	it('launches through the draft when a stored env value is kept, sending only new values', async () => {
+		const sf = open({
+			docked: () => true,
+			prefill: { machine_id: 'm-uuid-1', working_dir: '/w', prompt: 'go', draft_id: 'd-7', env_keys: 'KEEP' }
+		});
+		await settle();
+		sf.envRows = [...sf.envRows, { key: 'NEW', value: 'typed' }];
+		flushSync();
+		updateDraft.mockResolvedValue({ command_id: 'd-7', status: 'draft' });
+		launchDraft.mockResolvedValue({ command_id: 'launch-cmd', status: 'dispatched', session_id: null });
+		await spawnOnMachine(sf);
+		expect(spawn).not.toHaveBeenCalled();
+		expect(updateDraft.mock.calls[0][0]).toBe('d-7');
+		expect(updateDraft.mock.calls[0][1]).toMatchObject({ env_keys: ['KEEP', 'NEW'], env: { NEW: 'typed' } });
+		expect(launchDraft).toHaveBeenCalledWith('d-7', { NEW: 'typed' });
+	});
+
+	it('spawns directly once every stored env value is replaced', async () => {
+		const sf = open({
+			docked: () => true,
+			prefill: { machine_id: 'm-uuid-1', working_dir: '/w', prompt: 'go', draft_id: 'd-8', env_keys: 'KEEP' }
+		});
+		await settle();
+		sf.envRows = sf.envRows.map((r) => ({ ...r, value: 'fresh' }));
+		flushSync();
+		spawn.mockResolvedValue({ command_id: 'c-1', status: 'dispatched', session_id: null });
+		await spawnOnMachine(sf);
+		expect(launchDraft).not.toHaveBeenCalled();
+		expect(spawn.mock.calls[0][0]).toMatchObject({ env: { KEEP: 'fresh' } });
+	});
+
 	it('keeps the draft when no session or ack confirms the launch', async () => {
 		const sf = open({ docked: () => true });
 		sf.form.prompt = 'Keep this unconfirmed request';
@@ -516,7 +605,24 @@ describe('SpawnForm dictation', () => {
 		spawn.mockResolvedValue({ command_id: 'voice-command', session_id: null });
 		await dictateIntoPrompt(sf, 'Fix the login bug', true);
 		expect(spawn).toHaveBeenCalledTimes(1);
-		expect(spawn.mock.calls[0][0]).toMatchObject({ prompt: 'Fix the login bug', working_dir: '/w' });
+		expect(spawn.mock.calls[0][0]).toMatchObject({
+			prompt: 'Fix the login bug',
+			working_dir: '/w',
+			dictated: true
+		});
+	});
+
+	it('marks only a spawn whose prompt went through the mic as dictated', async () => {
+		const sf = open();
+		await settle();
+		sf.form.working_dir = '/w';
+		sf.form.prompt = 'typed task';
+		flushSync();
+		spawn.mockResolvedValue({ command_id: 'typed-command', session_id: null });
+		await sf.submit();
+		expect(spawn).toHaveBeenCalledTimes(1);
+		expect(spawn.mock.calls[0][0].dictated).toBeUndefined();
+		expect(sf.buildSpawnBody().dictated).toBeUndefined();
 	});
 });
 

@@ -3,12 +3,12 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-#[cfg(feature = "ts")]
+#[cfg(test)]
 use ts_rs::TS;
 use uuid::Uuid;
 
 #[derive(Serialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct PasskeyChallenge {
     /// Handle for the parked ceremony state; echoed back on finish.
     pub challenge_id: Uuid,
@@ -19,7 +19,7 @@ pub struct PasskeyChallenge {
 }
 
 #[derive(Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct PasskeyRegisterFinish {
     pub challenge_id: Uuid,
     /// Human label for the key ("iPhone", "`YubiKey`", "Bitwarden").
@@ -32,7 +32,7 @@ pub struct PasskeyRegisterFinish {
 }
 
 #[derive(Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct PasskeyAssertion {
     pub challenge_id: Uuid,
     /// The `PublicKeyCredential` from `navigator.credentials.get()`.
@@ -40,7 +40,7 @@ pub struct PasskeyAssertion {
 }
 
 #[derive(Serialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct PasskeyRow {
     pub id: Uuid,
     pub label: String,
@@ -53,13 +53,13 @@ pub struct PasskeyRow {
 }
 
 #[derive(Serialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct PasskeyListResponse {
     pub passkeys: Vec<PasskeyRow>,
 }
 
 #[derive(Serialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct PasskeyConfig {
     /// Whether this server can run a passkey ceremony at all (relying party
     /// configured). False means the login screen shows only the token box.
@@ -74,20 +74,20 @@ pub struct PasskeyConfig {
 }
 
 #[derive(Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct PasskeyAutoPromptRequest {
     pub auto_prompt: bool,
 }
 
 #[derive(Serialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct PasskeyTestResult {
     /// The label of the key that answered, so the UI can say which one.
     pub label: String,
 }
 
 #[derive(Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct RelabelPasskeyRequest {
     pub label: String,
 }

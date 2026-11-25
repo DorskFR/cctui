@@ -8,6 +8,7 @@
 // singleton's keyed state does NOT re-run on mutation (see ws.svelte.ts header).
 import { untrack } from 'svelte';
 import type { AgentEvent } from '@bindings/AgentEvent';
+import type { SendFollowup } from '@bindings/SendFollowup';
 import type { TodoEntry } from '@bindings/TodoEntry';
 import type { UserAction } from '@bindings/UserAction';
 import type { UserActionStatus } from '@bindings/UserActionStatus';
@@ -34,6 +35,7 @@ import type { AskQuestion, TodoItem, TodoProgress } from './types';
 import { drawerTodos, isTaskEvent } from './taskList';
 import { endpoints } from '#lib/queries/index.ts';
 import { newTurnId } from '#lib/turnid.ts';
+import { dictatedPrompt } from '#lib/voice/dictatedMark.ts';
 
 // Fold a live ws event into the cached conversation tail. Returns `prev` by
 // identity when nothing changes, so a known event doesn't re-render the drawer.
@@ -421,10 +423,10 @@ export class ConversationStream {
 	// Create the optimistic echo and hand the send off to the ws singleton (which
 	// owns dispatch + ack timeout + auto-retry). Returns true if the first frame
 	// left the socket.
-	#sendTracked(text: string): boolean {
+	#sendTracked(text: string, dictated: boolean, followup: SendFollowup): boolean {
 		const turnId = newTurnId();
-		const ts = this.#pushOptimisticReply(text, turnId);
-		return ws.trackedSend(this.#opts.id(), text, ts, undefined, turnId);
+		const ts = this.#pushOptimisticReply(dictated ? dictatedPrompt(text) : text, turnId);
+		return ws.trackedSend(this.#opts.id(), text, ts, undefined, turnId, dictated || undefined, followup);
 	}
 
 	#began() {
@@ -434,11 +436,11 @@ export class ConversationStream {
 
 	// Send a final message body (text + any appended staged-attachment paths).
 	// NB: a free-typed send does NOT dismiss a pending AskUserQuestion.
-	sendBody(text: string) {
+	sendBody(text: string, dictated = false, followup: SendFollowup = 'auto') {
 		if (!text || this.#opts.archived()) return;
 		// Sending always jumps to the latest message (classic chat UX).
 		this.#opts.pin();
-		const ok = this.#sendTracked(text);
+		const ok = this.#sendTracked(text, dictated, followup);
 		if (ok) this.#began();
 		this.#opts.invalidateSessions();
 	}

@@ -1,28 +1,17 @@
 <script lang="ts">
-	// Settings › Instance: what this deployment is (versions, update check) and
-	// what this browser spends on it (network), plus the admin-only server
-	// settings — the instance name shown in the header, server-wide sign-in,
-	// the machine the self-update agent runs on, the default CctuiAgent limits
-	// the upstream host allowlist and the speech service. Admin values live in
-	// `instance_settings` on the server, not in the per-user blob; the name is
+	// Settings › Instance › General: the instance name shown in the header,
+	// the machine the self-update agent runs on, and server-wide sign-in.
+	// Values live in `instance_settings`, not in the per-user blob; the name is
 	// read back through /version so the header and tab title pick it up on the
 	// next refetch.
-	import { Button, Input, Select, Text } from '@dorsk/tsumikit';
+	import { Button, Input, Select } from '@dorsk/tsumikit';
 	import { useQueryClient } from '@tanstack/svelte-query';
 	import SettingGroup from '#lib/components/molecules/SettingGroup.svelte';
 	import SettingRow from '#lib/components/molecules/SettingRow.svelte';
 	import SettingSection from '#lib/components/molecules/SettingSection.svelte';
 	import MachinePicker from '#lib/components/molecules/MachinePicker.svelte';
-	import NetStatsChip from '#lib/components/molecules/NetStatsChip.svelte';
-	import UpdateModal from '#lib/components/organisms/UpdateModal.svelte';
-	import HarnessUpdateGroup from './HarnessUpdateGroup.svelte';
-	import MachineAdaptersGroup from './MachineAdaptersGroup.svelte';
 	import PasskeySignInGroup from './PasskeySignInGroup.svelte';
-	import SpawnLimitsGroup from './SpawnLimitsGroup.svelte';
-	import SpeechGroup from './SpeechGroup.svelte';
-	import UpstreamHostsGroup from './UpstreamHostsGroup.svelte';
 	import { useVersion, useAllMachines, endpoints, qk } from '#lib/queries/index.ts';
-	import { releaseChannel } from '#lib/releaseChannel.ts';
 	import type { SelfUpdateTargetInfo } from '@bindings/SelfUpdateTargetInfo';
 	import { toasts } from '#lib/toast.svelte.ts';
 	import { hasFeature } from '#lib/features.svelte.ts';
@@ -52,28 +41,6 @@
 			toasts.error(e instanceof Error ? e.message : String(e));
 		} finally {
 			instanceSaving = false;
-		}
-	}
-
-	// The server probes GitHub for a newer release every 6h; this asks it to go
-	// now and swaps the cached `/version` payload with the answer, so the
-	// header's update arrow reflects the result immediately.
-	let updateOpen = $state(false);
-	let updateChecking = $state(false);
-	async function checkForUpdate() {
-		updateChecking = true;
-		try {
-			const info = await endpoints.refreshVersion();
-			qc.setQueryData(qk.version, info);
-			toasts.ok(
-				info.latest_version
-					? m.settings_version_available({ version: info.latest_version })
-					: m.settings_version_up_to_date()
-			);
-		} catch (e) {
-			toasts.error(m.settings_version_check_failed({ error: e instanceof Error ? e.message : String(e) }));
-		} finally {
-			updateChecking = false;
 		}
 	}
 
@@ -125,13 +92,7 @@
 	}
 </script>
 
-<SettingSection
-	id="instance"
-	icon="⚙"
-	title={m.settings_nav_instance()}
-	description={m.settings_instance_desc()}
-	admin={isAdmin}
->
+<SettingSection id="instance-general" icon="⚙" title={m.settings_sec_general()} admin>
 	{#if isAdmin}
 		<SettingGroup title={m.settings_group_server()}>
 			<SettingRow
@@ -155,42 +116,6 @@
 				</Button>
 			</SettingRow>
 		</SettingGroup>
-	{/if}
-
-	<SettingGroup title={m.settings_group_diagnostics()}>
-		<SettingRow
-			label={m.settings_version_title()}
-			help={selfUpdate ? m.settings_version_check_help() : undefined}
-			selfLabelled
-		>
-			<div class="ver">
-				{#if version.data}
-					<Text size="sm" variant="code">srv {version.data.version}</Text>
-					{#if releaseChannel(version.data.version) === 'beta'}
-						<span title={m.release_channel_beta_title()}>
-							<Text size="sm" tone="accent" variant="code" weight="bold">{m.release_channel_beta()}</Text>
-						</span>
-					{/if}
-					<Text size="sm" variant="code">ui {__CLIENT_VERSION__}</Text>
-					{#if selfUpdate && version.data.latest_version}
-						<Button size="sm" variant="ghost" chip onclick={() => (updateOpen = true)}>
-							<Text size="sm" variant="code" tone="danger">↑ v{version.data.latest_version}</Text>
-						</Button>
-					{/if}
-				{/if}
-				{#if selfUpdate}
-					<Button size="sm" disabled={updateChecking} onclick={checkForUpdate}>
-						{updateChecking ? m.settings_version_checking() : m.settings_version_check()}
-					</Button>
-				{/if}
-			</div>
-		</SettingRow>
-		<SettingRow label={m.net_stats_title()} help={m.settings_net_stats_help()} selfLabelled>
-			<NetStatsChip />
-		</SettingRow>
-	</SettingGroup>
-
-	{#if isAdmin}
 		{#if selfUpdate}
 			<SettingGroup title={m.settings_self_update_label()}>
 				<SettingRow
@@ -243,42 +168,10 @@
 		{#if hasFeature('passkeys')}
 			<PasskeySignInGroup />
 		{/if}
-		{#if selfUpdate}
-			<HarnessUpdateGroup />
-		{/if}
-		{#if hasFeature('machine_spawn')}
-			<MachineAdaptersGroup isAdmin />
-		{/if}
-		{#if hasFeature('child_sessions')}
-			<SpawnLimitsGroup />
-		{/if}
-		<UpstreamHostsGroup />
-		{#if hasFeature('voice')}
-			<SpeechGroup />
-		{/if}
-	{:else if hasFeature('machine_spawn')}
-		<MachineAdaptersGroup />
 	{/if}
 </SettingSection>
 
-{#if updateOpen && version.data?.latest_version}
-	<UpdateModal
-		latestVersion={version.data.latest_version}
-		latestUrl={version.data.latest_url ?? version.data.repo_url}
-		selfUpdateReady={version.data.self_update_ready}
-		selfUpdateHook={version.data.self_update_hook}
-		onclose={() => (updateOpen = false)}
-	/>
-{/if}
-
 <style>
-	.ver {
-		display: flex;
-		align-items: center;
-		justify-content: flex-end;
-		gap: var(--sp-2);
-		flex-wrap: wrap;
-	}
 	.su {
 		display: flex;
 		flex-direction: column;
