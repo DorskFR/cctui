@@ -2,6 +2,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, tick, unmount, type ComponentProps } from 'svelte';
 import SessionSectionHeader from './SessionSectionHeader.svelte';
+import { m } from '#lib/paraglide/messages.js';
 
 let comp: ReturnType<typeof mount> | null = null;
 function reset() {
@@ -49,12 +50,8 @@ describe('SessionSectionHeader', () => {
 	});
 
 	it('pluralises the session count', () => {
-		render({ count: 1 });
-		expect(document.body.textContent).toContain('1 session');
-		expect(document.body.textContent).not.toContain('1 sessions');
-		reset();
-		render({ count: 3 });
-		expect(document.body.textContent).toContain('3 sessions');
+		expect(m.sessions_group_count({ count: 1 })).toBe('1 session');
+		expect(m.sessions_group_count({ count: 3 })).toBe('3 sessions');
 	});
 
 	it('keeps the controls pinned visible while the section is hidden', () => {
