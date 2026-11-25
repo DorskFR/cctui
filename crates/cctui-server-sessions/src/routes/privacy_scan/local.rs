@@ -92,7 +92,8 @@ pub async fn start<S: SessionsContext>(
     }
     let rows: Vec<MachineRow> = sqlx::query_as(
         "SELECT id, COALESCE(display_name, name), \
-                last_seen_at > now() - $2::bigint * interval '1 second', transcript_audit \
+                last_seen_at > now() - $2::bigint * interval '1 second', \
+                COALESCE(transcript_audit, false) \
          FROM machines \
          WHERE user_id = $1 AND revoked_at IS NULL AND deleted_at IS NULL AND kind <> 'dispatch' \
          ORDER BY 2, 1",
