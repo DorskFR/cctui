@@ -158,19 +158,17 @@
 		{/if}
 		{#if ln.role === 'assistant' && ln.turn !== undefined}
 			<Tooltip text={`turn ${ln.turn}`}>
-				{#snippet trigger()}<Badge size="xs" uppercase color="var(--bc)">{ln.role}</Badge>{/snippet}
+				{#snippet trigger()}<span class="role">{ln.role}</span>{/snippet}
 			</Tooltip>
 		{:else if ln.context}
-			<Badge size="xs" uppercase color="var(--bc)">{contextLabel}</Badge>
+			<span class="role">{contextLabel}</span>
 		{:else if ln.voice}
-			<Badge size="xs" uppercase color="var(--bc)">{m.voice_live_toggle()}</Badge>
+			<span class="role">{m.voice_live_toggle()}</span>
 		{:else if ln.inbox !== undefined}
-			<Badge size="xs" uppercase color="var(--bc)">{m.conversation_inbox_batch_badge()}</Badge>
+			<span class="role">{m.conversation_inbox_batch_badge()}</span>
 			<span class="who">· {m.conversation_inbox_batch_count({ count: ln.inbox })}</span>
 		{:else}
-			<Badge size="xs" uppercase color="var(--bc)"
-				>{ln.mcp ? 'mcp' : ln.role === 'result' ? 'result' : ln.role}</Badge
-			>
+			<span class="role">{ln.mcp ? 'mcp' : ln.role}</span>
 		{/if}
 		{#if ln.dictated}
 			<span
@@ -287,8 +285,6 @@
 		flex-direction: column;
 		gap: 2px;
 		max-width: 100%;
-		/* Role tint, inherited by the badge below. Set on the line (not on the
-		   badge itself) so one :global rule serves every role. */
 		--bc: var(--text-muted);
 	}
 	.line.user {
@@ -357,6 +353,14 @@
 		line-height: 1;
 		opacity: 0.75;
 	}
+	.role {
+		flex: none;
+		text-transform: uppercase;
+		letter-spacing: 0.06em;
+		font-size: var(--fs-2xs);
+		font-weight: var(--fw-medium);
+		color: color-mix(in srgb, var(--bc) 60%, var(--text-faint));
+	}
 	.who {
 		text-transform: uppercase;
 		letter-spacing: 0.04em;
@@ -384,7 +388,8 @@
 	}
 	.tool-name {
 		font-family: var(--font-mono);
-		color: var(--text-muted);
+		color: var(--text);
+		font-weight: var(--fw-semibold);
 		text-transform: none;
 		letter-spacing: 0;
 		overflow: hidden;

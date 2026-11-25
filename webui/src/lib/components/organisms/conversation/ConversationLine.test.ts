@@ -47,6 +47,21 @@ describe('role badge and tint', () => {
 		expect(el.textContent).toContain('user');
 	});
 
+	it('labels the role as plain text, not a filled badge', async () => {
+		const el = await render(line({ role: 'tool', tool: 'Bash' }));
+		const role = el.querySelector('.lmeta .role');
+		expect(role?.textContent).toBe('tool');
+		expect(el.querySelector('.lmeta [data-tsu="Badge"]')).toBeNull();
+		expect(el.querySelector('.lmeta .tool-name')?.textContent).toBe('Bash');
+	});
+
+	it('mutes the role and makes the tool name the strong element', () => {
+		const css = lineSource.slice(lineSource.indexOf('<style>'));
+		expect(css).toMatch(/\.role \{[^}]*text-transform: uppercase;[^}]*color: color-mix\(in srgb, var\(--bc\) 60%, var\(--text-faint\)\);/);
+		expect(css).not.toMatch(/\.role \{[^}]*background/);
+		expect(css).toMatch(/\.tool-name \{[^}]*color: var\(--text\);\s*font-weight: var\(--fw-semibold\);/);
+	});
+
 	it('badges a peer line PEER, not USER', async () => {
 		const el = await render(line({ role: 'peer', peerFrom: 'cctui orchestrator skill' }));
 		expect(el.classList.contains('peer')).toBe(true);
