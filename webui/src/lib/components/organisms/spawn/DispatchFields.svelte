@@ -216,7 +216,7 @@
 	</div>
 	<div class="grow">
 		<Field label={m.dispatch_timeout_label()} for="sp-timeout">
-			<Input id="sp-timeout" mono inputmode="numeric" placeholder={m.dispatch_timeout_placeholder()} bind:value={form.timeout} />
+			<Input id="sp-timeout" inputmode="numeric" style="font-variant-numeric: tabular-nums" placeholder={m.dispatch_timeout_placeholder()} bind:value={form.timeout} />
 		</Field>
 	</div>
 </div>
