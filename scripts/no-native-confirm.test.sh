@@ -46,6 +46,29 @@ printf '<script>\n\tasync function confirm() {}\n\tfunction confirm() {}\n\tthis
 git add -A
 check "methods, definitions and ConfirmModal pass" bash "$guard" --staged
 
+git reset -q
+rm -f webui/src/C.svelte
+
+printf 'export const ok = () => window.confirm("sure?");\n' > webui/src/a.ts
+git add -A
+check "window.confirm( in .ts fails" fails bash "$guard" --staged
+git reset -q
+printf 'export const ok = () => globalThis.confirm("sure?");\n' > webui/src/a.ts
+git add -A
+check "globalThis.confirm( in .ts fails" fails bash "$guard" --staged
+git reset -q
+
+printf 'class D {\n\tconfirm(m: string) {\n\t\treturn this.#d.confirm(m);\n\t}\n}\nexport const run = (d: D) => d.confirm("x");\n' > webui/src/a.ts
+git add -A
+check ".ts methods and member calls on other objects pass" bash "$guard" --staged
+git commit -qm ts
+check "clean .ts passes --all" bash "$guard" --all
+
+mkdir -p webui/src/lib/paraglide
+printf 'export const x = () => window.confirm("x");\n' > webui/src/lib/paraglide/gen.ts
+git add -A && git commit -qm gen
+check "generated paraglide output is ignored" bash "$guard" --all
+
 check "no argument is a usage error" fails bash "$guard"
 
 [ "$failures" -eq 0 ] || { echo "$failures check(s) failed"; exit 1; }

@@ -27,7 +27,7 @@ pre-commit:
       glob: "webui/**/*.svelte"
       run: bash scripts/no-css-global.sh --staged
     no-native-confirm:
-      glob: "webui/**/*.svelte"
+      glob: "webui/**/*.{svelte,ts}"
       run: bash scripts/no-native-confirm.sh --staged
     # A key ending in _pre/_post/_before/_after/_prefix/_suffix is half a sentence
     # glued together in markup, so no translator can fix word order. Also holds
