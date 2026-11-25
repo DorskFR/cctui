@@ -328,7 +328,6 @@
 		display: flex;
 		flex-direction: column;
 		min-width: 0;
-		border: 1px solid var(--border);
 		border-radius: var(--r-lg);
 		background: var(--bg-elevated);
 		overflow: hidden;
@@ -344,7 +343,7 @@
 		align-items: center;
 		gap: var(--sp-2) var(--sp-3);
 		padding: var(--sp-3) var(--sp-4);
-		border-bottom: 1px solid var(--border);
+		background: var(--bg-elevated-2);
 		min-width: 0;
 	}
 	.handle {
@@ -422,7 +421,7 @@
 		align-items: center;
 		gap: var(--sp-2);
 		padding: var(--sp-2) var(--sp-4);
-		border-bottom: 1px solid var(--border);
+		background: var(--bg-elevated-2);
 	}
 	.columns {
 		display: grid;
@@ -436,12 +435,11 @@
 		align-items: center;
 		gap: var(--sp-4);
 		padding: var(--sp-2) var(--sp-4);
-		background: var(--bg);
-		border-top: 1px solid var(--border);
+		background: var(--bg-elevated-2);
 	}
 	.sharing {
 		padding: var(--sp-3) var(--sp-4);
-		border-top: 1px solid var(--border);
+		background: var(--bg-elevated-2);
 	}
 	@container acct-row (max-width: 66rem) {
 		.columns {

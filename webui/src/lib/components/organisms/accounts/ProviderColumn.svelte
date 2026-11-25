@@ -114,16 +114,12 @@
 		flex-direction: column;
 		gap: var(--sp-2);
 		padding: var(--sp-3) var(--sp-4);
-		border-right: 1px solid var(--border);
 		min-width: 0;
 		overflow: hidden;
 	}
 	.column.dense {
 		gap: var(--sp-1);
 		padding: var(--sp-2) var(--sp-3);
-	}
-	.column:last-child {
-		border-right: 0;
 	}
 	.head {
 		display: flex;
@@ -146,7 +142,6 @@
 	}
 	.reauth {
 		padding: var(--sp-1) var(--sp-2);
-		border: 1px solid var(--danger);
 		border-radius: var(--r-sm);
 		background: color-mix(in srgb, var(--danger) 12%, transparent);
 		color: var(--danger);
