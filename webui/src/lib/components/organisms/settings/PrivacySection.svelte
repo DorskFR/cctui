@@ -14,6 +14,8 @@
 	import { m } from '#lib/paraglide/messages.js';
 
 	const scrubEnabled = $derived(settings.secretScrubEnabled);
+	const optInHelp = (help: string) =>
+		scrubEnabled ? help : `${help} ${m.settings_redaction_opt_in_needs_base()}`;
 	// The draft holds what was typed, including a line that doesn't compile: only
 	// the valid lines are handed to the store, so one bad pattern can't make every
 	// later settings save fail.
@@ -51,23 +53,31 @@
 				label={m.settings_redaction_enable_label()}
 			/>
 		</SettingRow>
-		<SettingRow label={m.settings_redaction_outbound_label()} help={m.settings_redaction_outbound_help()} server>
+		<SettingRow
+			label={m.settings_redaction_outbound_label()}
+			help={optInHelp(m.settings_redaction_outbound_help())}
+			disabled={!scrubEnabled}
+			server
+		>
 			<Checkbox
 				data-journey="redact-outbound"
 				label={m.settings_redaction_outbound_label()}
-				checked={settings.secretScrubOutbound}
+				disabled={!scrubEnabled}
+				checked={scrubEnabled && settings.secretScrubOutbound}
 				onchange={(e) => settings.setSecretScrubOutbound((e.currentTarget as HTMLInputElement).checked)}
 			/>
 		</SettingRow>
 		<SettingRow
 			label={m.settings_redaction_local_transcripts_label()}
-			help={m.settings_redaction_local_transcripts_help()}
+			help={optInHelp(m.settings_redaction_local_transcripts_help())}
+			disabled={!scrubEnabled}
 			server
 		>
 			<Checkbox
 				data-journey="redact-local-transcripts"
 				label={m.settings_redaction_local_transcripts_label()}
-				checked={settings.secretScrubLocalTranscripts}
+				disabled={!scrubEnabled}
+				checked={scrubEnabled && settings.secretScrubLocalTranscripts}
 				onchange={(e) => settings.setSecretScrubLocalTranscripts((e.currentTarget as HTMLInputElement).checked)}
 			/>
 		</SettingRow>

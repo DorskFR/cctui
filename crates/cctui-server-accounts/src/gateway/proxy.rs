@@ -1049,10 +1049,11 @@ async fn prepare_body(
         }
         return Ok((reqwest::Body::wrap_stream(body_stream), RequestInfo::streamed(path_model)));
     }
+    let encoded = super::outbound_scrub::encoded(req.headers());
     let bytes = axum::body::to_bytes(req.into_body(), MAX_BUFFERED_BODY)
         .await
         .map_err(|_| Err(StatusCode::PAYLOAD_TOO_LARGE))?;
-    let bytes = super::outbound_scrub::scrub_request_body(bytes, obs.outbound_scrub.as_deref());
+    let bytes = outbound_scrubbed(state, auth, obs, encoded, bytes).await?;
     let summary = (trace == RequestTrace::Shape)
         .then(|| request_shape(&bytes))
         .flatten()
@@ -1108,6 +1109,42 @@ async fn prepare_body(
             voice,
         },
     ))
+}
+
+/// With the opt-in on, a body the scrubber cannot read is refused, never forwarded as is.
+async fn outbound_scrubbed(
+    state: &impl ProxyContext,
+    auth: &Authenticated,
+    obs: &Observers,
+    encoded: bool,
+    bytes: Bytes,
+) -> Result<Bytes, Reply> {
+    use super::outbound_scrub::{Unreadable, scrub_request_body};
+    let Some(patterns) = obs.outbound_scrub.as_deref() else { return Ok(bytes) };
+    let scrubbed =
+        if encoded { Err(Unreadable::Encoded) } else { scrub_request_body(bytes, Some(patterns)) };
+    let unreadable = match scrubbed {
+        Ok(bytes) => return Ok(bytes),
+        Err(unreadable) => unreadable,
+    };
+    let session = session_id_for_token(state, &auth.session_token).await;
+    tracing::warn!(
+        account = %auth.acct.id,
+        session = session.as_deref().unwrap_or("none"),
+        reason = unreadable.reason(),
+        "outbound secret scrub could not read the request, refusing"
+    );
+    let body = serde_json::json!({
+        "error": format!(
+            "outbound secret scrub could not read the request ({}), so it was not sent",
+            unreadable.reason()
+        ),
+    });
+    Err(Response::builder()
+        .status(unreadable.status())
+        .header(http::header::CONTENT_TYPE, "application/json")
+        .body(Body::from(body.to_string()))
+        .map_err(|_| unreadable.status()))
 }
 
 /// The upstream call, up to its response headers, as an exported client span:
