@@ -50,7 +50,6 @@
 				min="0"
 				step="1"
 				size="sm"
-				mono
 				bind:value={rate.rpm}
 				placeholder={m.limits_unlimited()}
 			/>
@@ -62,7 +61,6 @@
 				min="0"
 				step="1"
 				size="sm"
-				mono
 				bind:value={rate.tpm}
 				placeholder={m.limits_unlimited()}
 			/>
