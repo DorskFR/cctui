@@ -3333,8 +3333,6 @@
 		}
 	],
 	"list_auto_approve": "approbation auto",
-	"account_emoji_placeholder": "🐙",
-	"account_back": "Tous les comptes",
 	"settings_sound_off_hint": "Désactivé. Rien n'est chargé tant que vous ne l'activez pas.",
 	"dispatch_failed_dispatched_at": "Dispatché {at}",
 	"dispatch_failed_prompt_file": "Fichier de prompt : {file}",

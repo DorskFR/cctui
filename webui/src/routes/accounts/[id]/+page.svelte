@@ -12,7 +12,7 @@
 	import { hasFeature } from '#lib/features.svelte.ts';
 	import { m } from '#lib/paraglide/messages.js';
 	import { tick } from 'svelte';
-	import { Breadcrumb, Button, ConfirmModal, Text } from '@dorsk/tsumikit';
+	import { Breadcrumb, ConfirmModal, Text } from '@dorsk/tsumikit';
 	import PageHead from '#lib/components/molecules/PageHead.svelte';
 	import AccountEditorModal from '#lib/components/organisms/accounts/AccountEditorModal.svelte';
 	import { availableKinds, ownsAccount } from '#lib/components/organisms/accounts/account-editor.logic.ts';
@@ -106,9 +106,7 @@
 	/>
 
 	{#if account}
-		<PageHead title={account.name}>
-			<Button as="a" href={ACCOUNTS_HREF}>{m.account_back()}</Button>
-		</PageHead>
+		<PageHead title={account.name} />
 
 		<div class="sections">
 			<IdentitySection {account} {owner} />
