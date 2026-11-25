@@ -28,7 +28,14 @@
 
 <div class="tiles">
 	{#each tiles as t (t.key)}
-		<MetricTile compact value={num(t.value)} suffix={t.suffix} warn={t.warn} label={label(t.key)} />
+		<MetricTile
+			compact
+			value={num(t.value)}
+			suffix={t.suffix}
+			warn={t.warn}
+			label={label(t.key)}
+			href={t.href}
+		/>
 	{/each}
 	{#if wasted5h !== null || wastedWeekly !== null}
 		<div class="wide">

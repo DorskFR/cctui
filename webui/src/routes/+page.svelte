@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { useAccounts, useMachineResources, useSessionStats, useTokenStats } from '#lib/queries/index.ts';
+	import { useMachineResources, useSessionStats, useSessions, useTokenStats } from '#lib/queries/index.ts';
 	import { getLocale } from '#lib/paraglide/runtime.js';
 	import { hasFeature } from '#lib/features.svelte.ts';
 	import { m } from '#lib/paraglide/messages.js';
@@ -7,17 +7,19 @@
 	import MetricTile from '#lib/components/molecules/MetricTile.svelte';
 	import WindowsTable from '#lib/components/molecules/WindowsTable.svelte';
 	import UsageAnalyticsSection from '#lib/components/organisms/overview/UsageAnalyticsSection.svelte';
-	import { Card, Stack } from '@dorsk/tsumikit';
+	import { Card, Cluster, Link, Stack, Text } from '@dorsk/tsumikit';
 	import PageHead from '#lib/components/molecules/PageHead.svelte';
-	import { buildMetricTiles, machinesOnline, type MetricKey } from './home.logic';
+	import { buildMetricTiles, needsInputHref, type MetricKey } from './home.logic';
 
 	const stats = useSessionStats();
 	const tokens = useTokenStats();
 	const machines = useMachineResources(() => true);
-	const accounts = useAccounts();
+	const sessions = useSessions(() => false);
 
 	const machineRows = $derived(machines.data ?? []);
 
+	const needs = $derived(stats.data?.needs_input ?? 0);
+	const openHref = $derived(needsInputHref(sessions.data?.sessions ?? []));
 	const num = (n: number) => n.toLocaleString(getLocale());
 	const tiles = $derived(
 		buildMetricTiles(stats.data, machineRows).filter(
@@ -50,6 +52,13 @@
 			</div>
 		{/each}
 	</div>
+
+	{#if needs > 0}
+		<Cluster gap="var(--sp-2)" align="center">
+			<Text tone="warn">{m.home_needs_input_line({ count: needs })}</Text>
+			<Link href={openHref}>{m.home_needs_input_open()}</Link>
+		</Cluster>
+	{/if}
 
 	<SessionPeriodSummary stats={stats.data} />
 

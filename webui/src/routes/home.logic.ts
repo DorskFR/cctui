@@ -4,6 +4,8 @@ import type { WindowTokenUsage } from '@bindings/WindowTokenUsage';
 import type { TokenUsage } from '@bindings/TokenUsage';
 import type { SessionStats } from '@bindings/SessionStats';
 import type { MachineResourcesRow } from '@bindings/MachineResourcesRow';
+import type { SessionListItem } from '@bindings/SessionListItem';
+import { settingsHref } from '#lib/components/organisms/settings/settings.logic.ts';
 
 // Adapt a window's {input, output, cache_read} to the shape TokenUsage.svelte
 // renders (the session-card readout). cost_usd / cache_creation are unused here.
@@ -42,7 +44,13 @@ export function buildMetricTiles(
 	return [
 		{ key: 'live', value: stats?.live ?? 0, href: '/sessions' },
 		{ key: 'needs_input', value: needs, warn: needs > 0, href: '/sessions' },
-		{ key: 'machines', value: online, suffix: `/${total}` },
-		{ key: 'sessions', value: stats?.total ?? 0, sub: stats?.archived ?? 0 }
+		{ key: 'machines', value: online, suffix: `/${total}`, href: settingsHref('accounts', 'machines') },
+		{ key: 'sessions', value: stats?.total ?? 0, sub: stats?.archived ?? 0, href: '/sessions' }
 	];
+}
+
+/** Where "Open" goes: straight to the one waiting session, else the list. */
+export function needsInputHref(sessions: readonly Pick<SessionListItem, 'id' | 'attention'>[]): string {
+	const waiting = sessions.filter((s) => s.attention === 'needs_input');
+	return waiting.length === 1 ? `/sessions/${waiting[0].id}` : '/sessions';
 }

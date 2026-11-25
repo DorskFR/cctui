@@ -956,6 +956,22 @@
 	"home_usage_no_data": "Aucune donnée d'utilisation pour l'instant.",
 	"home_usage_output": "Sortie",
 	"home_usage_page_title": "Utilisation",
+	"home_needs_input_line": [
+		{
+			"declarations": [
+				"input count",
+				"local countPlural = count: plural"
+			],
+			"selectors": [
+				"countPlural"
+			],
+			"match": {
+				"countPlural=one": "{count} session attend votre réponse",
+				"countPlural=other": "{count} sessions attendent votre réponse"
+			}
+		}
+	],
+	"home_needs_input_open": "Ouvrir",
 	"home_usage_peak": "Pic {n} tokens/intervalle",
 	"home_usage_range_cost": "{usd} dépensés sur la période",
 	"home_usage_range_label": "Période",
