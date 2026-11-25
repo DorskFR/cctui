@@ -45,15 +45,17 @@
 </script>
 
 <div class="page" data-journey="dispatch-failures">
-	<PageHead title={m.dispatch_failed_history()} />
-	<div class="sub">
-		<Text size="sm" tone="faint" measure>{m.dispatch_failed_history_subtitle()}</Text>
-		{#if undismissed > 1}
-			<Button size="sm" variant="link" disabled={clearing} onclick={clearAll}>
-				{m.dispatch_failed_dismiss_all()}
-			</Button>
-		{/if}
-	</div>
+	<header class="intro">
+		<PageHead title={m.dispatch_failed_history()} />
+		<div class="sub">
+			<Text size="sm" tone="faint" measure>{m.dispatch_failed_history_subtitle()}</Text>
+			{#if undismissed > 1}
+				<Button size="sm" variant="link" disabled={clearing} onclick={clearAll}>
+					{m.dispatch_failed_dismiss_all()}
+				</Button>
+			{/if}
+		</div>
+	</header>
 
 	{#if history.isLoading}
 		<div class="msg"><Spinner /></div>
@@ -81,6 +83,11 @@
 		display: flex;
 		flex-direction: column;
 		gap: var(--sp-3);
+	}
+	.intro {
+		display: flex;
+		flex-direction: column;
+		margin-bottom: var(--sp-3);
 	}
 	.sub {
 		display: flex;

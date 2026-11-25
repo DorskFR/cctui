@@ -5,9 +5,7 @@
 	import { highlightTerms } from '#lib/search.ts';
 	import { bookmarkLine, isDeadLink, sourceHref } from '#lib/bookmarks.ts';
 	import { settings } from '#lib/settings.svelte.ts';
-	import MessageBubble, {
-		roleColor
-	} from '#lib/components/organisms/conversation/MessageBubble.svelte';
+	import MessageBubble from '#lib/components/organisms/conversation/MessageBubble.svelte';
 	import { isMachineUuid } from '#lib/components/organisms/conversation/lineRender.svelte.ts';
 	import { m } from '#lib/paraglide/messages.js';
 
@@ -104,8 +102,8 @@
 		</span>
 	</header>
 
-	<div class="lmeta" style:--bc={roleColor(line.role, line.mcp)}>
-		<Badge size="xs" uppercase color="var(--bc)">{line.mcp ? 'mcp' : line.role}</Badge>
+	<div class="lmeta">
+		<span class="role">{line.mcp ? 'mcp' : line.role}</span>
 		{#if code}
 			<span class="tool-name">{line.role === 'result' ? '↳ ' : ''}{line.tool ?? 'tool'}</span>
 		{/if}
@@ -176,7 +174,7 @@
 	.title {
 		margin: 0;
 		font-size: var(--fs-md);
-		font-weight: var(--fw-medium);
+		font-weight: var(--fw-semibold);
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
@@ -204,6 +202,13 @@
 		gap: var(--sp-2);
 		font-size: var(--fs-xs);
 		color: var(--text-faint);
+	}
+	.role {
+		display: inline-block;
+		color: var(--text-muted);
+	}
+	.role::first-letter {
+		text-transform: uppercase;
 	}
 	.tool-name {
 		font-family: var(--font-mono);

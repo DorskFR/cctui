@@ -66,8 +66,10 @@
 </script>
 
 <div class="page">
-	<PageHead title={m.bookmarks_title()} />
-	<Text size="sm" tone="faint" measure>{m.bookmarks_subtitle()}</Text>
+	<header class="intro">
+		<PageHead title={m.bookmarks_title()} />
+		<Text size="sm" tone="faint" measure>{m.bookmarks_subtitle()}</Text>
+	</header>
 
 	<Input
 		icon="search"
@@ -129,6 +131,11 @@
 		display: flex;
 		flex-direction: column;
 		gap: var(--sp-3);
+	}
+	.intro {
+		display: flex;
+		flex-direction: column;
+		margin-bottom: var(--sp-3);
 	}
 	.cards {
 		display: flex;
