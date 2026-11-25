@@ -111,12 +111,12 @@ describe("SpawnModal with no machines enrolled", () => {
     machineList = [];
   });
 
-  it("points at the Overview page and disables both CTAs with that reason", async () => {
+  it("points at Users & keys and disables both CTAs with that reason", async () => {
     await open();
-    const reason = "No machines enrolled — enroll one from the Overview page.";
+    const reason = "No machines enrolled — enroll one with a user token from Users & keys.";
     expect(text()).toContain(reason);
     expect(
-      document.querySelector<HTMLAnchorElement>('a[href="/"]'),
+      document.querySelector<HTMLAnchorElement>('a[href="/access"]'),
     ).toBeTruthy();
 
     const buttons = [...document.querySelectorAll("button")];

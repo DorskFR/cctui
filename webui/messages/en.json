@@ -2371,7 +2371,7 @@
 	"spawn_mode_yolo_label": "Yolo",
 	"spawn_model_default": "Default",
 	"spawn_no_machines": "No machines enrolled",
-	"spawn_no_machines_hint": "No machines enrolled — enroll one from the Overview page.",
+	"spawn_no_machines_hint": "No machines enrolled — enroll one with a user token from Users & keys.",
 	"spawn_no_provider": "no provider",
 	"spawn_permission_mode_label": "Permission mode",
 	"spawn_profile_account_aria": "Account",

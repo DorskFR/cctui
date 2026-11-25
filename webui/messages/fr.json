@@ -2371,7 +2371,7 @@
 	"spawn_mode_yolo_label": "Yolo",
 	"spawn_model_default": "Défaut",
 	"spawn_no_machines": "Aucune machine enrôlée",
-	"spawn_no_machines_hint": "Aucune machine enrôlée — enrôlez-en une depuis la page Vue d'ensemble.",
+	"spawn_no_machines_hint": "Aucune machine enrôlée — enrôlez-en une avec un jeton utilisateur depuis Utilisateurs et clés.",
 	"spawn_no_provider": "aucun fournisseur",
 	"spawn_permission_mode_label": "Mode de permission",
 	"spawn_profile_account_aria": "Compte",

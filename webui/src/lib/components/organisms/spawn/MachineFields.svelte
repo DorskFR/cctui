@@ -111,7 +111,7 @@
 {#if machines.length === 0}
 	<Callout tone="warn" icon="info">
 		{m.spawn_no_machines_hint()}
-		<Link href="/">{m.nav_overview()}</Link>
+		<Link href="/access">{m.access_title()}</Link>
 	</Callout>
 {/if}
 

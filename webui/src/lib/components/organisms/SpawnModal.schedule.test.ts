@@ -226,7 +226,7 @@ describe("SpawnModal schedule split-button", () => {
     machineList = [];
     await open({ seedSlot: false });
     expect(caret()).toBeNull();
-    const reason = "No machines enrolled — enroll one from the Overview page.";
+    const reason = "No machines enrolled — enroll one with a user token from Users & keys.";
     const spawn = [...document.querySelectorAll("button")].find((b) =>
       b.textContent?.includes("Launch"),
     );
