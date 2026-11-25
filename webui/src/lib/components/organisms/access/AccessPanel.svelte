@@ -117,7 +117,7 @@
 	</MasterDetail>
 {:else if self}
 	<div class="solo">
-		<EnrollMachineCard dashed />
+		<EnrollMachineCard />
 		<AccessDetail
 			user={self}
 			isAdmin={false}

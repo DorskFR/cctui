@@ -97,7 +97,7 @@
 		{/if}
 	</div>
 
-	<EnrollMachineCard dashed />
+	<EnrollMachineCard />
 </div>
 
 <style>
@@ -144,6 +144,7 @@
 		min-width: 0;
 		display: flex;
 		flex-direction: column;
+		gap: var(--sp-1);
 		text-align: start;
 	}
 	.nm {
