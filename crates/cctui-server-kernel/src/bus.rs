@@ -13,6 +13,7 @@
 use std::sync::Arc;
 
 use cctui_proto::adapter::{AdapterCommand, BootstrapFile};
+use cctui_proto::api::privacy_scan::TranscriptAuditReport;
 use cctui_proto::git::GitInfo;
 use cctui_proto::ws::{
     AgentEvent, DaemonFrameDown, DispatcherFrameDown, DispatcherFrameUp, ReadFileOk,
@@ -53,6 +54,8 @@ type GitInfoOutcome = Result<GitInfo, String>;
 /// message on failure.
 type ReadFileOutcome = Result<ReadFileOk, ReadFileRefusal>;
 
+type TranscriptAuditOutcome = Result<TranscriptAuditReport, String>;
+
 /// How long [`Bus::request_daemon`] waits for the daemon's `StageFilesResult`
 /// before giving up. Staging is local filesystem work after a small base64
 /// decode, so this is generous-but-bounded.
@@ -67,6 +70,10 @@ const LIST_DIRS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3)
 /// A large file is PUT to the blob store before the reply, so this is sized
 /// for a 32 MiB upload over a slow link.
 const READ_FILE_TIMEOUT: std::time::Duration = std::time::Duration::from_mins(1);
+
+/// How long [`Bus::request_daemon`] waits for a machine's transcript audit:
+/// it reads, and may rewrite, every local transcript the harnesses kept.
+pub const TRANSCRIPT_AUDIT_TIMEOUT: std::time::Duration = std::time::Duration::from_mins(5);
 
 /// How long [`Bus::request_dispatcher`] awaits a dispatcher reply. Spawning a
 /// container/pod can take a few seconds; status/cancel are quick. One generous
@@ -115,6 +122,8 @@ pub enum BusError {
     GitInfo(String),
     #[error("daemon could not read the file: {}", .0.message)]
     ReadFile(ReadFileRefusal),
+    #[error("daemon could not audit its transcripts: {0}")]
+    TranscriptAudit(String),
     #[error("db error: {0}")]
     Db(#[from] sqlx::Error),
     #[error("reconcile build error: {0}")]
@@ -146,6 +155,8 @@ pub enum DaemonRequest {
     /// `AdapterEvent::Diagnose` on the event stream, correlated by the bus's
     /// request id.
     Diagnose { adapter_id: String, local_id: String },
+    /// Local transcript audit, rewriting unless `dry_run` → `TranscriptAuditResult`.
+    TranscriptAudit { dry_run: bool },
 }
 
 /// Reply to a [`DaemonRequest`], variant-matched to the request.
@@ -156,6 +167,7 @@ pub enum DaemonResponse {
     GitInfo(GitInfo),
     File(ReadFileOk),
     Diagnose(Box<cctui_proto::diagnose::SessionDiagnose>),
+    TranscriptAudit(Box<TranscriptAuditReport>),
 }
 
 /// Everything the bus publishes cluster-wide: an envelope over the per-session
@@ -352,6 +364,7 @@ struct Inner {
     pending_gitinfo: DashMap<Uuid, oneshot::Sender<GitInfoOutcome>>,
     /// In-flight file reads awaiting a daemon `ReadFileResult`.
     pending_readfile: DashMap<Uuid, oneshot::Sender<ReadFileOutcome>>,
+    pending_transcript_audit: DashMap<Uuid, oneshot::Sender<TranscriptAuditOutcome>>,
     /// In-flight session-diagnose round-trips awaiting the adapter's
     /// `AdapterEvent::Diagnose` reply.
     pending_diagnose: DashMap<Uuid, oneshot::Sender<Box<cctui_proto::diagnose::SessionDiagnose>>>,
@@ -403,6 +416,7 @@ impl Bus {
                 pending_listdirs: DashMap::new(),
                 pending_gitinfo: DashMap::new(),
                 pending_readfile: DashMap::new(),
+                pending_transcript_audit: DashMap::new(),
                 pending_diagnose: DashMap::new(),
                 pending_dispatcher: DashMap::new(),
                 server_tx: broadcast::channel(CHANNEL_CAPACITY).0,
@@ -946,34 +960,47 @@ impl Bus {
             DaemonRequest::ReadFile { path, max_bytes, cwd } => {
                 self.read_file_via(tx, request_id, path, max_bytes, cwd).await
             }
+            DaemonRequest::TranscriptAudit { dry_run } => {
+                self.transcript_audit_via(tx, request_id, dry_run).await
+            }
             DaemonRequest::Diagnose { adapter_id, local_id } => {
-                let (reply_tx, reply_rx) = oneshot::channel();
-                self.inner.pending_diagnose.insert(request_id, reply_tx);
-                let _pending = PendingReply { map: &self.inner.pending_diagnose, request_id };
-                // Rides the generic Command frame: only the adapter's driver
-                // can see the per-session facts. The reply arrives as an
-                // `AdapterEvent::Diagnose` (routes::daemon fires
-                // `resolve_diagnose` with the echoed request id).
-                let frame = DaemonFrameDown::Command {
-                    adapter_id,
-                    command: Box::new(AdapterCommand::Diagnose { local_id, request_id }),
-                    trace: current_carrier(),
-                };
-                if tx.send(frame).await.is_err() {
-                    self.inner.pending_diagnose.remove(&request_id);
-                    return Err(BusError::Closed);
-                }
-                match tokio::time::timeout(DIAGNOSE_TIMEOUT, unless_closed(&tx, reply_rx)).await {
-                    Ok(Ok(report)) => Ok(DaemonResponse::Diagnose(report)),
-                    Ok(Err(_)) => {
-                        self.inner.pending_diagnose.remove(&request_id);
-                        Err(BusError::Closed)
-                    }
-                    Err(_) => {
-                        self.inner.pending_diagnose.remove(&request_id);
-                        Err(BusError::Timeout)
-                    }
-                }
+                self.diagnose_via(tx, request_id, adapter_id, local_id).await
+            }
+        }
+    }
+
+    async fn diagnose_via(
+        &self,
+        tx: mpsc::Sender<DaemonFrameDown>,
+        request_id: Uuid,
+        adapter_id: String,
+        local_id: String,
+    ) -> Result<DaemonResponse, BusError> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.inner.pending_diagnose.insert(request_id, reply_tx);
+        let _pending = PendingReply { map: &self.inner.pending_diagnose, request_id };
+        // Rides the generic Command frame: only the adapter's driver
+        // can see the per-session facts. The reply arrives as an
+        // `AdapterEvent::Diagnose` (routes::daemon fires
+        // `resolve_diagnose` with the echoed request id).
+        let frame = DaemonFrameDown::Command {
+            adapter_id,
+            command: Box::new(AdapterCommand::Diagnose { local_id, request_id }),
+            trace: current_carrier(),
+        };
+        if tx.send(frame).await.is_err() {
+            self.inner.pending_diagnose.remove(&request_id);
+            return Err(BusError::Closed);
+        }
+        match tokio::time::timeout(DIAGNOSE_TIMEOUT, unless_closed(&tx, reply_rx)).await {
+            Ok(Ok(report)) => Ok(DaemonResponse::Diagnose(report)),
+            Ok(Err(_)) => {
+                self.inner.pending_diagnose.remove(&request_id);
+                Err(BusError::Closed)
+            }
+            Err(_) => {
+                self.inner.pending_diagnose.remove(&request_id);
+                Err(BusError::Timeout)
             }
         }
     }
@@ -1005,6 +1032,26 @@ impl Bus {
                 self.inner.pending_readfile.remove(&request_id);
                 Err(BusError::Timeout)
             }
+        }
+    }
+
+    async fn transcript_audit_via(
+        &self,
+        tx: mpsc::Sender<DaemonFrameDown>,
+        request_id: Uuid,
+        dry_run: bool,
+    ) -> Result<DaemonResponse, BusError> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.inner.pending_transcript_audit.insert(request_id, reply_tx);
+        let _pending = PendingReply { map: &self.inner.pending_transcript_audit, request_id };
+        if tx.send(DaemonFrameDown::TranscriptAudit { request_id, dry_run }).await.is_err() {
+            return Err(BusError::Closed);
+        }
+        match tokio::time::timeout(TRANSCRIPT_AUDIT_TIMEOUT, unless_closed(&tx, reply_rx)).await {
+            Ok(Ok(Ok(report))) => Ok(DaemonResponse::TranscriptAudit(Box::new(report))),
+            Ok(Ok(Err(msg))) => Err(BusError::TranscriptAudit(msg)),
+            Ok(Err(_)) => Err(BusError::Closed),
+            Err(_) => Err(BusError::Timeout),
         }
     }
 
@@ -1109,6 +1156,22 @@ impl Bus {
     pub fn resolve_read_file(&self, request_id: Uuid, outcome: ReadFileOutcome) -> bool {
         self.inner
             .pending_readfile
+            .remove(&request_id)
+            .map(|(_, reply_tx)| {
+                let _ = reply_tx.send(outcome);
+            })
+            .is_some()
+    }
+
+    /// Fire the oneshot a transcript audit is awaiting. Returns `false` for an
+    /// unknown request id.
+    pub fn resolve_transcript_audit(
+        &self,
+        request_id: Uuid,
+        outcome: TranscriptAuditOutcome,
+    ) -> bool {
+        self.inner
+            .pending_transcript_audit
             .remove(&request_id)
             .map(|(_, reply_tx)| {
                 let _ = reply_tx.send(outcome);
@@ -2029,6 +2092,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn request_daemon_transcript_audit_round_trip_and_error() {
+        let bus = bus();
+        let machine = Uuid::new_v4();
+        let (tx, mut rx) = mpsc::channel(8);
+        bus.register_daemon(machine, Uuid::new_v4(), tx);
+
+        let bus2 = bus.clone();
+        tokio::spawn(async move {
+            let Some(DaemonFrameDown::TranscriptAudit { request_id, dry_run: true }) =
+                rx.recv().await
+            else {
+                panic!("expected a dry-run TranscriptAudit");
+            };
+            let report = TranscriptAuditReport { files_scanned: 4, ..Default::default() };
+            bus2.resolve_transcript_audit(request_id, Ok(report));
+            let Some(DaemonFrameDown::TranscriptAudit { request_id, dry_run: false }) =
+                rx.recv().await
+            else {
+                panic!("expected an applying TranscriptAudit");
+            };
+            bus2.resolve_transcript_audit(request_id, Err("disk full".into()));
+        });
+
+        let ok = bus
+            .request_daemon(machine, DaemonRequest::TranscriptAudit { dry_run: true })
+            .await
+            .unwrap();
+        assert!(matches!(ok, DaemonResponse::TranscriptAudit(r) if r.files_scanned == 4));
+        let err = bus
+            .request_daemon(machine, DaemonRequest::TranscriptAudit { dry_run: false })
+            .await
+            .unwrap_err();
+        assert!(matches!(err, BusError::TranscriptAudit(m) if m == "disk full"));
+        assert!(!bus.resolve_transcript_audit(Uuid::new_v4(), Err(String::new())));
+    }
+
+    #[tokio::test]
     async fn resolve_unknown_request_id_reports_false() {
         let bus = bus();
         assert!(!bus.resolve_stage_files(Uuid::new_v4(), Ok(Vec::new())));
@@ -2228,6 +2328,7 @@ mod cancellation_tests {
             + bus.inner.pending_gitinfo.len()
             + bus.inner.pending_readfile.len()
             + bus.inner.pending_diagnose.len()
+            + bus.inner.pending_transcript_audit.len()
     }
 
     #[tokio::test]

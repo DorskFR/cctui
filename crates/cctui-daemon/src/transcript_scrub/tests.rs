@@ -235,3 +235,21 @@ fn masked_spans_recovers_each_value_beside_existing_placeholders() {
         vec![("x".to_owned(), "SECRET1".to_owned()), ("y".to_owned(), "SECRET2".to_owned())]
     );
 }
+
+#[test]
+fn the_server_report_carries_counts_and_masked_samples_only() {
+    let fx = fixture();
+    let audit = fx.pass(Mode::DryRun, &fx.idle(), None).to_audit();
+    assert!(audit.dry_run);
+    assert_eq!((audit.files_scanned, audit.files_changed), (1, 1));
+    assert_eq!(audit.by_category.get("github_token"), Some(&1));
+    assert!(!audit.samples.get("github_token").is_none_or(Vec::is_empty), "{audit:?}");
+    let wire = serde_json::to_string(&audit).unwrap();
+    assert!(!wire.contains(TOKEN), "the reply leaks the value: {wire}");
+    assert!(!wire.contains(SESSION) && !wire.contains(CWD), "{wire}");
+
+    let applied = fx.pass(Mode::Apply, &fx.idle(), None).to_audit();
+    assert!(!applied.dry_run);
+    assert_eq!(applied.files_changed, 1);
+    assert!(!fx.bytes().windows(TOKEN.len()).any(|w| w == TOKEN.as_bytes()));
+}

@@ -449,7 +449,7 @@ async fn an_adopted_legacy_schema_ends_without_the_search_text_column() {
             .fetch_all(&pool)
             .await
             .unwrap();
-            assert_eq!(versions.last(), Some(&31), "search={search}");
+            assert_eq!(versions.last(), Some(&33), "search={search}");
 
             let next: i64 = sqlx::query_scalar(
                 "INSERT INTO stream_events (session_id,event_type,payload) \

@@ -90,6 +90,9 @@ pub enum DaemonFrameUp {
         /// Supports targeted worker authentication recovery before a reply.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         auth_recovery: Option<bool>,
+        /// Answers [`DaemonFrameDown::TranscriptAudit`].
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        transcript_audit: Option<bool>,
     },
     /// Reply to [`DaemonFrameDown::StageFiles`].
     StageFilesResult {
@@ -131,6 +134,14 @@ pub enum DaemonFrameUp {
         /// Folders a `Denied` was checked against. Empty from older daemons.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         allowed_folders: Vec<String>,
+    },
+    /// Reply to [`DaemonFrameDown::TranscriptAudit`]: a report, or an error.
+    TranscriptAuditResult {
+        request_id: uuid::Uuid,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        report: Option<crate::api::privacy_scan::TranscriptAuditReport>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
     },
     /// One chunk of an up-frame split by [`crate::chunk`]. `transfer_id` is the
     /// payload hash; `data` is base64. `codec: Some("zstd")` means the joined
@@ -238,6 +249,13 @@ pub enum DaemonFrameDown {
         max_bytes: u64,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         cwd: Option<String>,
+    },
+    /// Audit this machine's local harness transcripts with the detectors of
+    /// the last `Reconcile`, rewriting them unless `dry_run`. Sent only to
+    /// daemons that report `transcript_audit`.
+    TranscriptAudit {
+        request_id: uuid::Uuid,
+        dry_run: bool,
     },
     /// `None` means no usable prefix; restart from chunk 0.
     ChunkAck {
@@ -353,6 +371,7 @@ impl DaemonFrameDown {
             | Self::TranscriptAck { .. }
             | Self::ArchivedJobs { .. }
             | Self::RefreshCodexModels {}
+            | Self::TranscriptAudit { .. }
             | Self::Features { .. } => &[],
         }
     }
@@ -1364,6 +1383,40 @@ mod tests {
     }
 
     #[test]
+    fn transcript_audit_round_trips_and_an_error_reply_omits_the_report() {
+        let down =
+            DaemonFrameDown::TranscriptAudit { request_id: uuid::Uuid::nil(), dry_run: true };
+        let json = serde_json::to_string(&down).unwrap();
+        assert!(json.contains(r#""type":"transcript_audit""#), "{json}");
+        let back: DaemonFrameDown = serde_json::from_str(&json).unwrap();
+        assert!(matches!(back, DaemonFrameDown::TranscriptAudit { dry_run: true, .. }));
+
+        let mut report = crate::api::privacy_scan::TranscriptAuditReport {
+            files_scanned: 3,
+            ..Default::default()
+        };
+        report.by_category.insert("github_token".into(), 2);
+        let up = DaemonFrameUp::TranscriptAuditResult {
+            request_id: uuid::Uuid::nil(),
+            report: Some(report.clone()),
+            error: None,
+        };
+        let back: DaemonFrameUp =
+            serde_json::from_str(&serde_json::to_string(&up).unwrap()).unwrap();
+        assert!(
+            matches!(back, DaemonFrameUp::TranscriptAuditResult { report: Some(r), .. } if r == report)
+        );
+
+        let failed = DaemonFrameUp::TranscriptAuditResult {
+            request_id: uuid::Uuid::nil(),
+            report: None,
+            error: Some("busy".into()),
+        };
+        let json = serde_json::to_string(&failed).unwrap();
+        assert!(!json.contains("report"), "{json}");
+    }
+
+    #[test]
     fn heartbeat_carries_bandwidth_and_accepts_legacy_payload() {
         let hb = DaemonFrameUp::Heartbeat {
             sent_at: chrono::Utc::now(),
@@ -1381,6 +1434,7 @@ mod tests {
             harness: Some(crate::harness::HarnessReport::default()),
             mark_acks: Some(true),
             auth_recovery: Some(true),
+            transcript_audit: Some(true),
         };
         let json = serde_json::to_string(&hb).unwrap();
         assert!(json.contains(r#""forward":900"#), "{json}");
@@ -1389,6 +1443,7 @@ mod tests {
         assert!(json.contains(r#""blob_put":42"#), "{json}");
         assert!(json.contains(r#""update_hook":true"#), "{json}");
         assert!(json.contains(r#""auth_recovery":true"#), "{json}");
+        assert!(json.contains(r#""transcript_audit":true"#), "{json}");
 
         let legacy = r#"{"type":"heartbeat","sent_at":"2026-07-21T00:00:00Z"}"#;
         let back: DaemonFrameUp = serde_json::from_str(legacy).unwrap();
@@ -1403,8 +1458,10 @@ mod tests {
                 harness,
                 mark_acks,
                 auth_recovery,
+                transcript_audit,
                 ..
             } => {
+                assert!(transcript_audit.is_none(), "a legacy daemon cannot audit transcripts");
                 assert!(harness.is_none());
                 assert!(mark_acks.is_none(), "silence is not support");
                 assert!(auth_recovery.is_none(), "legacy daemons cannot recover authentication");
@@ -2145,6 +2202,7 @@ mod tests {
             (down(json!({ "type": "archived_jobs", "session_ids": [] })), &[]),
             (down(json!({ "type": "refresh_codex_models" })), &[]),
             (down(json!({ "type": "features", "off": [] })), &[]),
+            (down(json!({ "type": "transcript_audit", "request_id": id, "dry_run": true })), &[]),
             (
                 down(json!({
                     "type": "stage_files", "request_id": id, "adapter_id": "a",

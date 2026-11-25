@@ -319,10 +319,231 @@ fn identifier_warning_fires_only_for_user_patterns() {
             None,
             chrono::Utc::now(),
             None,
+            None,
         ))
     };
     assert!(row("mytoken", samples(10, 1)).categories[0].identifier_warning);
     assert!(!row("mytoken", samples(10, 9)).categories[0].identifier_warning);
     assert!(!row("mytoken", samples(2, 0)).categories[0].identifier_warning);
     assert!(!row("github_token", samples(10, 0)).categories[0].identifier_warning);
+}
+
+mod local_transcripts {
+    use std::collections::BTreeMap;
+
+    use cctui_proto::api::privacy_scan::{
+        MachineScanState, NotScannedReason, ScanSample, TranscriptAuditReport,
+    };
+    use cctui_proto::ws::DaemonFrameDown;
+    use tokio::sync::mpsc;
+
+    use super::super::local;
+    use super::*;
+
+    async fn opt_in(pool: &PgPool, uid: Uuid, on: bool) {
+        sqlx::query("INSERT INTO user_settings (user_id, version, data) VALUES ($1, 1, $2)")
+            .bind(uid)
+            .bind(json!({ "secretScrubLocalTranscripts": on }))
+            .execute(pool)
+            .await
+            .unwrap();
+    }
+
+    async fn machine_state(pool: &PgPool, machine: Uuid, capable: bool, seen_mins_ago: i64) {
+        sqlx::query(
+            "UPDATE machines SET transcript_audit = $2, \
+             last_seen_at = now() - $3::bigint * interval '1 minute' WHERE id = $1",
+        )
+        .bind(machine)
+        .bind(capable)
+        .bind(seen_mins_ago)
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    async fn add_machine(pool: &PgPool, uid: Uuid, name: &str) -> Uuid {
+        let id = Uuid::new_v4();
+        sqlx::query("INSERT INTO machines (id, user_id, name, key_hash) VALUES ($1, $2, $3, $4)")
+            .bind(id)
+            .bind(uid)
+            .bind(name)
+            .bind(format!("kh-{id}"))
+            .execute(pool)
+            .await
+            .unwrap();
+        id
+    }
+
+    fn report(dry_run: bool, cat: &str, count: i64, files_changed: i64) -> TranscriptAuditReport {
+        TranscriptAuditReport {
+            dry_run,
+            files_scanned: 5,
+            files_changed,
+            substitutions: count,
+            by_category: BTreeMap::from([(cat.to_owned(), count)]),
+            samples: BTreeMap::from([(
+                cat.to_owned(),
+                vec![ScanSample {
+                    text: "ghp_AB…".into(),
+                    context: "export TOKEN=".into(),
+                    value_follows: true,
+                }],
+            )]),
+            ..TranscriptAuditReport::default()
+        }
+    }
+
+    /// A connected daemon that answers one audit with `reply` and hands back
+    /// the `dry_run` it was asked for.
+    fn fake_daemon(
+        state: &AppState,
+        machine: Uuid,
+        reply: TranscriptAuditReport,
+    ) -> tokio::task::JoinHandle<Option<bool>> {
+        let (tx, mut rx) = mpsc::channel(8);
+        state.bus.register_daemon(machine, Uuid::new_v4(), tx);
+        let bus = state.bus.clone();
+        tokio::spawn(async move {
+            let Some(DaemonFrameDown::TranscriptAudit { request_id, dry_run }) = rx.recv().await
+            else {
+                return None;
+            };
+            bus.resolve_transcript_audit(request_id, Ok(reply));
+            Some(dry_run)
+        })
+    }
+
+    #[tokio::test]
+    async fn dry_run_merges_every_daemon_finding_by_category() {
+        let Some((pool, uid, machine)) = setup("privacy_scan_local_merge").await else { return };
+        let other = add_machine(&pool, uid, "second").await;
+        opt_in(&pool, uid, true).await;
+        machine_state(&pool, machine, true, 0).await;
+        machine_state(&pool, other, true, 0).await;
+        let sid = seed_session(&pool, uid, machine).await;
+        seed_event(&pool, &sid, &format!("export TOKEN={TOKEN}")).await;
+
+        let state = AppState::for_test(pool.clone());
+        let a = fake_daemon(&state, machine, report(true, "github_token", 2, 1));
+        let b = fake_daemon(&state, other, report(true, "github_token", 3, 2));
+        let id = insert_job(&pool, uid, true).await;
+        run(state, spec(id, uid, true)).await;
+        assert_eq!(a.await.unwrap(), Some(true));
+        assert_eq!(b.await.unwrap(), Some(true));
+
+        let j = job(&pool, id).await;
+        assert_eq!(j.status, "completed");
+        assert_eq!(j.by_category.get("github_token"), Some(&1), "the DB part is unchanged");
+        let local = j.local_transcripts.expect("local section");
+        assert_eq!(local.machines.len(), 2);
+        assert!(local.machines.iter().all(|m| m.state == MachineScanState::Scanned));
+        let cat = local.categories.iter().find(|c| c.category == "github_token").unwrap();
+        assert_eq!(cat.count, 5);
+        assert_eq!(cat.samples.len(), 2);
+        assert_eq!((local.substitutions, local.files_changed), (5, 3));
+        sqlx::query("DELETE FROM machines WHERE id = $1").bind(other).execute(&pool).await.unwrap();
+        cleanup(&pool, uid, machine).await;
+    }
+
+    #[tokio::test]
+    async fn an_offline_machine_is_not_scanned_rather_than_clean() {
+        let Some((pool, uid, machine)) = setup("privacy_scan_local_offline").await else { return };
+        let gone = add_machine(&pool, uid, "gone").await;
+        opt_in(&pool, uid, true).await;
+        machine_state(&pool, machine, true, 0).await;
+        machine_state(&pool, gone, true, 60).await;
+
+        let state = AppState::for_test(pool.clone());
+        let id = insert_job(&pool, uid, true).await;
+        run(state, spec(id, uid, true)).await;
+
+        let local = job(&pool, id).await.local_transcripts.expect("local section");
+        assert_eq!(local.machines.len(), 2);
+        for m in &local.machines {
+            assert_eq!(m.state, MachineScanState::NotScanned, "{m:?}");
+            assert_eq!(m.reason, Some(NotScannedReason::Offline), "{m:?}");
+            assert!(m.report.is_none());
+        }
+        assert!(local.categories.is_empty());
+        sqlx::query("DELETE FROM machines WHERE id = $1").bind(gone).execute(&pool).await.unwrap();
+        cleanup(&pool, uid, machine).await;
+    }
+
+    #[tokio::test]
+    async fn an_apply_run_asks_the_daemon_to_rewrite_and_reports_changed_files() {
+        let Some((pool, uid, machine)) = setup("privacy_scan_local_apply").await else { return };
+        opt_in(&pool, uid, true).await;
+        machine_state(&pool, machine, true, 0).await;
+
+        let state = AppState::for_test(pool.clone());
+        let daemon = fake_daemon(&state, machine, report(false, "github_token", 4, 3));
+        let id = insert_job(&pool, uid, false).await;
+        run(state, spec(id, uid, false)).await;
+        assert_eq!(daemon.await.unwrap(), Some(false), "an apply run is not a dry run");
+
+        let j = job(&pool, id).await;
+        assert_eq!(j.status, "completed");
+        let local = j.local_transcripts.expect("local section");
+        assert_eq!(local.files_changed, 3);
+        let scanned = &local.machines[0];
+        assert_eq!(scanned.state, MachineScanState::Scanned);
+        assert_eq!(scanned.report.as_ref().map(|r| r.files_changed), Some(3));
+        cleanup(&pool, uid, machine).await;
+    }
+
+    #[tokio::test]
+    async fn an_older_daemon_is_skipped_with_a_reason() {
+        let Some((pool, uid, machine)) = setup("privacy_scan_local_outdated").await else { return };
+        opt_in(&pool, uid, true).await;
+        machine_state(&pool, machine, false, 0).await;
+
+        let state = AppState::for_test(pool.clone());
+        let (tx, mut rx) = mpsc::channel(8);
+        state.bus.register_daemon(machine, Uuid::new_v4(), tx);
+        let id = insert_job(&pool, uid, true).await;
+        run(state, spec(id, uid, true)).await;
+
+        assert!(rx.try_recv().is_err(), "an older daemon is never sent the audit");
+        let local = job(&pool, id).await.local_transcripts.expect("local section");
+        assert_eq!(local.machines[0].state, MachineScanState::NotScanned);
+        assert_eq!(local.machines[0].reason, Some(NotScannedReason::Outdated));
+        cleanup(&pool, uid, machine).await;
+    }
+
+    #[tokio::test]
+    async fn without_the_opt_in_the_job_is_database_only() {
+        let Some((pool, uid, machine)) = setup("privacy_scan_local_off").await else { return };
+        opt_in(&pool, uid, false).await;
+        machine_state(&pool, machine, true, 0).await;
+
+        let state = AppState::for_test(pool.clone());
+        let (tx, mut rx) = mpsc::channel(8);
+        state.bus.register_daemon(machine, Uuid::new_v4(), tx);
+        let id = insert_job(&pool, uid, true).await;
+        run(state, spec(id, uid, true)).await;
+
+        assert!(rx.try_recv().is_err(), "no daemon is asked");
+        let j = job(&pool, id).await;
+        assert_eq!(j.status, "completed");
+        assert!(j.local_transcripts.is_none());
+        cleanup(&pool, uid, machine).await;
+    }
+
+    #[test]
+    fn a_daemon_error_or_timeout_is_a_reason_not_an_empty_report() {
+        use cctui_server_kernel::bus::BusError;
+        let mut entry = local::initial(Uuid::nil(), "m".into(), true, true);
+        assert_eq!(entry.state, MachineScanState::Pending);
+        local::settle(&mut entry, Err(BusError::Timeout));
+        assert_eq!(entry.reason, Some(NotScannedReason::Timeout));
+        local::settle(&mut entry, Err(BusError::TranscriptAudit("disk".into())));
+        assert_eq!(
+            (entry.reason, entry.detail.as_deref()),
+            (Some(NotScannedReason::Failed), Some("disk"))
+        );
+        let mut pending = vec![local::initial(Uuid::nil(), "m".into(), true, true)];
+        local::cancel_pending(&mut pending);
+        assert_eq!(pending[0].reason, Some(NotScannedReason::Cancelled));
+    }
 }

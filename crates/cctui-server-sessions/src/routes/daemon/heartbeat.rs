@@ -13,6 +13,7 @@ pub(super) fn on_heartbeat<S: SessionsContext>(state: &S, machine_id: Uuid, fram
         harness,
         mark_acks,
         auth_recovery,
+        transcript_audit,
         ..
     } = frame
     else {
@@ -44,6 +45,7 @@ pub(super) fn on_heartbeat<S: SessionsContext>(state: &S, machine_id: Uuid, fram
         {
             tracing::warn!(%err, %machine_id, "heartbeat last_seen_at bump failed");
         }
+        record_transcript_audit(state.pool(), machine_id, transcript_audit == Some(true)).await;
         if let Some(bandwidth) = bandwidth {
             persist_bandwidth(&state, machine_id, &bandwidth).await;
         }
@@ -71,6 +73,22 @@ const fn handles_updates(features: cctui_proto::features::FeatureSet) -> bool {
 /// Host snapshots feed the machine resource view, which is part of `machine_spawn`.
 const fn records_resources(features: cctui_proto::features::FeatureSet) -> bool {
     features.contains(cctui_proto::features::Feature::MachineSpawn)
+}
+
+/// Persisted rather than kept per pod: the privacy scan that reads it may run
+/// on a replica that does not hold this daemon's socket.
+async fn record_transcript_audit(pool: &sqlx::PgPool, machine_id: Uuid, supported: bool) {
+    if let Err(err) = sqlx::query(
+        "UPDATE machines SET transcript_audit = $2 \
+         WHERE id = $1 AND transcript_audit IS DISTINCT FROM $2",
+    )
+    .bind(machine_id)
+    .bind(supported)
+    .execute(pool)
+    .await
+    {
+        tracing::debug!(%err, %machine_id, "transcript audit flag not recorded");
+    }
 }
 
 /// Track an explicitly advertised daemon capability. Silence withdraws support,

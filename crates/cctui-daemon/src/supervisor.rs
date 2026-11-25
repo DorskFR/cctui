@@ -702,6 +702,7 @@ impl Supervisor {
             harness: Some(crate::harness_update::report()),
             mark_acks: Some(true),
             auth_recovery: Some(true),
+            transcript_audit: Some(true),
         };
         let payload = serde_json::to_string(&hb)?;
         self.counters.add(Subsystem::Heartbeat, payload.len() as u64);
@@ -942,6 +943,9 @@ impl Supervisor {
             }
             DaemonFrameDown::ReadFile { request_id, path, max_bytes, cwd } => {
                 self.spawn_read_file(request_id, path, max_bytes, cwd, frame_up_tx.clone());
+            }
+            DaemonFrameDown::TranscriptAudit { request_id, dry_run } => {
+                crate::transcript_scrub::serve_audit(request_id, dry_run, frame_up_tx.clone());
             }
             DaemonFrameDown::RunUpdateHook { run_id, version, release_url } => {
                 self.spawn_update_hook(run_id, version, release_url);
@@ -3121,6 +3125,7 @@ mod tests {
             harness: None,
             mark_acks: None,
             auth_recovery: None,
+            transcript_audit: None,
         };
         let super::Prepared::Frame(text) = super::prepare_send(&hb).unwrap() else {
             panic!("heartbeat must not chunk")

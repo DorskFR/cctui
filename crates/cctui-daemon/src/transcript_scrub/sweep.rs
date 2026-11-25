@@ -4,9 +4,11 @@ use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, UNIX_EPOCH};
 
 use cctui_crypto::redact::{self, CompiledPatterns};
-use cctui_proto::ws::SecretScrubConfig;
+use cctui_proto::api::privacy_scan::TranscriptAuditReport;
+use cctui_proto::ws::{DaemonFrameUp, SecretScrubConfig};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use super::{IDLE, Liveness, Mode, Options, Report, Roots, Stamp, run, targets};
@@ -21,7 +23,14 @@ struct Running {
 
 static SWEEP: Mutex<Option<Running>> = Mutex::new(None);
 
+static LAST_CONFIG: Mutex<Option<SecretScrubConfig>> = Mutex::new(None);
+
+/// One pass over the transcripts at a time, so a requested audit never
+/// rewrites a file the background sweep is rewriting.
+static PASS: Mutex<()> = Mutex::new(());
+
 pub fn configure(cfg: &SecretScrubConfig) {
+    *LAST_CONFIG.lock().unwrap_or_else(PoisonError::into_inner) = Some(cfg.clone());
     let mut slot = SWEEP.lock().unwrap_or_else(PoisonError::into_inner);
     let key = cfg.local_transcripts.then(|| patterns_key(cfg));
     if slot.as_ref().map(|r| &r.key) == key.as_ref() {
@@ -62,6 +71,7 @@ async fn sweep_loop(cfg: SecretScrubConfig, key: String, stop: CancellationToken
 }
 
 fn sweep_once(cfg: &SecretScrubConfig, key: &str, stop: &CancellationToken) -> Report {
+    let _pass = PASS.lock().unwrap_or_else(PoisonError::into_inner);
     let roots = Roots { codex_sessions: None, ..Roots::of_machine() };
     let patterns = compile(cfg);
     let all = targets(&roots);
@@ -72,6 +82,41 @@ fn sweep_once(cfg: &SecretScrubConfig, key: &str, stop: &CancellationToken) -> R
     ledger.files.retain(|k, _| present.contains(k));
     ledger.flush();
     report
+}
+
+/// Built-ins plus the user patterns of the last `Reconcile`; live files and
+/// codex rollouts are read, never rewritten.
+#[must_use]
+pub fn audit_for_server(dry_run: bool) -> TranscriptAuditReport {
+    let user = LAST_CONFIG.lock().unwrap_or_else(PoisonError::into_inner).clone();
+    let cfg = SecretScrubConfig { enabled: true, ..user.unwrap_or_default() };
+    let roots = Roots::of_machine();
+    let mode = if dry_run { Mode::DryRun } else { Mode::Apply };
+    let opts = Options { mode, scan_live: true, collect: true, idle: IDLE };
+    let _pass = PASS.lock().unwrap_or_else(PoisonError::into_inner);
+    let all = targets(&roots);
+    let stop = CancellationToken::new();
+    run(&all, &Liveness::probe(&roots), &compile(&cfg), opts, &stop, None).to_audit()
+}
+
+pub fn serve_audit(request_id: uuid::Uuid, dry_run: bool, up: mpsc::Sender<DaemonFrameUp>) {
+    tokio::spawn(async move {
+        let reply = match tokio::task::spawn_blocking(move || audit_for_server(dry_run)).await {
+            Ok(report) => DaemonFrameUp::TranscriptAuditResult {
+                request_id,
+                report: Some(report),
+                error: None,
+            },
+            Err(err) => DaemonFrameUp::TranscriptAuditResult {
+                request_id,
+                report: None,
+                error: Some(format!("transcript audit stopped: {err}")),
+            },
+        };
+        if up.send(reply).await.is_err() {
+            tracing::warn!("frame_up channel closed; dropping TranscriptAuditResult");
+        }
+    });
 }
 
 /// Built-in detectors only: the user's patterns live on the server.

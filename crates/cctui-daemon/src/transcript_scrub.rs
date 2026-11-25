@@ -17,14 +17,14 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use cctui_crypto::redact::CompiledPatterns;
-use cctui_proto::api::privacy_scan::ScanSample;
+use cctui_proto::api::privacy_scan::{ScanSample, TranscriptAuditReport};
 use serde::Serialize;
 use tokio_util::sync::CancellationToken;
 
 pub use self::audit::Finding;
 pub use self::liveness::Liveness;
 pub use self::rewrite::{FileOutcome, Mode, Stamp, process_file};
-pub use self::sweep::{Ledger, compile, configure, scrub_machine};
+pub use self::sweep::{Ledger, audit_for_server, compile, configure, scrub_machine, serve_audit};
 
 pub const IDLE: Duration = Duration::from_mins(30);
 
@@ -93,6 +93,24 @@ pub struct Report {
 }
 
 impl Report {
+    #[must_use]
+    pub fn to_audit(&self) -> TranscriptAuditReport {
+        let n = |v: usize| i64::try_from(v).unwrap_or(i64::MAX);
+        TranscriptAuditReport {
+            dry_run: self.dry_run,
+            files_scanned: n(self.files_scanned),
+            files_changed: n(self.files_changed),
+            files_read_only: n(self.files_read_only),
+            files_live: n(self.files_live),
+            files_busy: n(self.files_busy),
+            files_failed: n(self.files_failed),
+            lines_changed: n(self.lines_changed),
+            substitutions: n(self.substitutions),
+            by_category: self.by_category.iter().map(|(c, v)| (c.clone(), n(*v))).collect(),
+            samples: self.samples.clone(),
+        }
+    }
+
     fn absorb(&mut self, out: &FileOutcome, harness: Harness, mode: Mode) {
         for (cat, n) in &out.stats {
             *self.by_category.entry(cat.clone()).or_insert(0) += n;
