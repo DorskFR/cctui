@@ -112,7 +112,6 @@
 
 <style>
 	.feed {
-		border: 1px solid var(--border);
 		border-radius: var(--r-md);
 		background: var(--bg-elevated);
 		overflow: hidden;
