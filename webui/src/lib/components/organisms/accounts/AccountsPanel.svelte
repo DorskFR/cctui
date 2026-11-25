@@ -17,7 +17,7 @@
 	import AccountCard from '#lib/components/organisms/AccountCard.svelte';
 	import AccountsBoard from './AccountsBoard.svelte';
 	import AccountEditorModal from './AccountEditorModal.svelte';
-	import { availableKinds } from './account-editor.logic';
+	import { availableKinds, ownsAccount } from './account-editor.logic';
 	import { accountHref } from './account-page/account-nav.logic';
 	import { Button } from '@dorsk/tsumikit';
 	import PageHead from '#lib/components/molecules/PageHead.svelte';
@@ -113,8 +113,9 @@
 				pools={poolList}
 				enabled
 				managed={isManaged(a)}
+				owned={ownsAccount(a, me.data)}
 				canAddProvider={!isManaged(a) && availableKinds(a).length > 0}
-				canShare={sharing && !isManaged(a) && (isAdmin || a.user_id === me.data?.user_id)}
+				canShare={sharing && !isManaged(a) && ownsAccount(a, me.data)}
 				showOwner={isAdmin}
 				redirects={redirectsFor(a.id)}
 				redirectTargets={redirectTargetsFor(a)}

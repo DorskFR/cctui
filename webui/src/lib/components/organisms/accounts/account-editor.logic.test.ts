@@ -6,9 +6,11 @@ import {
 	buildRateLimits,
 	buildSoftLimits,
 	buildUsageNotices,
+	canEditProvider,
 	envObject,
 	fwModelList,
-	modelList
+	modelList,
+	ownsAccount
 } from './account-editor.logic';
 
 describe('buildSoftLimits', () => {
@@ -74,5 +76,40 @@ describe('availableKinds', () => {
 		expect(kinds).not.toContain('anthropic');
 		expect(kinds).not.toContain('anthropic-compatible');
 		expect(kinds).toContain('openai');
+	});
+});
+
+describe('ownsAccount', () => {
+	const account = { user_id: 'owner' };
+
+	it('lets the owner edit their account', () => {
+		expect(ownsAccount(account, { role: 'user', user_id: 'owner' })).toBe(true);
+	});
+
+	it('keeps an account shared with another user read-only', () => {
+		expect(ownsAccount(account, { role: 'user', user_id: 'guest' })).toBe(false);
+	});
+
+	it('lets an admin edit any account', () => {
+		expect(ownsAccount(account, { role: 'admin', user_id: 'root' })).toBe(true);
+	});
+
+	it('is read-only until the signed-in user is known', () => {
+		expect(ownsAccount(account, undefined)).toBe(false);
+		expect(ownsAccount(account, { role: 'user', user_id: null })).toBe(false);
+	});
+});
+
+describe('canEditProvider', () => {
+	it('offers caps on an owned, unmanaged provider', () => {
+		expect(canEditProvider({ managed: false }, true)).toBe(true);
+	});
+
+	it('locks caps on a shared account', () => {
+		expect(canEditProvider({ managed: false }, false)).toBe(false);
+	});
+
+	it('locks caps on a managed provider even for the owner', () => {
+		expect(canEditProvider({ managed: true }, true)).toBe(false);
 	});
 });
