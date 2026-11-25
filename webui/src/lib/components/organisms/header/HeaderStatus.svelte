@@ -115,6 +115,8 @@
 		gap: var(--sp-4);
 		width: 20rem;
 		max-width: 100%;
+		padding: var(--sp-2) var(--sp-3);
+		box-sizing: border-box;
 		max-height: 75dvh;
 		overflow: hidden auto;
 		overscroll-behavior: contain;
