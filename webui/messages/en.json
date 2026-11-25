@@ -2221,6 +2221,8 @@
 	"settings_motion_label": "Motion",
 	"settings_motion_help": "Micro-interactions on buttons, switches, tabs and cards.",
 	"settings_motion_reset": "Reset",
+	"settings_motion_effects": "Effects",
+	"settings_motion_effects_toggle": "Choose the effect for each kind of control",
 	"settings_motion_reduced_hint": "Your system asks for reduced motion: effects show their static fallback.",
 	"settings_sound_help": "Short UI sounds on clicks, toggles and results. Off by default.",
 	"settings_sound_switch": "Sound effects",
@@ -3356,7 +3358,6 @@
 	"usage_battery_aria": "Usage: {account} {provider}, 5h {five}, weekly {weekly}",
 	"usage_battery_unknown": "unknown",
 	"usage_battery_weekly": "weekly",
-	"settings_sound_off_hint": "Off. Nothing is loaded until you turn it on.",
 	"dispatch_failed_dispatched_at": "Dispatched {at}",
 	"dispatch_failed_prompt_file": "Prompt file: {file}",
 	"spawn_optional_settings": "Optional settings"

@@ -2221,6 +2221,8 @@
 	"settings_motion_label": "Animations",
 	"settings_motion_help": "Micro-interactions sur les boutons, interrupteurs, onglets et cartes.",
 	"settings_motion_reset": "Réinitialiser",
+	"settings_motion_effects": "Effets",
+	"settings_motion_effects_toggle": "Choisir l’effet de chaque type de contrôle",
 	"settings_motion_reduced_hint": "Votre système demande moins d'animations : les effets restent statiques.",
 	"settings_sound_help": "Courts sons d'interface sur les clics, bascules et résultats. Désactivé par défaut.",
 	"settings_sound_switch": "Effets sonores",
@@ -3356,7 +3358,6 @@
 	"usage_battery_aria": "Consommation : {account} {provider}, 5h {five}, hebdo {weekly}",
 	"usage_battery_unknown": "inconnu",
 	"usage_battery_weekly": "hebdo",
-	"settings_sound_off_hint": "Désactivé. Rien n'est chargé tant que vous ne l'activez pas.",
 	"dispatch_failed_dispatched_at": "Dispatché {at}",
 	"dispatch_failed_prompt_file": "Fichier de prompt : {file}",
 	"spawn_optional_settings": "Paramètres optionnels"
