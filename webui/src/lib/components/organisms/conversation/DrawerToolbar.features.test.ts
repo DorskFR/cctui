@@ -4,6 +4,7 @@ import { mount, unmount } from 'svelte';
 import type { Feature } from '@bindings/Feature';
 import { setCapabilitiesForTest } from '#lib/features.svelte.ts';
 import DrawerToolbar from './DrawerToolbar.svelte';
+import toolbarSource from './DrawerToolbar.svelte?raw';
 import { allFilter } from './filters';
 import type { ViewOpts } from './types';
 
@@ -55,8 +56,7 @@ async function render() {
 }
 
 const autoApprove = (bar: HTMLElement) => bar.querySelector('[aria-label^="Auto-approve"]');
-const terminal = (bar: HTMLElement) => bar.querySelector('[data-journey="terminal"]');
-const plugin = (bar: HTMLElement) => bar.querySelector('[data-plugin="p1"]');
+const panels = (bar: HTMLElement) => bar.querySelector('[data-journey="panels"]');
 const context = (bar: HTMLElement) => bar.querySelector('[data-journey="session-context"]');
 
 describe('conversation toolbar feature gates', () => {
@@ -64,8 +64,7 @@ describe('conversation toolbar feature gates', () => {
 		off();
 		const bar = await render();
 		expect(autoApprove(bar)).toBeTruthy();
-		expect(terminal(bar)).toBeTruthy();
-		expect(plugin(bar)).toBeTruthy();
+		expect(panels(bar)).toBeTruthy();
 		expect(context(bar)).toBeTruthy();
 		expect(sessionContext).toHaveBeenCalledWith('s1');
 	});
@@ -75,14 +74,14 @@ describe('conversation toolbar feature gates', () => {
 		expect(autoApprove(await render())).toBeNull();
 	});
 
-	it('drops the terminal toggle without terminal', async () => {
-		off('terminal');
-		expect(terminal(await render())).toBeNull();
+	it('gates the terminal and plugin rows of the Panels menu on their features', () => {
+		expect(toolbarSource).toContain("ontoggleTerminal && hasFeature('terminal') ? { open: terminalOpen, toggle: ontoggleTerminal } : null");
+		expect(toolbarSource).toContain("hasFeature('plugins') ? plugins : []");
 	});
 
-	it('drops plugin toggles without plugins', async () => {
-		off('plugins');
-		expect(plugin(await render())).toBeNull();
+	it('drops the Panels menu once both terminal and plugins are off', async () => {
+		off('terminal', 'plugins');
+		expect(panels(await render())).toBeNull();
 	});
 
 	it('mounts no context chip and asks nothing without context', async () => {

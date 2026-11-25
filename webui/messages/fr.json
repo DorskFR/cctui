@@ -396,6 +396,9 @@
 	"conversation_attachment_open": "Ouvrir {name}",
 	"conversation_attachment_unavailable": "{name} n’est plus disponible : le serveur ne la stocke plus et elle n’est pas sur la machine",
 	"conversation_auto_approve_aria": "Approbation auto des permissions d'outils — outils uniquement, les plans demandent toujours",
+	"conversation_auto_approve_on": "Approbation auto : activée",
+	"conversation_auto_approve_off": "Approbation auto : désactivée",
+	"conversation_panels": "Panneaux",
 	"conversation_auto_approve_title": "Approuver automatiquement les demandes de permission d'outils pour cette session — outils uniquement, les plans demandent toujours",
 	"conversation_behavior_aria": "Comportement",
 	"conversation_brief_collapse": "Replier le brief",
@@ -3378,6 +3381,5 @@
 		}
 	],
 	"list_auto_approve": "approbation auto",
-	"conversation_auto_approve_btn": "Approbation auto",
 	"spawn_optional_settings": "Paramètres optionnels"
 }

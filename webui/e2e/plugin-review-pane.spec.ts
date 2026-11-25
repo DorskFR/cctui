@@ -162,6 +162,7 @@ test.describe('runtime plugins', () => {
 		await page.screenshot({ path: `${SHOTS}/settings-plugins.png`, fullPage: true });
 		await shootNarrow(page, 'settings-plugins-420.png', true);
 		await openDrawer(page);
+		await page.locator('[data-journey="panels"]').click();
 		await expect(pluginButton(page).first()).toBeVisible();
 		await expect(page.locator('[data-journey="plugin-action"][data-plugin="demo"]').first()).toBeVisible();
 		expect(relevant(errors)).toEqual([]);

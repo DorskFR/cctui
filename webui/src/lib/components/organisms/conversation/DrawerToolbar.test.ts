@@ -6,6 +6,7 @@ import toolbarSource from './DrawerToolbar.svelte?raw';
 import lineSource from './LineActions.svelte?raw';
 import headerSource from './DrawerHeader.svelte?raw';
 import { allFilter } from './filters';
+import { panelItems } from './toolbarPanels';
 import type { ViewOpts } from './types';
 import type { MessagePin } from '@bindings/MessagePin';
 
@@ -132,36 +133,39 @@ describe('pin glyph', () => {
 	});
 });
 
-describe('terminal toggle', () => {
-	it('is hidden without a handler', async () => {
+describe('panels menu', () => {
+	const demo = { id: 'demo', label: 'yubisashi', icon: 'eye' as const, open: false, onselect: vi.fn() };
+
+	it('is absent with no terminal handler and no plugin', async () => {
 		const bar = await render({});
+		expect(bar.querySelector('[data-journey="panels"]')).toBeNull();
 		expect(bar.querySelector('[data-journey="terminal"]')).toBeNull();
 	});
 
-	it('sits between auto-approve and the plugins, icon plus a narrow-hidden label', async () => {
-		const ontoggleTerminal = vi.fn();
-		const bar = await render({
-			ontoggleTerminal,
-			plugins: [{ id: 'demo', label: 'yubisashi', icon: 'eye', open: false, onselect: vi.fn() }]
-		});
-		const buttons = [...bar.querySelectorAll('.behbar button')];
-		expect(buttons[0].textContent).toContain('⚡');
-		expect(buttons[1].getAttribute('data-journey')).toBe('terminal');
-		expect(buttons[2].getAttribute('data-journey')).toBe('plugin');
-		const term = buttons[1] as HTMLButtonElement;
-		expect(term.querySelector('svg[data-tsu="Icon"]')).not.toBeNull();
-		expect(term.querySelector('.wide')?.textContent).toBe('Terminal');
-		expect(term.getAttribute('aria-label')).toBe('Terminal');
-		expect(term.getAttribute('title')).toBeTruthy();
-		expect(term.getAttribute('aria-pressed')).toBe('false');
-		term.click();
-		expect(ontoggleTerminal).toHaveBeenCalledOnce();
+	it('replaces the inline terminal and plugin toggles with one labelled trigger', async () => {
+		const bar = await render({ ontoggleTerminal: vi.fn(), plugins: [demo] });
+		const trigger = bar.querySelector('.behbar [data-journey="panels"]') as HTMLElement;
+		expect(trigger).not.toBeNull();
+		expect(trigger.querySelector('.wide')?.textContent).toBe('Panels');
+		expect(bar.querySelector('.behbar > [data-journey="terminal"], .behbar > [data-journey="plugin"]')).toBeNull();
 	});
 
-	it('reads as pressed while the pane is open', async () => {
-		const bar = await render({ ontoggleTerminal: vi.fn(), terminalOpen: true });
-		const term = bar.querySelector('[data-journey="terminal"]') as HTMLButtonElement;
-		expect(term.getAttribute('aria-pressed')).toBe('true');
+	it('lists the terminal first, then each plugin pane, pressed while open', () => {
+		const toggle = vi.fn();
+		const items = panelItems({ open: true, toggle }, [demo]);
+		expect(items.map((i) => i.label)).toEqual(['Terminal', 'yubisashi']);
+		expect(items.map((i) => i.pressed)).toEqual([true, false]);
+		expect(items[0].attrs?.['data-journey']).toBe('terminal');
+		expect(items[1].attrs?.['data-plugin']).toBe('demo');
+		items[0].onselect?.();
+		expect(toggle).toHaveBeenCalledOnce();
+		items[1].onselect?.();
+		expect(demo.onselect).toHaveBeenCalledOnce();
+	});
+
+	it('drops the terminal row without a terminal', () => {
+		expect(panelItems(null, [demo]).map((i) => i.label)).toEqual(['yubisashi']);
+		expect(panelItems(null, [])).toEqual([]);
 	});
 });
 
@@ -173,11 +177,21 @@ describe('single-row toolbar', () => {
 		expect(toolbarSource).not.toContain('mobilePanel');
 	});
 
-	it('marks auto-approve with a zap and keeps its accessible name', async () => {
-		const bar = await render({});
-		const auto = bar.querySelector('.behbar button') as HTMLElement;
-		expect(auto.textContent).toContain('⚡');
-		expect(auto.getAttribute('aria-label')).toBeTruthy();
+	it('shows auto-approve as a switch that names its state', async () => {
+		const ontoggleAuto = vi.fn();
+		let bar = await render({ ontoggleAuto });
+		const sw = bar.querySelector('[data-journey="auto-approve"]') as HTMLElement;
+		expect(sw.getAttribute('role')).toBe('switch');
+		expect(sw.getAttribute('aria-label')).toBeTruthy();
+		expect(bar.textContent).toContain('Auto-approve: off');
+		expect(bar.textContent).not.toContain('⚡');
+		sw.click();
+		expect(ontoggleAuto).toHaveBeenCalledOnce();
+
+		if (comp) unmount(comp);
+		document.body.innerHTML = '';
+		bar = await render({ autoApprove: true });
+		expect(bar.textContent).toContain('Auto-approve: on');
 	});
 
 	it('shows how many categories are hidden next to the filter icon', async () => {
@@ -224,23 +238,22 @@ describe('drawer toolbar sizing', () => {
 		expect(toolbarSource).not.toContain('const TRIG');
 	});
 
-	it('gives auto-approve and pins the same box construction', () => {
+	it('gives every chip and trigger the same box construction', () => {
 		const toggles = toolbarSource.match(/<Toggle\b[\s\S]*?>/g) ?? [];
-		expect(toggles.length).toBeGreaterThanOrEqual(3);
-		for (const t of toggles) expect(t, t.slice(0, 60)).toContain('style={');
+		expect(toggles.length).toBeGreaterThanOrEqual(1);
 		for (const t of toggles) expect(t, t.slice(0, 60)).toMatch(/\$\{CTL\}|style=\{CTL\}/);
 		const triggers = toolbarSource.match(/<Popover[\s\S]*?>/g) ?? [];
 		expect(triggers.length).toBe(2);
 		for (const p of triggers) expect(p).toContain('variant="toggle"');
 		for (const p of triggers) expect(p).toContain('style={CTL}');
+		const panels = toolbarSource.slice(toolbarSource.indexOf('<Menu'), toolbarSource.indexOf('</Menu>'));
+		expect(panels).toContain('variant="toggle"');
+		expect(panels).toContain('style={CTL}');
 	});
 
-	it('neutralises the emoji line box so it cannot set the height', () => {
-		expect(toolbarSource).toContain('<span class="glyph" aria-hidden="true">⚡</span>');
-		const glyph = toolbarSource.slice(toolbarSource.indexOf('\t.glyph {'));
-		const body = glyph.slice(0, glyph.indexOf('}'));
-		expect(body).toContain('line-height: 1');
-		expect(body).toContain('min-width: 1em');
+	it('wraps the behaviour group under the filters on a phone instead of clipping it', () => {
+		const q = css.slice(css.indexOf('@container drawer-toolbar (max-width: 32rem)'));
+		expect(q.slice(0, q.indexOf('\n\t}'))).toContain('flex-wrap: wrap');
 	});
 
 	it('matches the two chip icons in size', () => {
@@ -248,7 +261,7 @@ describe('drawer toolbar sizing', () => {
 		expect(toolbarSource).toContain('<Icon name="pin" size={12}');
 	});
 
-	it('keeps the compact ⚡ and 📌 named and right-aligned', () => {
+	it('keeps auto-approve and pins named and right-aligned', () => {
 		expect(toolbarSource).toContain('aria-label={m.conversation_auto_approve_aria()}');
 		expect(toolbarSource).toContain('title={m.conversation_auto_approve_title()}');
 		expect(toolbarSource).toContain('label={m.conversation_pins_aria()}');
@@ -277,25 +290,14 @@ describe('plugin pane toggles', () => {
 		onselect
 	});
 
-	it('sit in the behavior group beside auto-approve, with icon and narrow-hidden name', async () => {
-		const onselect = vi.fn();
-		const bar = await render({ plugins: [plugin(false, onselect)] });
-		const btn = bar.querySelector('.behbar [data-journey="plugin"][data-plugin="demo"]') as HTMLButtonElement;
-		expect(btn).not.toBeNull();
-		expect(btn.querySelector('svg[data-tsu="Icon"]')).not.toBeNull();
-		expect(btn.querySelector('.wide')?.textContent).toBe('yubisashi');
-		expect(btn.getAttribute('aria-label')).toBe('yubisashi');
-		expect(btn.getAttribute('aria-pressed')).toBe('false');
-		expect(btn.previousElementSibling?.getAttribute('aria-pressed')).toBe('false');
-		btn.click();
-		expect(onselect).toHaveBeenCalledOnce();
+	it('open the Panels menu instead of riding the bar', async () => {
+		const bar = await render({ plugins: [plugin(false)] });
+		expect(bar.querySelector('[data-journey="panels"]')).not.toBeNull();
+		expect(bar.querySelector('.behbar > [data-journey="plugin"]')).toBeNull();
 	});
 
-	it('read as pressed while the pane is open', async () => {
-		const bar = await render({ plugins: [plugin(true)] });
-		const btn = bar.querySelector('[data-journey="plugin"]') as HTMLButtonElement;
-		expect(btn.getAttribute('aria-pressed')).toBe('true');
-		expect(btn.classList.contains('on')).toBe(true);
+	it('read as pressed while the pane is open', () => {
+		expect(panelItems(null, [plugin(true)])[0].pressed).toBe(true);
 	});
 
 	// The header does import `#lib/plugins/*` for the per-session issue slot, so

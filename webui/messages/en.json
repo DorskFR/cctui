@@ -396,6 +396,9 @@
 	"conversation_attachment_open": "Open {name}",
 	"conversation_attachment_unavailable": "{name} is no longer available: the server no longer stores it and it is not on the machine",
 	"conversation_auto_approve_aria": "Auto-approve tool-use permissions — tool use only, plans still ask",
+	"conversation_auto_approve_on": "Auto-approve: on",
+	"conversation_auto_approve_off": "Auto-approve: off",
+	"conversation_panels": "Panels",
 	"conversation_auto_approve_title": "Auto-approve tool-use permission requests for this session — tool use only, plans still ask",
 	"conversation_behavior_aria": "Behavior",
 	"conversation_brief_collapse": "Collapse the brief",
@@ -3378,6 +3381,5 @@
 		}
 	],
 	"list_auto_approve": "auto-approve",
-	"conversation_auto_approve_btn": "Auto-approve",
 	"spawn_optional_settings": "Optional settings"
 }
