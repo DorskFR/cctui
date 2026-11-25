@@ -9,8 +9,6 @@ use super::{SAMPLE_PAGES, SAMPLE_SEED, TOOL_RESULT, to_u64};
 const TABLES: i64 = 25;
 const TOP_SESSIONS: i64 = 20;
 const TOP_TOOLS: i64 = 20;
-/// How far back, in ids, a result looks for its call.
-const CALL_WINDOW: i64 = 20_000;
 
 pub const SIZE_BANDS: [&str; 5] = ["lt_1k", "k1_10", "k10_100", "k100_1m", "ge_1m"];
 pub const AGE_BANDS: [&str; 5] = ["lt_1d", "d1_7", "d7_30", "d30_90", "ge_90d"];
@@ -129,28 +127,30 @@ async fn sessions(
 
 async fn tools(conn: &mut PgConnection, percent: f64) -> Result<Vec<StorageToolSize>, sqlx::Error> {
     let sql = format!(
-        "WITH r AS ( \
+        "WITH r AS MATERIALIZED ( \
            SELECT e.id, e.session_id, pg_column_size(e.payload)::int8 AS bytes, \
                   COALESCE(e.payload->>'tool_use_id', e.payload->'payload'->>'call_id') AS ref \
-           FROM stream_events e TABLESAMPLE SYSTEM ($1::real) {SAMPLE_SEED} WHERE {TOOL_RESULT}) \
-         SELECT COALESCE(c.tool, ''), round(count(*) * $2)::int8, \
-                round(sum(r.bytes)::float8 * $2)::int8 \
-         FROM r LEFT JOIN LATERAL ( \
-           SELECT COALESCE(k.payload->>'tool', k.payload->'payload'->>'name') AS tool \
-           FROM stream_events k \
-           WHERE r.ref IS NOT NULL AND k.session_id = r.session_id \
-             AND k.id < r.id AND k.id >= r.id - $3 \
-             AND (k.payload ? 'tool' \
-                  OR k.payload->'payload'->>'type' IN ('function_call', 'custom_tool_call')) \
-             AND COALESCE(k.payload->>'id', k.payload->>'tool_use_id', \
-                          k.payload->'payload'->>'call_id') = r.ref \
-           ORDER BY k.id DESC LIMIT 1) c ON true \
-         GROUP BY 1 ORDER BY 3 DESC LIMIT $4"
+           FROM stream_events e TABLESAMPLE SYSTEM ($1::real) {SAMPLE_SEED} WHERE {TOOL_RESULT}), \
+         c AS MATERIALIZED ( \
+           SELECT e.id, e.session_id, \
+                  COALESCE(e.payload->>'tool', e.payload->'payload'->>'name') AS tool, \
+                  COALESCE(e.payload->>'id', e.payload->>'tool_use_id', \
+                           e.payload->'payload'->>'call_id') AS ref \
+           FROM stream_events e TABLESAMPLE SYSTEM ($1::real) {SAMPLE_SEED} \
+           WHERE (e.event_type = 'tool_use' AND e.payload ? 'tool') \
+              OR (e.event_type = 'message' AND e.payload->>'type' = 'response_item' \
+                  AND e.payload->'payload'->>'type' IN ('function_call', 'custom_tool_call'))), \
+         named AS ( \
+           SELECT DISTINCT ON (r.id) r.bytes, c.tool \
+           FROM r LEFT JOIN c ON c.session_id = r.session_id AND c.ref = r.ref AND c.id < r.id \
+           ORDER BY r.id, c.id DESC) \
+         SELECT COALESCE(tool, ''), round(count(*) * $2)::int8, \
+                round(sum(bytes)::float8 * $2)::int8 \
+         FROM named GROUP BY 1 ORDER BY 3 DESC LIMIT $3"
     );
     let rows: Vec<(String, i64, i64)> = sqlx::query_as(sqlx::AssertSqlSafe(sql))
         .bind(percent)
         .bind(100.0 / percent)
-        .bind(CALL_WINDOW)
         .bind(TOP_TOOLS)
         .fetch_all(conn)
         .await?;

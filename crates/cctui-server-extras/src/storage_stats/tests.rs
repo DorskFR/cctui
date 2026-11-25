@@ -406,3 +406,32 @@ async fn the_preview_counts_what_the_job_then_changes() {
     assert_eq!((after.rows_trimmed, after.bytes_freed), (0, 0));
     s.cleanup().await;
 }
+
+#[tokio::test]
+async fn the_sample_names_each_tool_result_from_its_sampled_call() {
+    let Some(s) = Seeded::new("storage_sample_tool_names").await else { return };
+    let (claude, codex) = (format!("Probe{}", Uuid::new_v4()), format!("probe_{}", Uuid::new_v4()));
+    for id in ["c1", "c2"] {
+        s.event("tool_use", &json!({ "tool": &claude, "input": {}, "id": id }), 0).await;
+        s.event("tool_use", &result(id, &json!(noise(200_000))), 0).await;
+    }
+    let call = json!({ "type": "response_item",
+        "payload": { "type": "function_call", "name": &codex, "call_id": "x1" } });
+    let output = json!({ "type": "response_item",
+        "payload": { "type": "function_call_output", "call_id": "x1", "output": noise(200_000) } });
+    s.event("message", &call, 0).await;
+    s.event("message", &output, 0).await;
+
+    let overview = super::overview(&s.pool).await.unwrap();
+    let sample = overview.sample.unwrap_or_else(|| panic!("{:?}", overview.sample_error));
+    if sample.percent < 100.0 {
+        s.cleanup().await;
+        return;
+    }
+    let tool = |name: &str| sample.tools.iter().find(|t| t.tool == name).cloned();
+    let claude_tool = tool(&claude).expect("the claude call names its results");
+    assert_eq!(claude_tool.results, 2);
+    assert!(claude_tool.bytes > 0);
+    assert_eq!(tool(&codex).map(|t| t.results), Some(1), "{:?}", sample.tools);
+    s.cleanup().await;
+}
