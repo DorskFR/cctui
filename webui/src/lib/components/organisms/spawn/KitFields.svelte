@@ -6,8 +6,8 @@
 	import type { AccountUsageEntry, OAuthAccount } from '#lib/queries/index.ts';
 	import { useHarnessModels, useHarnesses, useMachineAdapters } from '#lib/queries/index.ts';
 	import { harnessTable } from '#lib/harnesses.svelte.ts';
-	import { familyAccent, pickableHarnesses } from '#lib/harnesses.ts';
-	import { AutoGrid, Field, OptionButton, Select, Switch, Text } from '@dorsk/tsumikit';
+	import { pickableHarnesses } from '#lib/harnesses.ts';
+	import { AutoGrid, Field, SegmentedControl, Select, Switch, Text } from '@dorsk/tsumikit';
 	import type { SelectOption } from '@dorsk/tsumikit';
 	import BrandLogo from '#lib/components/atoms/BrandLogo.svelte';
 	import CodexModelsRefresh from '#lib/components/molecules/CodexModelsRefresh.svelte';
@@ -131,21 +131,18 @@
 
 <div class="kit">
 	<Field label={m.spawn_field_harness()}>
-		<AutoGrid min="8rem" maxCols={2} gap="var(--sp-2)" role="radiogroup" aria-label={m.spawn_profile_harness_aria()}>
-			{#each harnesses as h (h.id)}
-				<OptionButton
-					row
-					selected={draft.harness === h.id}
-					role="radio"
-					aria-checked={draft.harness === h.id}
-					style="--accent: {familyAccent(h.family)}"
-					onclick={() => pickHarness(h.id)}
-				>
-					<BrandLogo adapter={h.id} size={18} />
-					<Text>{h.label}</Text>
-				</OptionButton>
-			{/each}
-		</AutoGrid>
+		<SegmentedControl
+			block
+			label={m.spawn_profile_harness_aria()}
+			options={harnesses.map((h) => ({ value: h.id, label: h.label }))}
+			value={draft.harness}
+			onchange={pickHarness}
+		>
+			{#snippet option(o)}
+				<BrandLogo adapter={o.value} size={18} />
+				<span class="seg-text">{o.label}</span>
+			{/snippet}
+		</SegmentedControl>
 	</Field>
 
 	<AutoGrid min="8rem" maxCols={2} gap="var(--sp-2)">
@@ -222,5 +219,11 @@
 	.grow {
 		flex: 1;
 		min-width: 0;
+	}
+	.seg-text {
+		min-width: 0;
+		overflow: hidden;
+		white-space: nowrap;
+		text-overflow: ellipsis;
 	}
 </style>
