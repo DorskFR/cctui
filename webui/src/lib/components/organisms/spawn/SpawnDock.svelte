@@ -76,19 +76,16 @@
 		display: flex;
 		flex-direction: column;
 		background: var(--bg-elevated);
-		border-left: 1px solid var(--border);
 		z-index: 4;
 	}
 	.dock.dock-left {
 		right: auto;
 		left: 0;
-		border-left: 0;
-		border-right: 1px solid var(--border);
 	}
 	.dock.stacked {
 		bottom: 50%;
 	}
-	/* A 10px hit area straddling the panel's border, with a 2px line that only
+	/* A 10px hit area straddling the panel's edge, with a 2px line that only
 	   shows on hover, focus or while dragging. */
 	.grip {
 		position: absolute;
@@ -151,7 +148,6 @@
 		gap: var(--sp-2);
 		padding: var(--sp-3) var(--sp-3) var(--sp-2);
 		font-weight: var(--fw-semibold);
-		border-bottom: 1px solid var(--border);
 	}
 	.dock-body {
 		flex: 1;
