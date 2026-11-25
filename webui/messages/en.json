@@ -1614,6 +1614,23 @@
 	"sessions_rebind_reason_outage": "{family} incident",
 	"sessions_rebinds_tip": "This session changed accounts while running",
 	"sessions_search_placeholder": "Search sessions",
+	"sessions_row_tokens": [
+		{
+			"declarations": [
+				"input count",
+				"input tokens",
+				"local countPlural = count: plural"
+			],
+			"selectors": [
+				"countPlural"
+			],
+			"match": {
+				"countPlural=one": "{tokens} token",
+				"countPlural=other": "{tokens} tokens"
+			}
+		}
+	],
+	"sessions_row_tokens_title": "{total} tokens: {input} in, {output} out, {cache} cached",
 	"sessions_search_failed": "Could not search: {error}",
 	"sessions_search_live_only_hint": "(live only — pick Archived to search all).",
 	"sessions_search_no_match": "No chats match “{query}”",

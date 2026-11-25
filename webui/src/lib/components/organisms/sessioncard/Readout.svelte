@@ -1,34 +1,34 @@
 <script lang="ts">
 	import AdapterIcon from '#lib/components/atoms/AdapterIcon.svelte';
-	import TokenUsage from '#lib/components/molecules/TokenUsage.svelte';
-	import { modelAbbrev, modelFamily, modelShort } from '#lib/format.ts';
+	import { tokenUsageLayout } from '#lib/components/molecules/TokenUsage.logic.ts';
+	import { modelAbbrev, modelFamily, modelShort, usd } from '#lib/format.ts';
 	import { Text } from '@dorsk/tsumikit';
+	import TokenTotal from './TokenTotal.svelte';
 	import type { SessionView } from './view';
 
-	// Σ ↑ ↓ ⚡ $ · model · effort · adapter logo. As the container tightens the
-	// model sheds its effort, then its version ("opus"), then all but two letters
-	// ("Op."); at the last step the adapter logo goes too. The chip's tooltip
-	// carries the full id at every step.
+	// tokens · cost · model · effort · adapter logo. As the container tightens the
+	// cost goes, then the model sheds its effort, its version ("opus"), all but two
+	// letters ("Op."), and the adapter logo. The title carries the full id.
 	let {
 		view,
-		compact = false,
 		spread = false
 	}: {
 		view: SessionView;
-		/** Σ + $ only (the compact row). */
-		compact?: boolean;
 		/** Push the model and logo to the far end of the line. */
 		spread?: boolean;
 	} = $props();
 
 	const s = $derived(view.s);
+	const sum = $derived(view.rollup ? view.rollup.tokens : null);
+	const usage = $derived(tokenUsageLayout(s.token_usage, { sum }));
 	const modelTitle = $derived(
 		s.model ? `${modelShort(s.model)}${s.effort ? ` · ${s.effort}` : ''}` : ''
 	);
 </script>
 
 {#if !view.draft}
-	<TokenUsage usage={s.token_usage} cold={s.cache_cold} sum={view.rollup ? view.rollup.tokens : null} {compact} />
+	<Text tone="muted" size="xs"><TokenTotal usage={s.token_usage} {sum} /></Text>
+	{#if usage.showCost}<span class="cost"><Text tone="muted" size="xs" numeric>{usd(usage.cost)}</Text></span>{/if}
 {/if}
 {#if spread}<span class="gap"></span>{/if}
 {#if s.model}
@@ -55,9 +55,23 @@
 	.gap {
 		flex: 1 1 0;
 	}
+	.cost {
+		flex: none;
+		display: inline-flex;
+	}
 	.fam,
 	.abbr {
 		display: none;
+	}
+	@container sess-card (max-width: 17em) {
+		.cost {
+			display: none;
+		}
+	}
+	@container sess-row (max-width: 21.25em) {
+		.cost {
+			display: none;
+		}
 	}
 	@container sess-card (max-width: 27.75em) {
 		.effort {

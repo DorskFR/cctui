@@ -12,16 +12,17 @@
 	import SessionDot from '#lib/components/molecules/SessionDot.svelte';
 	import { tokenUsageLayout } from '#lib/components/molecules/TokenUsage.logic.ts';
 	import { m } from '#lib/paraglide/messages.js';
-	import { compact, hashHue, machineInitial, modelShort, statusBadgeTone } from '#lib/format.ts';
+	import { hashHue, machineInitial, modelShort, statusBadgeTone } from '#lib/format.ts';
 	import { settings } from '#lib/settings.svelte.ts';
 	import { accountTrafficWarning } from '../../../../routes/sessions/sessions.logic';
 	import Badges from './Badges.svelte';
 	import DraftActions from './DraftActions.svelte';
 	import Gutter from './Gutter.svelte';
+	import TokenTotal from './TokenTotal.svelte';
 	import { projectOf, statusLabel, type SessionActions, type SessionView } from './view';
 
 	// Comfortable: a 2-line grid. gutter (star) · line 1 identity · line 1 attention,
-	// then line 2 context + preview · line 2 run (model · Σ · provider).
+	// then line 2 context + preview · line 2 run (model · tokens · provider).
 	// Compact density and subagent children collapse to one line.
 	let { view, actions }: { view: SessionView; actions: SessionActions } = $props();
 	const s = $derived(view.s);
@@ -47,8 +48,10 @@
 
 {#snippet tokens()}
 	{#if !view.draft && usage.total > 0}
-		<span class="tokens" title="Σ {usage.total.toLocaleString()}"
-			>{compact(usage.total)}<span class="prov"><AdapterIcon adapter={s.adapter_id} size={14} /></span></span
+		<span class="tokens"
+			><TokenTotal usage={s.token_usage} sum={view.rollup ? view.rollup.tokens : null} /><span class="prov"
+				><AdapterIcon adapter={s.adapter_id} size={14} /></span
+			></span
 		>
 	{/if}
 {/snippet}
@@ -344,7 +347,6 @@
 		display: inline-flex;
 		align-items: center;
 		gap: 5px;
-		font-family: var(--font-mono);
 		color: var(--warn);
 	}
 	.idle .tokens {
