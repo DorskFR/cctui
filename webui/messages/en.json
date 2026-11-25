@@ -758,6 +758,21 @@
 	"events_filter_all": "All",
 	"events_filter_all_machines": "All machines",
 	"events_filter_reset": "Reset",
+	"events_children_created": [
+		{
+			"declarations": [
+				"input n",
+				"local nPlural = n: plural"
+			],
+			"selectors": [
+				"nPlural"
+			],
+			"match": {
+				"nPlural=one": "1 subagent created",
+				"nPlural=other": "{n} subagents created"
+			}
+		}
+	],
 	"events_family_session": "session",
 	"events_family_machine": "machine",
 	"events_family_system": "system",

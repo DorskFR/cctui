@@ -1,6 +1,6 @@
 <script lang="ts">
 	import type { EventRecord } from '@bindings/EventRecord';
-	import { Badge, Dot, Text, Timestamp } from '@dorsk/tsumikit';
+	import { Badge, Button, Dot, Icon, Text, Timestamp } from '@dorsk/tsumikit';
 	import NavLink from '#lib/components/atoms/NavLink.svelte';
 	import MachineBadge from '#lib/components/molecules/MachineBadge.svelte';
 	import { formatRow, type ActorKind, type EventFamily } from '#lib/events.ts';
@@ -9,13 +9,16 @@
 	let {
 		event,
 		compact = false,
-		showSubjects = true
+		showSubjects = true,
+		fold
 	}: {
 		event: EventRecord;
 		/** One line, no subject chips: the per-session and per-machine lists
 		 *  already know their subject. */
 		compact?: boolean;
 		showSubjects?: boolean;
+		/** Stands for `count` child creations; the summary toggles them. */
+		fold?: { count: number; machineId: string | null; expanded: boolean; ontoggle: () => void };
 	} = $props();
 
 	const row = $derived(formatRow(event));
@@ -39,12 +42,26 @@
 	<span class="dot"><Dot status={row.dot} role="img" aria-label={row.severity} title={row.severity} /></span>
 	<span class="time"><Timestamp value={row.occurredAt} mode="relative" short size="xs" tone="faint" /></span>
 	<span class="verb">
-		<Badge size="xs" tone={row.severity === 'info' ? 'neutral' : row.severity === 'warn' ? 'warn' : 'danger'} mono>
-			{compact ? row.verb : `${familyLabel[row.family]()} · ${row.verb}`}
-		</Badge>
+		<Text size="xs" tone={row.severity === 'info' ? 'muted' : row.severity === 'warn' ? 'warn' : 'danger'} nowrap>
+			{compact ? row.verb : `${familyLabel[row.family]()} ${row.verb}`}
+		</Text>
 	</span>
-	<span class="summary" class:blank={!row.summary}><Text size="sm" truncate title={row.summary}>{row.summary}</Text></span>
-	{#if showSubjects && !compact}
+	{#if fold}
+		<span class="summary">
+			<Button variant="ghost" size="sm" aria-expanded={fold.expanded} onclick={fold.ontoggle}>
+				<Icon name={fold.expanded ? 'chevron-down' : 'chevron-right'} size={14} />
+				{m.events_children_created({ n: fold.count })}
+			</Button>
+		</span>
+		<span class="subjects">
+			{#if fold.machineId && row.machineId}
+				<MachineBadge name={row.machineLabel} id={row.machineId} />
+			{/if}
+		</span>
+	{:else}
+		<span class="summary" class:blank={!row.summary}><Text size="sm" truncate title={row.summary}>{row.summary}</Text></span>
+	{/if}
+	{#if showSubjects && !compact && !fold}
 		<span class="subjects">
 			{#if row.sessionName || row.sessionHref}
 				{#if row.sessionHref}

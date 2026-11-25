@@ -4,6 +4,7 @@
 	import { useQueryClient } from '@tanstack/svelte-query';
 	import { Button, EmptyState, Spinner, Text } from '@dorsk/tsumikit';
 	import EventRow from './EventRow.svelte';
+	import { foldChildCreations } from './eventFold';
 	import { EVENT_PAGE, endpoints, qk, useEvents } from '#lib/queries/index.ts';
 	import { appendPage, filterQuery, matchesFilters, mergeLive, nextCursor, type EventFilters } from '#lib/events.ts';
 	import { ws } from '#lib/ws.svelte.ts';
@@ -30,6 +31,8 @@
 	const more = $derived(fetched.key === key ? fetched : fresh(key));
 
 	const rows = $derived(appendPage(first.data?.events ?? [], more.rows));
+	const items = $derived(foldChildCreations(rows));
+	let expanded = $state<Record<string, boolean>>({});
 	const hasMore = $derived(
 		more.state === 'done' ? false : more.rows.length > 0 ? true : (first.data?.has_more ?? false)
 	);
@@ -73,8 +76,25 @@
 		<EmptyState icon="clock" title={m.events_empty_title()} description={m.events_empty_body()} size="compact" />
 	{:else}
 		<ul class="list">
-			{#each rows as ev (ev.id)}
-				<EventRow event={ev} />
+			{#each items as item (item.type === 'row' ? item.event.id : item.key)}
+				{#if item.type === 'row'}
+					<EventRow event={item.event} />
+				{:else}
+					<EventRow
+						event={item.events[0]}
+						fold={{
+							count: item.events.length,
+							machineId: item.machineId,
+							expanded: !!expanded[item.key],
+							ontoggle: () => (expanded = { ...expanded, [item.key]: !expanded[item.key] })
+						}}
+					/>
+					{#if expanded[item.key]}
+						{#each item.events as ev (ev.id)}
+							<EventRow event={ev} />
+						{/each}
+					{/if}
+				{/if}
 			{/each}
 		</ul>
 		{#if hasMore}
