@@ -387,3 +387,12 @@ describe('meta row on a narrow screen', () => {
 		expect(css).not.toMatch(/\.tool-name \{[^}]*max-width/);
 	});
 });
+
+describe('meta row type', () => {
+	it('keeps mono for the tool name only, not for sender or session names', () => {
+		const css = lineSource.slice(lineSource.indexOf('<style>'));
+		expect(css).toMatch(/\.tool-name \{\s*font-family: var\(--font-mono\);/);
+		expect(css).not.toMatch(/\.peer-from \{[^}]*font-mono/);
+		expect(css).not.toMatch(/\.context-from \{[^}]*font-mono/);
+	});
+});

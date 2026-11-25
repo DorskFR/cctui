@@ -367,7 +367,7 @@
 		font-weight: var(--fw-medium);
 	}
 	.peer-from {
-		font-family: var(--font-mono);
+		font-variant-numeric: tabular-nums;
 		color: var(--role-peer);
 		text-transform: none;
 		letter-spacing: 0;
@@ -377,7 +377,7 @@
 		max-width: 40%;
 	}
 	.context-from {
-		font-family: var(--font-mono);
+		font-variant-numeric: tabular-nums;
 		color: var(--role-context);
 		text-transform: none;
 		letter-spacing: 0;
