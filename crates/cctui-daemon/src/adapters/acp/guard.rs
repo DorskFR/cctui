@@ -33,6 +33,7 @@ impl Guard {
                 .map(|u| u.trim().trim_end_matches('/').to_owned())
                 .filter(|u| !u.is_empty())
         })?;
+        crate::install_crypto_provider();
         let client = reqwest::Client::builder()
             .no_proxy()
             .timeout(TIMEOUT)
