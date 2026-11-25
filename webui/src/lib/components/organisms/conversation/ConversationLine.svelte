@@ -2,7 +2,7 @@
 	// A single rendered conversation message. Pure presentation: the meta row
 	// (role badge, tool name, time, delivery state, actions), the bubble and the
 	// footers, delegating retry/edit/save/copy to callbacks.
-	import { Badge, Checkbox, Link, Timestamp, Tooltip } from '@dorsk/tsumikit';
+	import { Badge, Checkbox, Link, Tooltip } from '@dorsk/tsumikit';
 	import ContextBlock from './ContextBlock.svelte';
 	import HarnessCommandCard from './HarnessCommandCard.svelte';
 	import LineActions from './LineActions.svelte';
@@ -20,6 +20,7 @@
 	import PluginMessageActions from '#lib/components/molecules/PluginMessageActions.svelte';
 	import type { PluginActionButton } from '#lib/plugins/types.ts';
 	import type { Line } from './types';
+	import { fullTime, isoTime, shortTime } from './lineTime';
 	import { m } from '#lib/paraglide/messages.js';
 	import { settings } from '#lib/settings.svelte.ts';
 	import { sessionHref } from '#lib/sessionFailureToast.ts';
@@ -202,11 +203,9 @@
 		{#if ln.role === 'peer' && ln.peerFrom}
 			<span class="who peer-from" title={ln.peerFrom}>· {ln.peerFrom}</span>
 		{/if}
-		{#if ln.role === 'marker'}
-			<span class="marker-ts"><Timestamp value={ln.ts} mode="time" tone="faint" size="xs" /></span>
-		{:else}
-			<Timestamp value={ln.ts} mode="time" tone="faint" size="xs" />
-		{/if}
+		<time class="ts" class:marker-ts={ln.role === 'marker'} datetime={isoTime(ln.ts)} title={fullTime(ln.ts)}
+			>{shortTime(ln.ts)}</time
+		>
 		<LineDelivery {ln} {archived} {queueWaiting} {onretry} {onedit} />
 		<span class="acts" class:keep={speaking}>
 			<LineActions
@@ -330,6 +329,7 @@
 		outline: none;
 	}
 	.acts {
+		flex: none;
 		margin-left: auto;
 		display: inline-flex;
 	}
@@ -395,7 +395,14 @@
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
-		max-width: 60%;
+		flex: 0 1 auto;
+		min-width: 0;
+	}
+	.ts {
+		flex: none;
+		white-space: nowrap;
+		font-variant-numeric: tabular-nums;
+		color: var(--text-faint);
 	}
 	/* Pinned line marker: a warm rail down its left edge. */
 	.line.pinned {

@@ -369,3 +369,21 @@ describe('images in CctuiAgent / CctuiSend results', () => {
 		expect(el.querySelector('.result-images')).toBeNull();
 	});
 });
+
+describe('meta row on a narrow screen', () => {
+	it('prints a short 24-hour time with the full instant in its title', async () => {
+		const el = await render(line({ ts: new Date(2026, 10, 26, 21, 48, 57).getTime() }));
+		const t = el.querySelector('.lmeta time.ts') as HTMLTimeElement;
+		expect(t.textContent).toMatch(/^21.48$/);
+		expect(t.getAttribute('datetime')).toMatch(/^2026-11-26T/);
+		expect(t.title).toContain('48');
+	});
+
+	it('never wraps the time and lets only the tool name shrink', () => {
+		const css = lineSource.slice(lineSource.indexOf('<style>'));
+		expect(css).toMatch(/\.ts \{\s*flex: none;\s*white-space: nowrap;/);
+		expect(css).toMatch(/\.acts \{\s*flex: none;/);
+		expect(css).toMatch(/\.tool-name \{[^}]*flex: 0 1 auto;\s*min-width: 0;/);
+		expect(css).not.toMatch(/\.tool-name \{[^}]*max-width/);
+	});
+});
