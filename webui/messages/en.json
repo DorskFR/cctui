@@ -396,7 +396,6 @@
 	"conversation_attachment_open": "Open {name}",
 	"conversation_attachment_unavailable": "{name} is no longer available: the server no longer stores it and it is not on the machine",
 	"conversation_auto_approve_aria": "Auto-approve tool-use permissions — tool use only, plans still ask",
-	"conversation_auto_approve_btn": "Auto-approve",
 	"conversation_auto_approve_title": "Auto-approve tool-use permission requests for this session — tool use only, plans still ask",
 	"conversation_behavior_aria": "Behavior",
 	"conversation_brief_collapse": "Collapse the brief",
@@ -1076,7 +1075,7 @@
 	"nav_notify_on": "Notifications on",
 	"nav_notify_on_label": "Notifications on — click to mute",
 	"nav_notify_unsupported": "Notifications not supported in this browser",
-	"nav_overview": "Overview",
+	"nav_overview": "Usage",
 	"nav_review": "Review",
 	"settings_context_add_memory": "Add a note",
 	"settings_context_add_prompt": "Add a template",
@@ -3377,5 +3376,6 @@
 		}
 	],
 	"list_auto_approve": "auto-approve",
+	"conversation_auto_approve_btn": "Auto-approve",
 	"spawn_optional_settings": "Optional settings"
 }
