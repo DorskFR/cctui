@@ -68,6 +68,18 @@ test('mobile: the account menu carries the version', async ({ page }, testInfo) 
 	});
 });
 
+test('mobile: header controls give a 44px target and fold the status chips', async ({ page }) => {
+	await openSessions(page, MOBILE);
+	await expect(page.locator('header.hd .gauge')).toBeHidden();
+	for (const sel of ['header.hd .pill', 'header.hd .status']) {
+		const el = page.locator(sel);
+		if ((await el.count()) === 0) continue;
+		const box = (await el.boundingBox()) as Box;
+		expect(box.height, sel).toBeGreaterThanOrEqual(44);
+		expect(box.width, sel).toBeGreaterThanOrEqual(44);
+	}
+});
+
 test('mobile: the versions hidden from the bar stay readable in Settings › Interface', async ({
 	page
 }) => {

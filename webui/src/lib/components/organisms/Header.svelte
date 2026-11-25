@@ -7,6 +7,7 @@
 	import NotificationBell from '#lib/components/organisms/NotificationBell.svelte';
 	import HeaderBrand from './header/HeaderBrand.svelte';
 	import AccountMenu from './header/AccountMenu.svelte';
+	import HeaderStatus from './header/HeaderStatus.svelte';
 	import { installShellWatchers } from './header/shellWatchers.svelte.ts';
 
 	installShellWatchers();
@@ -21,8 +22,10 @@
 			{/if}
 		</div>
 		<div class="tail">
-			<span class="batt"><ProviderStatusDot /><ResourceBattery /><UsageBattery /></span>
-			<span class="divider" aria-hidden="true"></span>
+			<span class="batt"
+				><ProviderStatusDot /><span class="wide"><ResourceBattery /><UsageBattery /></span
+				><span class="narrow"><HeaderStatus /></span></span
+			>
 			<NotificationBell />
 			<AccountMenu />
 		</div>
@@ -100,16 +103,19 @@
 		gap: 6px;
 		flex: none;
 	}
-	.batt:empty {
+	.wide {
+		display: contents;
+	}
+	.narrow {
 		display: none;
 	}
-	.divider {
-		flex: none;
-		width: 1px;
-		height: 20px;
-		background: var(--border);
-	}
-	.batt:empty + .divider {
-		display: none;
+	/* Below the nav breakpoint machines and usage fold into one 44px status button. */
+	@media (max-width: 47.999rem) {
+		.wide {
+			display: none;
+		}
+		.narrow {
+			display: contents;
+		}
 	}
 </style>

@@ -119,14 +119,21 @@
 		gap: var(--sp-2);
 		height: 32px;
 		padding: 0 var(--sp-3) 0 var(--sp-1);
-		border: 1px solid var(--border);
 		border-radius: var(--r-pill);
+		background: var(--bg-elevated-2);
 		color: var(--text);
 		font-size: var(--fs-sm);
 		max-width: 16rem;
 	}
 	.pill:hover {
-		background: var(--bg-elevated-2);
+		background: color-mix(in srgb, var(--bg-elevated-2) 85%, var(--text));
+	}
+	@media (pointer: coarse), (max-width: 47.999rem) {
+		.pill {
+			min-height: 44px;
+			justify-content: center;
+			min-width: 44px;
+		}
 	}
 	.who {
 		display: inline-flex;
