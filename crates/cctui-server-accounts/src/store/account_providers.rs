@@ -86,12 +86,15 @@ mod tests {
     use uuid::Uuid;
 
     async fn user(pool: &PgPool, name: &str) -> Uuid {
-        sqlx::query_scalar("INSERT INTO users (name, key_hash) VALUES ($1, $2) RETURNING id")
+        let id = Uuid::new_v4();
+        sqlx::query("INSERT INTO users (id, name, key_hash) VALUES ($1, $2, $3)")
+            .bind(id)
             .bind(name)
             .bind(format!("kh-{name}"))
-            .fetch_one(pool)
+            .execute(pool)
             .await
-            .unwrap()
+            .unwrap();
+        id
     }
 
     async fn shared_provider(pool: &PgPool, owner: Uuid, grantee: Uuid) -> (Uuid, Uuid) {
