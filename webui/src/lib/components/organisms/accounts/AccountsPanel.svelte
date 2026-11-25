@@ -8,12 +8,10 @@
 		useRedirectChips,
 		useRedirectActions,
 		useUsers,
-		type OAuthAccount,
-		type AccountProvider
+		type OAuthAccount
 	} from '#lib/queries/index.ts';
 	import { toasts } from '#lib/toast.svelte.ts';
 	import { hasFeature } from '#lib/features.svelte.ts';
-	import { providerLabel } from '#lib/providers.ts';
 	import AccountCard from '#lib/components/organisms/AccountCard.svelte';
 	import AccountsBoard from './AccountsBoard.svelte';
 	import AccountEditorModal from './AccountEditorModal.svelte';
@@ -75,15 +73,6 @@
 		guard(actions.remove(a.id).then(() => toasts.ok(m.accounts_deleted())));
 	}
 
-	function removeProvider(a: OAuthAccount, p: AccountProvider) {
-		if (
-			!confirm(
-				m.accounts_confirm_remove_provider({ provider: providerLabel(p.provider), name: a.name })
-			)
-		)
-			return;
-		guard(actions.removeProvider(a.id, p.id).then(() => toasts.ok(m.accounts_provider_removed())));
-	}
 
 	const isManaged = (a: OAuthAccount) => a.providers.length > 0 && a.providers.every((p) => p.managed);
 </script>
@@ -128,7 +117,6 @@
 				onaddprovider={() => editor?.openAddProvider(a)}
 				oneditprovider={(p) => goto(accountHref(a.id, p.id))}
 				onreauthprovider={(p) => editor?.reauth(a, p)}
-				onremoveprovider={(p) => removeProvider(a, p)}
 			/>
 		{/snippet}
 	</AccountsBoard>

@@ -15,21 +15,17 @@
 		provider,
 		usageEnabled = true,
 		canManage = false,
-		canRemove = false,
 		dense = false,
 		onedit,
-		onreauth,
-		onremove
+		onreauth
 	}: {
 		provider: AccountProvider;
 		usageEnabled?: boolean;
 		canManage?: boolean;
-		canRemove?: boolean;
 		/** Gauges only: the header popover has no room for models, counters or the reset button. */
 		dense?: boolean;
 		onedit?: () => void;
 		onreauth?: () => void;
-		onremove?: () => void;
 	} = $props();
 
 	const p = $derived(provider);
@@ -85,16 +81,6 @@
 				<Button size="sm" variant="primary" onclick={onreauth}>{m.providers_reauthenticate()}</Button>
 			{/if}
 			<IconButton icon="settings" label={m.providers_edit()} inline size={14} onclick={onedit} />
-			{#if canRemove}
-				<IconButton
-					icon="x"
-					label={m.providers_remove_aria({ provider: providerLabel(p.provider) })}
-					inline
-					hoverDanger
-					size={13}
-					onclick={onremove}
-				/>
-			{/if}
 		{/if}
 	</div>
 

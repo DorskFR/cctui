@@ -35,7 +35,6 @@
 		onaddprovider,
 		oneditprovider,
 		onreauthprovider,
-		onremoveprovider,
 		onsetredirect,
 		onclearredirect
 	}: {
@@ -63,7 +62,6 @@
 		onaddprovider?: () => void;
 		oneditprovider?: (p: AccountProvider) => void;
 		onreauthprovider?: (p: AccountProvider) => void;
-		onremoveprovider?: (p: AccountProvider) => void;
 		onsetredirect?: (targetId: string, untilHours: number | null, families: string[]) => void;
 		onclearredirect?: (ruleId: string) => void;
 	} = $props();
@@ -288,11 +286,9 @@
 				provider={p}
 				usageEnabled={enabled}
 				canManage={canEditProvider(p, owned) && !compact}
-				canRemove={canEditProvider(p, owned) && !compact}
 				dense={compact}
 				onedit={() => oneditprovider?.(p)}
 				onreauth={() => onreauthprovider?.(p)}
-				onremove={() => onremoveprovider?.(p)}
 			/>
 		{:else}
 			<div class="none"><Text tone="faint" size="sm">{m.accounts_no_credentials()}</Text></div>

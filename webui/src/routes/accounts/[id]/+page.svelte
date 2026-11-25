@@ -10,7 +10,6 @@
 	} from '#lib/queries/index.ts';
 	import { toasts } from '#lib/toast.svelte.ts';
 	import { hasFeature } from '#lib/features.svelte.ts';
-	import { providerLabel } from '#lib/providers.ts';
 	import { m } from '#lib/paraglide/messages.js';
 	import { tick } from 'svelte';
 	import { Breadcrumb, Button, Text } from '@dorsk/tsumikit';
@@ -79,19 +78,11 @@
 	});
 
 	function removeProvider(p: AccountProvider) {
-		if (!account) return;
-		if (
-			!confirm(
-				m.accounts_confirm_remove_provider({
-					provider: providerLabel(p.provider),
-					name: account.name
-				})
-			)
-		)
-			return;
-		guard(
-			actions.removeProvider(account.id, p.id).then(() => toasts.ok(m.accounts_provider_removed()))
-		);
+		if (!account) return Promise.resolve();
+		return actions.removeProvider(account.id, p.id).then(() => {
+			toasts.ok(m.accounts_provider_removed());
+			dropSelection();
+		});
 	}
 
 	function removeAccount() {
@@ -129,7 +120,6 @@
 				onadd={() => editor?.openAddProvider(account)}
 				onedit={(p) => selectProvider(p, true)}
 				onreauth={(p) => editor?.reauth(account, p)}
-				onremove={removeProvider}
 			/>
 			{#if selected}
 				<ProviderSettingsSection
@@ -138,8 +128,10 @@
 					{selected}
 					accounts={rows}
 					initialPage={landingPage}
+					canRemove={ownsAccount(account, me.data)}
 					onselect={(p) => selectProvider(p)}
 					onmoved={dropSelection}
+					onremove={removeProvider}
 				/>
 			{/if}
 			<EnvSection {account} />
