@@ -1983,6 +1983,37 @@
 	"settings_event_retention_title": "Event log",
 	"settings_event_retention_label": "Keep events for (days)",
 	"settings_event_retention_help": "Older events are pruned automatically. 0 keeps them forever; the default is {days} days.",
+	"settings_event_retention_shorten": [
+		{
+			"declarations": [
+				"input days",
+				"local daysPlural = days: plural"
+			],
+			"selectors": [
+				"daysPlural"
+			],
+			"match": {
+				"daysPlural=one": "Shorten to 1 day",
+				"daysPlural=other": "Shorten to {days} days"
+			}
+		}
+	],
+	"settings_event_retention_shorten_title": "Shorten event retention?",
+	"settings_event_retention_shorten_message": [
+		{
+			"declarations": [
+				"input days",
+				"local daysPlural = days: plural"
+			],
+			"selectors": [
+				"daysPlural"
+			],
+			"match": {
+				"daysPlural=one": "Events older than 1 day are deleted at the next prune. This cannot be undone.",
+				"daysPlural=other": "Events older than {days} days are deleted at the next prune. This cannot be undone."
+			}
+		}
+	],
 	"settings_net_stats_help": "What this browser has pulled from the API and the websocket since the page loaded.",
 	"settings_notification_sound_label": "Notification sound",
 	"settings_notifications_title": "Notifications",
@@ -2100,8 +2131,8 @@
 	"settings_source_env": "from env",
 	"settings_source_default": "built-in default",
 	"settings_reset": "Reset",
-	"settings_uploads_apply_help": "Saved caps take effect on the very next upload, with no restart. The server enforces them; the browser check only fails fast.",
-	"settings_uploads_apply_label": "Save the caps",
+	"settings_uploads_apply_help": "Changed caps take effect on the very next upload, with no restart. The server enforces them; the browser check only fails fast.",
+	"settings_uploads_apply_label": "Where the caps come from",
 	"settings_uploads_ceiling_help": "The hard limit the upload routes are built with. Saving a total cap at or above it is refused: raise {env} and restart the server to go higher.",
 	"settings_uploads_ceiling_help_generic": "The hard limit the upload routes are built with, set by an environment variable at boot. Saving a total cap at or above it is refused.",
 	"settings_uploads_ceiling_label": "Request body ceiling",
@@ -3282,6 +3313,7 @@
 	"settings_server_storage_lifecycle_help": "By default everything is kept. User and assistant messages are never touched, only tool output.",
 	"settings_server_storage_lifecycle_keep_all": "Keep everything",
 	"settings_server_storage_lifecycle_active": "Lifecycle on",
+	"settings_server_storage_apply": "Apply rules",
 	"settings_server_storage_trim_label": "Trim large tool output",
 	"settings_server_storage_trim_help": "Keep the start of each old tool output over the size limit, followed by a truncated marker.",
 	"settings_server_storage_trim_days_label": "Trim after (days)",
@@ -3405,11 +3437,5 @@
 	"error_session_missing_body": "This session was archived or deleted. Search the archived sessions, or go back to your sessions.",
 	"error_session_missing_title": "Session not found",
 	"list_auto_approve": "auto-approve",
-	"settings_admin_instance_save": "Save",
-	"settings_event_retention_saved": "Event retention saved",
-	"settings_uploads_saved": "Upload caps saved",
-	"settings_spawn_limits_saved": "CctuiAgent limits saved",
-	"settings_harness_update_saved": "Harness auto-update saved",
-	"settings_server_storage_saved": "Storage lifecycle saved",
 	"spawn_optional_settings": "Optional settings"
 }

@@ -6,7 +6,7 @@
 	import type { SettingSource } from '@bindings/SettingSource';
 	import type { SpawnDefaults } from '@bindings/SpawnDefaults';
 	import type { SpawnDefaultsInfo } from '@bindings/SpawnDefaultsInfo';
-	import { toasts } from '#lib/toast.svelte.ts';
+	import { SAVE_DEBOUNCE_MS, serverSave } from './serverSave.svelte.ts';
 	import { m } from '#lib/paraglide/messages.js';
 	import { limitLabel, parseSpawnDraft, sourceLabel } from './serverSettings.logic';
 
@@ -19,8 +19,6 @@
 
 	let info = $state<SpawnDefaultsInfo | null>(null);
 	let draft = $state<Record<Field, string>>({ max_children: '', max_depth: '', max_tree_budget_usd: '' });
-	let saving = $state(false);
-
 	function apply(next: SpawnDefaultsInfo) {
 		info = next;
 		for (const { key } of FIELDS) draft[key] = next.settings[key]?.toString() ?? '';
@@ -39,16 +37,18 @@
 	);
 
 	async function save(next: SpawnDefaults) {
-		saving = true;
-		try {
-			apply(await endpoints.setSpawnDefaults(next));
-			toasts.ok(m.settings_spawn_limits_saved());
-		} catch (e) {
-			toasts.error(e instanceof Error ? e.message : String(e));
-		} finally {
-			saving = false;
-		}
+		const sent = JSON.stringify(draft);
+		const res = await serverSave.run(() => endpoints.setSpawnDefaults(next));
+		if (!res) return;
+		if (JSON.stringify(draft) === sent) apply(res);
+		else info = res;
 	}
+	$effect(() => {
+		if (!dirty || !parsed) return;
+		const next = parsed;
+		const t = setTimeout(() => save(next), SAVE_DEBOUNCE_MS);
+		return () => clearTimeout(t);
+	});
 
 	function effective(key: Field): string {
 		if (!info) return '';
@@ -80,7 +80,7 @@
 							<Button
 								size="sm"
 								variant="ghost"
-								disabled={saving}
+								disabled={serverSave.status === 'pending'}
 								title={m.settings_upstreams_reset_help()}
 								onclick={() => info && save({ ...info.settings, [f.key]: null })}
 							>
@@ -92,11 +92,6 @@
 				{#if !parsed}
 					<Text size="xs" tone="danger">{m.settings_spawn_limits_invalid()}</Text>
 				{/if}
-				<div>
-					<Button disabled={!dirty || !parsed || saving} onclick={() => parsed && save(parsed)}>
-						{m.settings_admin_instance_save()}
-					</Button>
-				</div>
 			</div>
 		</SettingRow>
 	</SettingGroup>

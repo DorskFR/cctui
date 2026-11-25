@@ -1,6 +1,7 @@
 // @vitest-environment happy-dom
 import { flushSync, mount, tick, unmount } from 'svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import type { StorageLifecycleRules } from '@bindings/StorageLifecycleRules';
 import type { StorageOverview } from '@bindings/StorageOverview';
 
 const http = vi.hoisted(() => ({ get: vi.fn(), put: vi.fn(), post: vi.fn() }));
@@ -31,7 +32,7 @@ const button = (text: string) =>
 	[...document.querySelectorAll('button')].find((b) => b.textContent?.trim() === text) as HTMLButtonElement;
 const text = () => document.body.textContent ?? '';
 
-const overview = (): StorageOverview => ({
+const overview = (rules: StorageLifecycleRules = { trim: null, drop: null }): StorageOverview => ({
 	database_bytes: 10 * 1024 ** 3,
 	tables: [
 		{
@@ -64,7 +65,7 @@ const overview = (): StorageOverview => ({
 		by_age: [{ key: 'ge_90d', results: 10, bytes: 50 * 1024 ** 2 }]
 	},
 	sample_error: null,
-	lifecycle: { rules: { trim: null, drop: null }, last_run: null, bytes_freed_total: 0 }
+	lifecycle: { rules, last_run: null, bytes_freed_total: 0 }
 });
 
 const render = async () => {
@@ -101,8 +102,8 @@ describe('ServerStorageSection', () => {
 			bytes_freed_total: 0
 		});
 		await render();
-		const save = () => button(m.settings_admin_instance_save());
-		expect(save().disabled).toBe(true);
+		const save = () => button(m.settings_server_storage_apply());
+		expect(save()).toBeUndefined();
 
 		document.querySelector<HTMLElement>('[role="switch"]')?.click();
 		await settle();
@@ -121,5 +122,22 @@ describe('ServerStorageSection', () => {
 		expect(document.querySelector('[data-testid="storage-policy"]')?.textContent?.trim()).toBe(
 			m.settings_server_storage_lifecycle_active()
 		);
+	});
+
+	it('saves switching every rule off without a preview or Apply', async () => {
+		const on = { trim: { enabled: true, after_days: 30, above_bytes: 16 * 1024 }, drop: null };
+		http.get.mockResolvedValue(overview(on));
+		http.put.mockResolvedValue({ rules: { trim: null, drop: null }, last_run: null, bytes_freed_total: 0 });
+		await render();
+		vi.useFakeTimers();
+		try {
+			expect(button(m.settings_server_storage_apply())).toBeDefined();
+			document.querySelector<HTMLElement>('[role="switch"]')?.click();
+			await vi.advanceTimersByTimeAsync(700);
+			expect(http.post).not.toHaveBeenCalled();
+			expect(http.put).toHaveBeenCalledTimes(1);
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 });

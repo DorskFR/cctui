@@ -109,3 +109,27 @@ describe('HarnessUpdateGroup restart when idle', () => {
 		expect(toasts.ok).not.toHaveBeenCalled();
 	});
 });
+
+describe('HarnessUpdateGroup policy auto-save', () => {
+	it('does not write on load and saves a changed policy after a pause', async () => {
+		vi.useFakeTimers();
+		try {
+			api.harnessAutoupdate.mockResolvedValue(info([]));
+			api.setHarnessAutoupdate.mockImplementation(async (p: unknown) => ({ instance: p, machines: [] }));
+			comp = mount(HarnessUpdateGroup, { target: document.body });
+			await vi.advanceTimersByTimeAsync(700);
+			flushSync();
+			expect(api.setHarnessAutoupdate).not.toHaveBeenCalled();
+
+			document.querySelector<HTMLElement>('[role="switch"]')?.click();
+			flushSync();
+			await vi.advanceTimersByTimeAsync(700);
+			expect(api.setHarnessAutoupdate).toHaveBeenCalledTimes(1);
+			expect(api.setHarnessAutoupdate).toHaveBeenCalledWith({ enabled: true, interval_hours: 24, harnesses: [] });
+			await vi.advanceTimersByTimeAsync(2000);
+			expect(api.setHarnessAutoupdate).toHaveBeenCalledTimes(1);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+});

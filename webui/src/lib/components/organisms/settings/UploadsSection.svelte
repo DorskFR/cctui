@@ -8,7 +8,7 @@
 	import SettingRow from '#lib/components/molecules/SettingRow.svelte';
 	import { endpoints, qk, useVersion } from '#lib/queries/index.ts';
 	import { fmtSize, DEFAULT_UPLOAD_CAPS } from '#lib/attachments.ts';
-	import { toasts } from '#lib/toast.svelte.ts';
+	import { SAVE_DEBOUNCE_MS, serverSave } from './serverSave.svelte.ts';
 	import type { UploadCapsInfo } from '@bindings/UploadCapsInfo';
 	import { m } from '#lib/paraglide/messages.js';
 	import { sourceLabel } from './serverSettings.logic';
@@ -23,26 +23,30 @@
 	const served = $derived(version.data?.upload_caps ?? DEFAULT_UPLOAD_CAPS);
 
 	let info = $state<UploadCapsInfo | null>(null);
-	let saving = $state(false);
+	let files = $state(0);
+	let fileMb = $state(0);
+	let totalMb = $state(0);
+	function fill(caps: { max_files: number; max_file_bytes: number; max_total_bytes: number }) {
+		files = caps.max_files;
+		fileMb = toMb(caps.max_file_bytes);
+		totalMb = toMb(caps.max_total_bytes);
+	}
+	function apply(next: UploadCapsInfo) {
+		info = next;
+		fill(next.effective);
+	}
 	$effect(() => {
 		if (!isAdmin) return;
 		endpoints
 			.uploadCaps()
-			.then((next) => (info = next))
+			.then(apply)
 			.catch(() => {});
+	});
+	$effect(() => {
+		if (!info) fill(served);
 	});
 
 	const effective = $derived(info?.effective ?? served);
-
-	let files = $state(0);
-	let fileMb = $state(0);
-	let totalMb = $state(0);
-	$effect(() => {
-		const e = effective;
-		files = e.max_files;
-		fileMb = toMb(e.max_file_bytes);
-		totalMb = toMb(e.max_total_bytes);
-	});
 
 	const draft = $derived({
 		max_files: Math.trunc(files),
@@ -59,17 +63,21 @@
 	);
 
 	async function save(reset = false) {
-		saving = true;
-		try {
-			info = await endpoints.setUploadCaps(reset ? null : draft);
+		const sent = JSON.stringify(draft);
+		const res = await serverSave.run(async () => {
+			const next = await endpoints.setUploadCaps(reset ? null : draft);
 			await qc.invalidateQueries({ queryKey: qk.version });
-			toasts.ok(m.settings_uploads_saved());
-		} catch (e) {
-			toasts.error(e instanceof Error ? e.message : String(e));
-		} finally {
-			saving = false;
-		}
+			return next;
+		});
+		if (!res) return;
+		if (JSON.stringify(draft) === sent) apply(res);
+		else info = res;
 	}
+	$effect(() => {
+		if (!isAdmin || !info || !dirty || !valid) return;
+		const t = setTimeout(() => save(), SAVE_DEBOUNCE_MS);
+		return () => clearTimeout(t);
+	});
 </script>
 
 	<SettingGroup title={`${m.settings_nav_uploads()} · ${m.settings_uploads_group_now()}`}>
@@ -106,11 +114,8 @@
 				{#if info}
 					<Badge size="sm">{sourceLabel(info.source)}</Badge>
 				{/if}
-				<Button disabled={!dirty || !valid || saving} onclick={() => save()}>
-					{m.settings_admin_instance_save()}
-				</Button>
 				{#if info?.source === 'settings'}
-					<Button variant="ghost" disabled={saving} onclick={() => save(true)}>
+					<Button variant="ghost" disabled={serverSave.status === 'pending'} onclick={() => save(true)}>
 						{m.settings_reset()}
 					</Button>
 				{/if}

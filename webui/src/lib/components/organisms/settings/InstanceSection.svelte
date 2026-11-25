@@ -13,7 +13,7 @@
 	import PasskeySignInGroup from './PasskeySignInGroup.svelte';
 	import { useVersion, useAllMachines, endpoints, qk } from '#lib/queries/index.ts';
 	import type { SelfUpdateTargetInfo } from '@bindings/SelfUpdateTargetInfo';
-	import { serverSave } from './serverSave.svelte.ts';
+	import { SAVE_DEBOUNCE_MS, serverSave } from './serverSave.svelte.ts';
 	import { hasFeature } from '#lib/features.svelte.ts';
 	import { m } from '#lib/paraglide/messages.js';
 
@@ -22,8 +22,6 @@
 
 	const version = useVersion();
 	const qc = useQueryClient();
-
-	const SAVE_DEBOUNCE_MS = 600;
 
 	let instanceDraft = $state('');
 	let instanceEditing = $state(false);

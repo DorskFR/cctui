@@ -1,5 +1,8 @@
 import { saveErrorMessage } from '#lib/saveError.ts';
 
+/** Pause after the last edit before an auto-saved setting is written. */
+export const SAVE_DEBOUNCE_MS = 600;
+
 export type SaveStatus = 'idle' | 'pending' | 'saved' | 'error';
 
 export interface SaveState {

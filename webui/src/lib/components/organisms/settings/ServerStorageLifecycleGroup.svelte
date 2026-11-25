@@ -8,6 +8,7 @@
 	import { useStorageLifecycleActions } from '#lib/queries/storageAdmin.ts';
 	import { toasts } from '#lib/toast.svelte.ts';
 	import { m } from '#lib/paraglide/messages.js';
+	import { SAVE_DEBOUNCE_MS, serverSave } from './serverSave.svelte.ts';
 	import {
 		MAX_DAYS,
 		MAX_TRIM_KB,
@@ -58,16 +59,23 @@
 	}
 
 	async function save() {
+		if (busy !== null) return;
+		const next = rules;
 		busy = 'save';
 		try {
-			await actions.save(rules);
-			toasts.ok(m.settings_server_storage_saved());
-		} catch (e) {
-			toasts.error(errMessage(e));
+			await serverSave.run(() => actions.save(next));
 		} finally {
 			busy = null;
 		}
 	}
+	// Switching every rule off loses nothing, so it saves on its own; rules that
+	// rewrite stored output wait for a preview and an explicit Apply.
+	const destructive = $derived(enablesAnything(rules));
+	$effect(() => {
+		if (destructive || !saveable) return;
+		const t = setTimeout(save, SAVE_DEBOUNCE_MS);
+		return () => clearTimeout(t);
+	});
 </script>
 
 <SettingGroup title={m.settings_server_storage_lifecycle_group()}>
@@ -156,9 +164,11 @@
 			>
 				{m.settings_server_storage_preview_button()}
 			</Button>
-			<Button disabled={!saveable || busy !== null} loading={busy === 'save'} onclick={save}>
-				{m.settings_admin_instance_save()}
-			</Button>
+			{#if destructive}
+				<Button variant="danger" disabled={!saveable || busy !== null} loading={busy === 'save'} onclick={save}>
+					{m.settings_server_storage_apply()}
+				</Button>
+			{/if}
 		</div>
 	</SettingRow>
 

@@ -1983,6 +1983,37 @@
 	"settings_event_retention_title": "Journal des événements",
 	"settings_event_retention_label": "Garder les événements (jours)",
 	"settings_event_retention_help": "Les événements plus anciens sont supprimés automatiquement. 0 les garde pour toujours ; la valeur par défaut est de {days} jours.",
+	"settings_event_retention_shorten": [
+		{
+			"declarations": [
+				"input days",
+				"local daysPlural = days: plural"
+			],
+			"selectors": [
+				"daysPlural"
+			],
+			"match": {
+				"daysPlural=one": "Réduire à 1 jour",
+				"daysPlural=other": "Réduire à {days} jours"
+			}
+		}
+	],
+	"settings_event_retention_shorten_title": "Réduire la conservation des événements ?",
+	"settings_event_retention_shorten_message": [
+		{
+			"declarations": [
+				"input days",
+				"local daysPlural = days: plural"
+			],
+			"selectors": [
+				"daysPlural"
+			],
+			"match": {
+				"daysPlural=one": "Les événements de plus d’1 jour sont supprimés au prochain nettoyage. Cette action est irréversible.",
+				"daysPlural=other": "Les événements de plus de {days} jours sont supprimés au prochain nettoyage. Cette action est irréversible."
+			}
+		}
+	],
 	"settings_net_stats_help": "Ce que ce navigateur a téléchargé depuis l'API et le websocket depuis le chargement de la page.",
 	"settings_notification_sound_label": "Son de notification",
 	"settings_notifications_title": "Notifications",
@@ -2100,8 +2131,8 @@
 	"settings_source_env": "depuis l'environnement",
 	"settings_source_default": "valeur par défaut",
 	"settings_reset": "Réinitialiser",
-	"settings_uploads_apply_help": "Les limites enregistrées prennent effet dès l'envoi suivant, sans redémarrage. C'est le serveur qui les applique ; la vérification du navigateur ne sert qu'à échouer vite.",
-	"settings_uploads_apply_label": "Enregistrer les limites",
+	"settings_uploads_apply_help": "Les limites modifiées prennent effet dès l'envoi suivant, sans redémarrage. C'est le serveur qui les applique ; la vérification du navigateur ne sert qu'à échouer vite.",
+	"settings_uploads_apply_label": "Origine des limites",
 	"settings_uploads_ceiling_help": "La limite dure intégrée aux routes de téléversement. Enregistrer une limite totale égale ou supérieure est refusé : augmentez {env} puis redémarrez le serveur.",
 	"settings_uploads_ceiling_help_generic": "La limite dure intégrée aux routes de téléversement, fixée par une variable d'environnement au démarrage. Enregistrer une limite totale égale ou supérieure est refusé.",
 	"settings_uploads_ceiling_label": "Plafond du corps de requête",
@@ -3282,6 +3313,7 @@
 	"settings_server_storage_lifecycle_help": "Par défaut, tout est conservé. Les messages de l'utilisateur et de l'assistant ne sont jamais modifiés, seules les sorties d'outils le sont.",
 	"settings_server_storage_lifecycle_keep_all": "Tout conserver",
 	"settings_server_storage_lifecycle_active": "Cycle de vie actif",
+	"settings_server_storage_apply": "Appliquer les règles",
 	"settings_server_storage_trim_label": "Tronquer les grosses sorties d'outils",
 	"settings_server_storage_trim_help": "Garder le début de chaque ancienne sortie dépassant la limite, suivi d'un marqueur de troncature.",
 	"settings_server_storage_trim_days_label": "Tronquer après (jours)",
@@ -3405,11 +3437,5 @@
 	"error_session_missing_body": "Cette session a été archivée ou supprimée. Cherchez-la dans les sessions archivées, ou revenez à vos sessions.",
 	"error_session_missing_title": "Session introuvable",
 	"list_auto_approve": "approbation auto",
-	"settings_admin_instance_save": "Enregistrer",
-	"settings_event_retention_saved": "Durée de conservation enregistrée",
-	"settings_uploads_saved": "Limites de téléversement enregistrées",
-	"settings_spawn_limits_saved": "Limites CctuiAgent enregistrées",
-	"settings_harness_update_saved": "Mise à jour auto des harnais enregistrée",
-	"settings_server_storage_saved": "Cycle de vie du stockage enregistré",
 	"spawn_optional_settings": "Paramètres optionnels"
 }

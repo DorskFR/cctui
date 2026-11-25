@@ -58,7 +58,7 @@ describe('InstanceSection auto-save', () => {
 	it('has no Save button', async () => {
 		await render();
 		const labels = [...document.body.querySelectorAll('button')].map((b) => b.textContent?.trim());
-		expect(labels).not.toContain(m.settings_admin_instance_save());
+		expect(labels).not.toContain('Save');
 	});
 
 	it('saves the instance name after a typing pause, once', async () => {
