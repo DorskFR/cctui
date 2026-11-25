@@ -10,7 +10,8 @@
 	import AdapterIcon from '#lib/components/atoms/AdapterIcon.svelte';
 	import ThreadMenu from './ThreadMenu.svelte';
 	import ContextMeter from './ContextMeter.svelte';
-	import LangfuseChip from '#lib/components/molecules/LangfuseChip.svelte';
+	import { headerCost } from './headerCost';
+	import { langfuseCostLabel } from '#lib/spend.ts';
 	import { Badge, Icon, IconButton, Popover, Select, Switch, Text, WorkingDir } from '@dorsk/tsumikit';
 	import { harnessModelsFallback } from '#lib/domainTables.ts';
 	import { harnessCapabilities } from '#lib/harnesses.ts';
@@ -72,16 +73,19 @@
 	});
 	const branch = $derived(branchOf(session));
 
-	// The details panel is the only place the full readout lives, so its Langfuse
-	// figures are fetched on open rather than with the header.
 	let detailsOpen = $state(false);
 	const caps = useCapabilities();
 	const langfuseAvailable = $derived(hasFeature('observability') && !!caps.data?.langfuse?.available);
 	const lf = useSessionLangfuse(
 		() => session.id,
-		() => detailsOpen && langfuseAvailable
+		() => langfuseAvailable
 	);
 	const calls = $derived(Number(lf.data?.trace_count ?? 0));
+	const cost = $derived(headerCost(totals.cost, totals.total, lf.data));
+	const lfLink = $derived.by(() => {
+		const c = caps.data?.langfuse;
+		return c?.public_host && c.project_id ? `${c.public_host}/project/${c.project_id}/sessions/${session.id}` : null;
+	});
 
 	const toolGuard = useToolGuard(
 		() => session.id,
@@ -174,6 +178,25 @@
 		><span class="m-full">{model}</span><span class="m-short">{modelShort(model)}</span
 		>{#if session.effort}<span class="m-effort"> · {session.effort}</span>{/if}</span
 	>
+{/snippet}
+
+{#snippet costText()}
+	{#if cost.source === 'plan'}
+		<Text size="xs" tone="faint">{m.drawer_cost_plan()}</Text>
+	{:else if cost.source === 'langfuse'}
+		{@const label = m.drawer_cost_with_source({ cost: langfuseCostLabel(cost.usd), source: m.drawer_cost_source_langfuse() })}
+		{#if lfLink}
+			<a class="lf-link" href={lfLink} target="_blank" rel="noopener noreferrer"
+				><Text numeric nowrap size="xs" tone="muted" weight="semibold">{label}</Text></a
+			>
+		{:else}
+			<Text numeric nowrap size="xs" tone="muted" weight="semibold">{label}</Text>
+		{/if}
+	{:else if cost.source === 'harness'}
+		<Text numeric nowrap size="xs" tone="muted" weight="semibold"
+			>{m.drawer_cost_with_source({ cost: usd(cost.usd), source: m.drawer_cost_source_harness() })}</Text
+		>
+	{/if}
 {/snippet}
 
 {#snippet modelMeta(idPrefix: string)}
@@ -285,7 +308,9 @@
 			})}>{m.drawer_meta_tokens({ tokens: compact(totals.total) })}</Text
 		></span
 	>
-	<span class="langfuse"><LangfuseChip id={session.id} /></span>
+	{#if cost.source === 'langfuse' || cost.source === 'harness'}
+		<span class="cost">{@render costText()}</span>
+	{/if}
 	{@render modelMeta('drawer')}
 	<Popover
 		label={m.drawer_meta_details()}
@@ -318,11 +343,10 @@
 						>{compact(totals.total)}</Text
 					></span
 				>
-				<span class="mp-key"><Text size="xs" tone="muted" weight="semibold">{m.drawer_details_cost()}</Text></span>
-				<span class="mp-num"
-					><Text variant="code" size="xs" tone="success" weight="semibold">{usd(totals.cost)}</Text
-					></span
-				>
+				{#if cost.source !== 'none'}
+					<span class="mp-key"><Text size="xs" tone="muted" weight="semibold">{m.drawer_details_cost()}</Text></span>
+					<span class="mp-num">{@render costText()}</span>
+				{/if}
 			</div>
 			{#if bust}
 				<div class="mp-row">
@@ -342,10 +366,6 @@
 				<div class="mp-row">
 					<span class="mp-key"><Text size="xs" tone="faint">{m.drawer_details_calls()}</Text></span>
 					<span class="mp-num"><Text variant="code" size="xs" tone="muted">{calls}</Text></span>
-				</div>
-				<div class="mp-row">
-					<span class="mp-key"><Text size="xs" tone="faint">{m.drawer_details_langfuse()}</Text></span>
-					<span class="mp-val"><LangfuseChip id={session.id} /></span>
 				</div>
 			{/if}
 			{#if hooks.kind !== 'none'}
@@ -432,7 +452,7 @@
 		flex: 0 1 auto;
 		min-width: 0;
 	}
-	.langfuse,
+	.cost,
 	.ctx,
 	.tokens {
 		display: contents;
@@ -447,7 +467,7 @@
 		.branch {
 			max-width: 8rem;
 		}
-		.langfuse,
+		.cost,
 		.m-effort,
 		.m-full {
 			display: none;
@@ -507,6 +527,12 @@
 		align-items: center;
 		min-width: 0;
 		text-align: right;
+	}
+	.lf-link {
+		text-decoration: none;
+	}
+	.lf-link:hover {
+		text-decoration: underline;
 	}
 	.mp-sep {
 		border-top: 1px solid var(--border);
