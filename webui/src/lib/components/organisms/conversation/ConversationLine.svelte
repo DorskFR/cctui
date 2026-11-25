@@ -414,7 +414,6 @@
 	   deliberately the quietest bubble in the log. */
 	.line.marker .bubble {
 		background: none;
-		border-color: var(--border);
 		color: var(--text-faint);
 		font-size: var(--fs-xs);
 	}
