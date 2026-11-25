@@ -2,7 +2,7 @@
 import { flushSync } from 'svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { FOLLOWUP_RELATION } from '#lib/followup.ts';
-import { SpawnForm } from '#lib/components/organisms/spawn/spawnForm.svelte';
+import { SpawnForm } from '#lib/components/organisms/spawn/spawnForm.svelte.ts';
 import { foldedPrefill } from './sessions.logic';
 
 const machineList = [
