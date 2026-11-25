@@ -17,7 +17,7 @@
 	import AccountEditorModal from './AccountEditorModal.svelte';
 	import { availableKinds, ownsAccount } from './account-editor.logic';
 	import { accountHref } from './account-page/account-nav.logic';
-	import { Button } from '@dorsk/tsumikit';
+	import { Button, ConfirmModal } from '@dorsk/tsumikit';
 	import PageHead from '#lib/components/molecules/PageHead.svelte';
 	import { m } from '#lib/paraglide/messages.js';
 
@@ -68,9 +68,15 @@
 	};
 	const clearRedirect = (ruleId: string) => guard(redirectActions.remove(ruleId));
 
+	let deleting = $state<OAuthAccount | null>(null);
+	let confirmingDelete = $state(false);
 	function removeAccount(a: OAuthAccount) {
-		if (!confirm(m.accounts_confirm_delete_account({ name: a.name }))) return;
-		guard(actions.remove(a.id).then(() => toasts.ok(m.accounts_deleted())));
+		deleting = a;
+		confirmingDelete = true;
+	}
+	function deleteAccount() {
+		const a = deleting;
+		if (a) guard(actions.remove(a.id).then(() => toasts.ok(m.accounts_deleted())));
 	}
 
 
@@ -123,6 +129,18 @@
 </div>
 
 <AccountEditorModal bind:this={editor} {rows} {isAdmin} {activeUsers} />
+
+{#if deleting}
+	<ConfirmModal
+		bind:open={confirmingDelete}
+		tone="danger"
+		title={m.accounts_delete_account()}
+		message={m.accounts_confirm_delete_account({ name: deleting.name })}
+		confirmLabel={m.accounts_delete_account()}
+		cancelLabel={m.common_cancel()}
+		onconfirm={deleteAccount}
+	/>
+{/if}
 
 <style>
 	.panel {

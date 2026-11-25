@@ -26,6 +26,16 @@
       },
       "correctness": {
         "noUnsafeOptionalChaining": "warn"
+      },
+      "style": {
+        "noRestrictedGlobals": {
+          "level": "error",
+          "options": {
+            "deniedGlobals": {
+              "confirm": "Use Tsumikit ConfirmModal (tone=\"danger\" for destructive actions)."
+            }
+          }
+        }
       }
     }
   }

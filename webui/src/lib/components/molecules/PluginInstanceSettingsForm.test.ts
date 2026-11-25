@@ -31,6 +31,12 @@ vi.mock('#lib/clipboard.ts', () => ({ copyText }));
 vi.mock('#lib/toast.svelte.ts', () => ({ toasts }));
 
 import Form from './PluginInstanceSettingsForm.svelte';
+import { m } from '#lib/paraglide/messages.js';
+
+const confirmButton = (label: string) =>
+	[...document.querySelectorAll<HTMLButtonElement>('dialog button')].find(
+		(b) => b.textContent?.trim() === label
+	);
 
 const settings = (over: Partial<PluginInstanceSettings> = {}): PluginInstanceSettings => ({
 	id: 'ghreview',
@@ -81,8 +87,6 @@ beforeEach(() => {
 	endpoints.savePluginInstanceSettings.mockClear();
 	endpoints.rotatePluginProxySecret.mockClear();
 	copyText.mockClear();
-	// happy-dom has no `confirm`, so there is nothing to spy on: install one.
-	vi.stubGlobal('confirm', vi.fn(() => true));
 });
 
 afterEach(() => {
@@ -134,6 +138,9 @@ describe('plugin instance settings form', () => {
 		query.isPending = false;
 		render();
 		(at('plugin-instance-secret-clear', 'webhookSecret') as HTMLButtonElement).click();
+		flushSync();
+		expect(endpoints.savePluginInstanceSettings).not.toHaveBeenCalled();
+		confirmButton(m.settings_plugins_instance_secret_clear())?.click();
 		await vi.waitFor(() => expect(endpoints.savePluginInstanceSettings).toHaveBeenCalled());
 		expect(endpoints.savePluginInstanceSettings).toHaveBeenCalledWith('ghreview', { webhookSecret: '' });
 		unmount(component);
@@ -145,6 +152,9 @@ describe('plugin instance settings form', () => {
 		render();
 		expect(at('plugin-instance-proxy')).not.toBeNull();
 		(at('plugin-instance-proxy-rotate') as HTMLButtonElement).click();
+		flushSync();
+		expect(endpoints.rotatePluginProxySecret).not.toHaveBeenCalled();
+		confirmButton(m.settings_plugins_instance_proxy_rotate())?.click();
 		await vi.waitFor(() => expect(at('plugin-instance-proxy-secret-value')).not.toBeNull());
 		expect(at('plugin-instance-proxy-secret-value')?.textContent).toContain('new-secret');
 		unmount(component);

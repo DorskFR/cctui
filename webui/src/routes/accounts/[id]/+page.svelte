@@ -12,7 +12,7 @@
 	import { hasFeature } from '#lib/features.svelte.ts';
 	import { m } from '#lib/paraglide/messages.js';
 	import { tick } from 'svelte';
-	import { Breadcrumb, Button, Text } from '@dorsk/tsumikit';
+	import { Breadcrumb, Button, ConfirmModal, Text } from '@dorsk/tsumikit';
 	import PageHead from '#lib/components/molecules/PageHead.svelte';
 	import AccountEditorModal from '#lib/components/organisms/accounts/AccountEditorModal.svelte';
 	import { availableKinds, ownsAccount } from '#lib/components/organisms/accounts/account-editor.logic.ts';
@@ -85,9 +85,9 @@
 		});
 	}
 
+	let confirmingDelete = $state(false);
 	function removeAccount() {
 		if (!account) return;
-		if (!confirm(m.accounts_confirm_delete_account({ name: account.name }))) return;
 		guard(
 			actions.remove(account.id).then(() => {
 				toasts.ok(m.accounts_deleted());
@@ -141,7 +141,7 @@
 					<ServiceTokensSection {account} />
 				{/if}
 			{/if}
-			<DangerSection {account} disabled={managed} ondelete={removeAccount} />
+			<DangerSection {account} disabled={managed} ondelete={() => (confirmingDelete = true)} />
 		</div>
 	{:else if accounts.isLoading}
 		<Text tone="faint">{m.common_loading()}</Text>
@@ -151,6 +151,18 @@
 </div>
 
 <AccountEditorModal bind:this={editor} {rows} {isAdmin} {activeUsers} />
+
+{#if account}
+	<ConfirmModal
+		bind:open={confirmingDelete}
+		tone="danger"
+		title={m.accounts_delete_account()}
+		message={m.accounts_confirm_delete_account({ name: account.name })}
+		confirmLabel={m.accounts_delete_account()}
+		cancelLabel={m.common_cancel()}
+		onconfirm={removeAccount}
+	/>
+{/if}
 
 <style>
 	.page {

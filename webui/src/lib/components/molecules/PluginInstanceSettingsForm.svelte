@@ -1,10 +1,18 @@
 <script lang="ts">
-	import { Badge, Button, Callout, EmptyState, Field, Input, Text } from '@dorsk/tsumikit';
+	import { Badge, Button, Callout, ConfirmModal, EmptyState, Field, Input, Text } from '@dorsk/tsumikit';
 	import { useQueryClient } from '@tanstack/svelte-query';
 	import { copyText } from '#lib/clipboard.ts';
 	import { endpoints, qk, usePluginInstanceSettings } from '#lib/queries/index.ts';
 	import { toasts } from '#lib/toast.svelte.ts';
 	import { m } from '#lib/paraglide/messages.js';
+
+	type Ask = { title: string; message?: string; label: string; run: () => void };
+	let ask = $state<Ask | null>(null);
+	let asking = $state(false);
+	function confirmFirst(a: Ask) {
+		ask = a;
+		asking = true;
+	}
 
 	let { pluginId }: { pluginId: string } = $props();
 
@@ -54,19 +62,29 @@
 	}
 
 	function clearSecret(key: string) {
-		if (!confirm(m.settings_plugins_instance_secret_clear_confirm())) return;
-		void run(
-			() => endpoints.savePluginInstanceSettings(pluginId, { [key]: '' }),
-			m.settings_plugins_instance_secret_cleared()
-		);
+		confirmFirst({
+			title: m.settings_plugins_instance_secret_clear_title({ key }),
+			message: m.settings_plugins_instance_secret_clear_confirm(),
+			label: m.settings_plugins_instance_secret_clear(),
+			run: () =>
+				void run(
+					() => endpoints.savePluginInstanceSettings(pluginId, { [key]: '' }),
+					m.settings_plugins_instance_secret_cleared()
+				)
+		});
 	}
 
 	function rotate() {
-		if (!confirm(m.settings_plugins_instance_proxy_rotate_confirm())) return;
-		void run(async () => {
-			const minted = await endpoints.rotatePluginProxySecret(pluginId);
-			revealed = minted.secret;
-		}, m.settings_plugins_instance_proxy_rotated());
+		confirmFirst({
+			title: m.settings_plugins_instance_proxy_rotate_title(),
+			message: m.settings_plugins_instance_proxy_rotate_confirm(),
+			label: m.settings_plugins_instance_proxy_rotate(),
+			run: () =>
+				void run(async () => {
+					const minted = await endpoints.rotatePluginProxySecret(pluginId);
+					revealed = minted.secret;
+				}, m.settings_plugins_instance_proxy_rotated())
+		});
 	}
 </script>
 
@@ -178,6 +196,18 @@
 		{/if}
 	{/if}
 </div>
+
+{#if ask}
+	<ConfirmModal
+		bind:open={asking}
+		tone="danger"
+		title={ask.title}
+		message={ask.message}
+		confirmLabel={ask.label}
+		cancelLabel={m.common_cancel()}
+		onconfirm={ask.run}
+	/>
+{/if}
 
 <style>
 	.form {

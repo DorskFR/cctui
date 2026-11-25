@@ -10,11 +10,19 @@
 	} from '#lib/queries/index.ts';
 	import { toasts } from '#lib/toast.svelte.ts';
 	import { copyText } from '#lib/clipboard.ts';
-	import { Badge, Button, DataTable, Field, Heading, Input, Modal, Select, Text, Timestamp } from '@dorsk/tsumikit';
+	import { Badge, Button, ConfirmModal, DataTable, Field, Heading, Input, Modal, Select, Text, Timestamp } from '@dorsk/tsumikit';
 	import type { Column } from '@dorsk/tsumikit';
 	import { livenessLabel, livenessTone } from '#lib/dispatchers.logic.ts';
 	import InlineCode, { SLOT } from '#lib/components/atoms/InlineCode.svelte';
 	import { m } from '#lib/paraglide/messages.js';
+
+	type Ask = { title: string; message?: string; label: string; run: () => void };
+	let ask = $state<Ask | null>(null);
+	let asking = $state(false);
+	function confirmFirst(a: Ask) {
+		ask = a;
+		asking = true;
+	}
 
 	// Embedded under a page that already shows an <h1>, the panel's own heading
 	// drops a level; standalone it stays an <h1>.
@@ -112,8 +120,11 @@
 	}
 
 	function remove(d: UserDispatcher) {
-		if (!confirm(m.dispatch_confirm_remove({ name: d.name }))) return;
-		guard(actions.remove(d.id).then(() => toasts.ok(m.dispatch_toast_removed())));
+		confirmFirst({
+			title: m.dispatch_confirm_remove({ name: d.name }),
+			label: m.common_remove(),
+			run: () => guard(actions.remove(d.id).then(() => toasts.ok(m.dispatch_toast_removed())))
+		});
 	}
 
 	async function copyKey() {
@@ -240,6 +251,18 @@
 			<Button variant="primary" onclick={() => (newKey = null)}>{m.common_close()}</Button>
 		{/snippet}
 	</Modal>
+{/if}
+
+{#if ask}
+	<ConfirmModal
+		bind:open={asking}
+		tone="danger"
+		title={ask.title}
+		message={ask.message}
+		confirmLabel={ask.label}
+		cancelLabel={m.common_cancel()}
+		onconfirm={ask.run}
+	/>
 {/if}
 
 <style>

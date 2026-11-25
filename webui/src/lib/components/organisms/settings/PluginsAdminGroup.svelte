@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { Badge, Button, Callout, EmptyState, FileButton, Input, Switch, Text } from '@dorsk/tsumikit';
+	import { Badge, Button, Callout, ConfirmModal, EmptyState, FileButton, Input, Switch, Text } from '@dorsk/tsumikit';
 	import { useQueryClient } from '@tanstack/svelte-query';
 	import PluginInstanceSettingsForm from '#lib/components/molecules/PluginInstanceSettingsForm.svelte';
 	import SettingGroup from '#lib/components/molecules/SettingGroup.svelte';
@@ -10,6 +10,14 @@
 	import { copyText } from '#lib/clipboard.ts';
 	import { toasts } from '#lib/toast.svelte.ts';
 	import { m } from '#lib/paraglide/messages.js';
+
+	type Ask = { title: string; message?: string; label: string; run: () => void };
+	let ask = $state<Ask | null>(null);
+	let asking = $state(false);
+	function confirmFirst(a: Ask) {
+		ask = a;
+		asking = true;
+	}
 
 	let { isAdmin = false }: { isAdmin?: boolean } = $props();
 
@@ -78,8 +86,13 @@
 	}
 
 	function uninstall(plugin: AdminPluginInfo) {
-		if (!confirm(m.settings_plugins_admin_uninstall_confirm({ name: plugin.name }))) return;
-		void run(() => endpoints.uninstallPlugin(plugin.id), m.settings_plugins_admin_uninstalled({ name: plugin.name }));
+		confirmFirst({
+			title: m.settings_plugins_admin_uninstall({ name: plugin.name }),
+			message: m.settings_plugins_admin_uninstall_confirm({ name: plugin.name }),
+			label: m.settings_plugins_admin_uninstall({ name: plugin.name }),
+			run: () =>
+				void run(() => endpoints.uninstallPlugin(plugin.id), m.settings_plugins_admin_uninstalled({ name: plugin.name }))
+		});
 	}
 </script>
 
@@ -245,6 +258,18 @@
 		</SettingRow>
 	</SettingGroup>
 </div>
+
+{#if ask}
+	<ConfirmModal
+		bind:open={asking}
+		tone="danger"
+		title={ask.title}
+		message={ask.message}
+		confirmLabel={ask.label}
+		cancelLabel={m.common_cancel()}
+		onconfirm={ask.run}
+	/>
+{/if}
 
 <style>
 	.plugins {
