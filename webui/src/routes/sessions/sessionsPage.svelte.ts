@@ -1,4 +1,5 @@
 import { untrack } from "svelte";
+import { goto } from "$app/navigation";
 import {
   createInfiniteQuery,
   type CreateInfiniteQueryResult,
@@ -568,13 +569,11 @@ export class SessionsPage {
       if (req === this.#openReq) this.#open = row;
     } catch (e) {
       if (req !== this.#openReq) return;
-      // Archived/ended sessions resolve from the DB, so a 404 means the
-      // session was actually DELETED — only then toast + drop the id.
-      // Transient errors leave the URL intact so a retry/refresh can recover.
+      // A full navigation runs the session route's load, whose 404 renders
+      // the error page under the same URL.
       if (e instanceof ApiError && e.status === 404) {
-        this.#d.toasts.error(m.sessions_toast_not_found());
         this.#open = null;
-        this.#d.clearUrlSession();
+        void goto(`/sessions/${encodeURIComponent(id)}`, { replaceState: true, invalidateAll: true });
       } else {
         this.#d.toasts.error(
           m.sessions_toast_open_failed({ error: errMessage(e) }),

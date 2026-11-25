@@ -5,6 +5,9 @@ import { QueryClient } from '@tanstack/svelte-query';
 import type { SessionListItem } from '@bindings/SessionListItem';
 import type { SessionListResponse } from '@bindings/SessionListResponse';
 import type { Label } from '@bindings/Label';
+
+const { goto } = vi.hoisted(() => ({ goto: vi.fn() }));
+vi.mock('$app/navigation', () => ({ goto }));
 import { ApiError } from '#lib/api.ts';
 import { wordStart } from '#lib/search.ts';
 import { m } from '#lib/paraglide/messages.js';
@@ -621,19 +624,28 @@ describe('SessionsPage — pinned parents and the open drawer', () => {
 		expect(sp.liveOpen?.name).toBe('renamed');
 	});
 
-	it('fetches an unknown id and drops the URL only on a 404', async () => {
+	it('fetches an unknown id and keeps the URL whatever the outcome', async () => {
+		goto.mockClear();
 		const { sp, api, deps, toasts } = make();
 		await sp.openById('remote');
 		expect(api.session).toHaveBeenCalledWith('remote');
 		expect(sp.openSession?.id).toBe('remote');
 		api.session.mockRejectedValueOnce(new Error('offline'));
 		await sp.openById('flaky');
+		expect(toasts.error).toHaveBeenCalledTimes(1);
+		expect(goto).not.toHaveBeenCalled();
 		expect(deps.clearUrlSession).not.toHaveBeenCalled();
+	});
+
+	it('hands a deleted session to the error page under its own URL, without a toast', async () => {
+		goto.mockClear();
+		const { sp, api, deps, toasts } = make();
 		api.session.mockRejectedValueOnce(new ApiError(404, 'gone'));
 		await sp.openById('gone');
 		expect(sp.openSession).toBeNull();
-		expect(deps.clearUrlSession).toHaveBeenCalledTimes(1);
-		expect(toasts.error).toHaveBeenCalledTimes(2);
+		expect(goto).toHaveBeenCalledWith('/sessions/gone', { replaceState: true, invalidateAll: true });
+		expect(toasts.error).not.toHaveBeenCalled();
+		expect(deps.clearUrlSession).not.toHaveBeenCalled();
 	});
 
 	it('opens a just-spawned id whose row 404s once, without a not-found toast', async () => {
@@ -662,6 +674,7 @@ describe('SessionsPage — pinned parents and the open drawer', () => {
 	});
 
 	it('drops a URL-driven open that resolves after the user navigated away', async () => {
+		goto.mockClear();
 		const { sp, api, toasts, deps } = make();
 		let resolve!: (s: SessionListItem) => void;
 		api.session.mockImplementationOnce(() => new Promise((r) => (resolve = r)));
@@ -679,6 +692,7 @@ describe('SessionsPage — pinned parents and the open drawer', () => {
 		await failing;
 		expect(sp.openSession?.id).toBe('picked');
 		expect(toasts.error).not.toHaveBeenCalled();
+		expect(goto).not.toHaveBeenCalled();
 		expect(deps.clearUrlSession).not.toHaveBeenCalled();
 	});
 
