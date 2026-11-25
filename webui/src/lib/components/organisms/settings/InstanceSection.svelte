@@ -13,7 +13,7 @@
 	import PasskeySignInGroup from './PasskeySignInGroup.svelte';
 	import { useVersion, useAllMachines, endpoints, qk } from '#lib/queries/index.ts';
 	import type { SelfUpdateTargetInfo } from '@bindings/SelfUpdateTargetInfo';
-	import { toasts } from '#lib/toast.svelte.ts';
+	import { serverSave } from './serverSave.svelte.ts';
 	import { hasFeature } from '#lib/features.svelte.ts';
 	import { m } from '#lib/paraglide/messages.js';
 
@@ -23,26 +23,35 @@
 	const version = useVersion();
 	const qc = useQueryClient();
 
+	const SAVE_DEBOUNCE_MS = 600;
+
 	let instanceDraft = $state('');
-	let instanceSaving = $state(false);
+	let instanceEditing = $state(false);
 	$effect(() => {
-		instanceDraft = version.data?.instance_name ?? '';
+		const saved = version.data?.instance_name ?? '';
+		if (!instanceEditing) instanceDraft = saved;
 	});
 	const instanceDirty = $derived(instanceDraft.trim() !== (version.data?.instance_name ?? ''));
 
+	let instanceSending: string | null = null;
 	async function saveInstanceName() {
-		instanceSaving = true;
+		const name = instanceDraft.trim();
+		if (!instanceDirty || name === instanceSending) return;
+		instanceSending = name;
 		try {
-			const res = await endpoints.updateInstance(instanceDraft.trim() || null);
-			instanceDraft = res.name ?? '';
-			await qc.invalidateQueries({ queryKey: qk.version });
-			toasts.ok(res.name ? m.settings_admin_instance_saved() : m.settings_admin_instance_cleared());
-		} catch (e) {
-			toasts.error(e instanceof Error ? e.message : String(e));
+			await serverSave.run(async () => {
+				await endpoints.updateInstance(name || null);
+				await qc.invalidateQueries({ queryKey: qk.version });
+			});
 		} finally {
-			instanceSaving = false;
+			instanceSending = null;
 		}
 	}
+	$effect(() => {
+		if (!instanceDirty) return;
+		const t = setTimeout(saveInstanceName, SAVE_DEBOUNCE_MS);
+		return () => clearTimeout(t);
+	});
 
 	// Self-update target: which enrolled machine + directory the "Update"
 	// button hands the deployment to. The server never learns how cctui is
@@ -52,44 +61,43 @@
 	let suMachine = $state('');
 	let suDir = $state('');
 	let suAdapter = $state('claude-code');
-	let suSaving = $state(false);
+	function applyTarget(info: SelfUpdateTargetInfo) {
+		suTarget = info;
+		suMachine = info.target?.machine_id ?? '';
+		suDir = info.target?.working_dir ?? '';
+		suAdapter = info.target?.adapter_id ?? 'claude-code';
+	}
 	$effect(() => {
 		if (!isAdmin || !selfUpdate) return;
 		endpoints
 			.selfUpdateTarget()
-			.then((info) => {
-				suTarget = info;
-				suMachine = info.target?.machine_id ?? '';
-				suDir = info.target?.working_dir ?? '';
-				suAdapter = info.target?.adapter_id ?? 'claude-code';
-			})
+			.then(applyTarget)
 			.catch(() => {});
 	});
 	const suDirty = $derived(
-		suMachine !== (suTarget?.target?.machine_id ?? '') ||
-			suDir.trim() !== (suTarget?.target?.working_dir ?? '') ||
-			suAdapter !== (suTarget?.target?.adapter_id ?? 'claude-code')
+		suTarget !== null &&
+			(suMachine !== (suTarget.target?.machine_id ?? '') ||
+				suDir.trim() !== (suTarget.target?.working_dir ?? '') ||
+				suAdapter !== (suTarget.target?.adapter_id ?? 'claude-code'))
 	);
 	const suValid = $derived(suMachine !== '' && suDir.trim() !== '');
 
 	async function saveSelfUpdateTarget(clear = false) {
-		suSaving = true;
-		try {
-			const info = await endpoints.setSelfUpdateTarget(
+		const info = await serverSave.run(() =>
+			endpoints.setSelfUpdateTarget(
 				clear ? null : { machine_id: suMachine, working_dir: suDir.trim(), adapter_id: suAdapter }
-			);
-			suTarget = info;
-			suMachine = info.target?.machine_id ?? '';
-			suDir = info.target?.working_dir ?? '';
-			suAdapter = info.target?.adapter_id ?? 'claude-code';
-			qc.invalidateQueries({ queryKey: qk.version });
-			toasts.ok(clear ? m.settings_self_update_cleared() : m.settings_self_update_saved());
-		} catch (e) {
-			toasts.error(e instanceof Error ? e.message : String(e));
-		} finally {
-			suSaving = false;
-		}
+			)
+		);
+		if (!info) return;
+		suTarget = info;
+		if (clear) applyTarget(info);
+		qc.invalidateQueries({ queryKey: qk.version });
 	}
+	$effect(() => {
+		if (!suDirty || !suValid) return;
+		const t = setTimeout(() => saveSelfUpdateTarget(), SAVE_DEBOUNCE_MS);
+		return () => clearTimeout(t);
+	});
 </script>
 
 <SettingSection id="instance-general" icon="⚙" title={m.settings_sec_general()} admin>
@@ -107,13 +115,14 @@
 					grow
 					placeholder={m.settings_admin_instance_name_placeholder()}
 					aria-label={m.settings_admin_instance_name_label()}
+					onfocus={() => (instanceEditing = true)}
+					onblur={() => {
+						void saveInstanceName().finally(() => (instanceEditing = false));
+					}}
 					onkeydown={(e: KeyboardEvent) => {
-						if (e.key === 'Enter' && instanceDirty && !instanceSaving) saveInstanceName();
+						if (e.key === 'Enter') void saveInstanceName();
 					}}
 				/>
-				<Button disabled={!instanceDirty || instanceSaving} onclick={saveInstanceName}>
-					{m.settings_admin_instance_save()}
-				</Button>
 			</SettingRow>
 		</SettingGroup>
 		{#if selfUpdate}
@@ -149,19 +158,17 @@
 							<option value="claude-code">claude-code</option>
 							<option value="codex">codex</option>
 						</Select>
-						<div class="su-actions">
-							<Button
-								disabled={!suDirty || !suValid || suSaving}
-								onclick={() => saveSelfUpdateTarget()}
-							>
-								{m.settings_admin_instance_save()}
-							</Button>
-							{#if suTarget?.source === 'settings'}
-								<Button variant="ghost" disabled={suSaving} onclick={() => saveSelfUpdateTarget(true)}>
+						{#if suTarget?.source === 'settings'}
+							<div class="su-actions">
+								<Button
+									size="sm"
+									disabled={serverSave.status === 'pending'}
+									onclick={() => saveSelfUpdateTarget(true)}
+								>
 									{m.settings_self_update_clear()}
 								</Button>
-							{/if}
-						</div>
+							</div>
+						{/if}
 					</div>
 				</SettingRow>
 			</SettingGroup>

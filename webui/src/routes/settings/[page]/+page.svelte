@@ -24,6 +24,7 @@
 		type SettingsPage
 	} from '#lib/components/organisms/settings/settings.logic.ts';
 	import { sectionTitle } from '#lib/components/organisms/settings/sectionTitles.ts';
+	import { latestSave, serverSave } from '#lib/components/organisms/settings/serverSave.svelte.ts';
 	import { settings } from '#lib/settings.svelte.ts';
 	import { useMe } from '#lib/queries/index.ts';
 	import { hasFeature } from '#lib/features.svelte.ts';
@@ -86,21 +87,28 @@
 		return () => clearTimeout(timer);
 	});
 
-	// "Saved just now" for a short while after the server acknowledged the PUT,
+	// "Saved just now" for a short while after the server acknowledged a write,
 	// then plain "Saved"; "Saving…" while a write is debounced or in flight.
+	// Covers the per-user blob and the auto-saved instance settings alike.
 	let now = $state(Date.now());
 	$effect(() => {
 		const t = setInterval(() => (now = Date.now()), 5_000);
 		return () => clearInterval(t);
 	});
+	const save = $derived(
+		latestSave(
+			{ status: settings.saveStatus, savedAt: settings.savedAt, error: settings.saveError },
+			serverSave
+		)
+	);
 	const saveLabel = $derived.by(() => {
-		switch (settings.saveStatus) {
+		switch (save.status) {
 			case 'pending':
 				return m.settings_saving();
 			case 'error':
-				return settings.saveError ?? m.settings_save_failed();
+				return save.error ?? m.settings_save_failed();
 			case 'saved':
-				return settings.savedAt && now - settings.savedAt < 15_000
+				return save.savedAt && now - save.savedAt < 15_000
 					? m.settings_saved_now()
 					: m.settings_saved();
 			default:
@@ -130,15 +138,15 @@
 
 		<main class="main">
 			{#if saveLabel}
-				<span class="saved" class:ok={settings.saveStatus === 'saved'} aria-live="polite">
-					{#if settings.saveStatus === 'saved'}
+				<span class="saved" class:ok={save.status === 'saved'} aria-live="polite">
+					{#if save.status === 'saved'}
 						<Icon name="check" size={14} />
-					{:else if settings.saveStatus === 'pending'}
+					{:else if save.status === 'pending'}
 						<Icon name="loader" size={14} spin />
 					{:else}
 						<Icon name="alert-circle" size={14} />
 					{/if}
-					<Text size="xs" tone={settings.saveStatus === 'error' ? 'danger' : 'faint'}>{saveLabel}</Text>
+					<Text size="xs" tone={save.status === 'error' ? 'danger' : 'faint'}>{saveLabel}</Text>
 				</span>
 			{/if}
 

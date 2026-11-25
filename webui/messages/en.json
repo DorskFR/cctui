@@ -3301,9 +3301,5 @@
 			}
 		}
 	],
-	"list_auto_approve": "auto-approve",
-	"settings_admin_instance_cleared": "Instance name cleared",
-	"settings_admin_instance_saved": "Instance name saved",
-	"settings_self_update_cleared": "Self-update machine cleared",
-	"settings_self_update_saved": "Self-update machine saved"
+	"list_auto_approve": "auto-approve"
 }

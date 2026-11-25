@@ -3301,9 +3301,5 @@
 			}
 		}
 	],
-	"list_auto_approve": "approbation auto",
-	"settings_admin_instance_cleared": "Nom de l'instance effacé",
-	"settings_admin_instance_saved": "Nom de l'instance enregistré",
-	"settings_self_update_cleared": "Machine de mise à jour effacée",
-	"settings_self_update_saved": "Machine de mise à jour enregistrée"
+	"list_auto_approve": "approbation auto"
 }
