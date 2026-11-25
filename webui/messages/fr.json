@@ -1526,6 +1526,7 @@
 	"sessions_confirm_archive_many_title": "Archiver les sessions sélectionnées",
 	"sessions_confirm_archive_section": "Archiver les {count} sessions de {section} ? Annulable depuis la notification.",
 	"sessions_confirm_discard_draft": "Supprimer ce brouillon ?",
+	"sessions_confirm_discard_draft_body": "« {name} » et son prompt et ses réglages enregistrés seront supprimés. Cette action est irréversible.",
 	"sessions_copy_id_title": "Copier l'identifiant de session",
 	"sessions_dim_label": "Étiquette",
 	"sessions_dim_machine": "Machine",

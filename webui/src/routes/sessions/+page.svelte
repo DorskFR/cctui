@@ -454,6 +454,7 @@
 		open
 		tone="danger"
 		title={m.sessions_confirm_discard_draft()}
+		message={m.sessions_confirm_discard_draft_body({ name: displayNameOf(sp.discardPending) })}
 		confirmLabel={m.sessions_discard()}
 		onconfirm={sp.confirmDiscard}
 		oncancel={sp.cancelDiscard}

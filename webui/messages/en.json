@@ -1526,6 +1526,7 @@
 	"sessions_confirm_archive_many_title": "Archive selected sessions",
 	"sessions_confirm_archive_section": "Archive all {count} sessions in {section}? You can undo from the toast.",
 	"sessions_confirm_discard_draft": "Discard this draft?",
+	"sessions_confirm_discard_draft_body": "“{name}” and its saved prompt and settings will be deleted. This can’t be undone.",
 	"sessions_copy_id_title": "Copy session id",
 	"sessions_dim_label": "Label",
 	"sessions_dim_machine": "Machine",
