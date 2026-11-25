@@ -47,7 +47,7 @@
 <div class="page" data-journey="dispatch-failures">
 	<PageHead title={m.dispatch_failed_history()} />
 	<div class="sub">
-		<Text size="sm" tone="faint">{m.dispatch_failed_history_subtitle()}</Text>
+		<Text size="sm" tone="faint" measure>{m.dispatch_failed_history_subtitle()}</Text>
 		{#if undismissed > 1}
 			<Button size="sm" variant="link" disabled={clearing} onclick={clearAll}>
 				{m.dispatch_failed_dismiss_all()}
@@ -81,10 +81,6 @@
 		display: flex;
 		flex-direction: column;
 		gap: var(--sp-3);
-		padding: var(--sp-4);
-		max-width: 60rem;
-		width: 100%;
-		margin: 0 auto;
 	}
 	.sub {
 		display: flex;

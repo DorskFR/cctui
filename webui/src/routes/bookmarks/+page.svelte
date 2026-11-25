@@ -67,7 +67,7 @@
 
 <div class="page">
 	<PageHead title={m.bookmarks_title()} />
-	<Text size="sm" tone="faint">{m.bookmarks_subtitle()}</Text>
+	<Text size="sm" tone="faint" measure>{m.bookmarks_subtitle()}</Text>
 
 	<Input
 		icon="search"
@@ -129,10 +129,6 @@
 		display: flex;
 		flex-direction: column;
 		gap: var(--sp-3);
-		padding: var(--sp-4);
-		max-width: 60rem;
-		width: 100%;
-		margin: 0 auto;
 	}
 	.cards {
 		display: flex;
