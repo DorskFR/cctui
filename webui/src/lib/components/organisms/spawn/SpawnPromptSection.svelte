@@ -18,8 +18,13 @@
 	$effect(() => {
 		void loadCctuiverseConfig();
 	});
+	const promptTools = $derived(hasFeature('voice') ? dictation : undefined);
 	const hasInvite = $derived(hasFeature('federation') && findInvite(sf.form.prompt) !== null);
 </script>
+
+{#snippet dictation()}
+	<SpawnDictation {sf} />
+{/snippet}
 
 {#if sf.target === 'dispatch'}
 	{#if hasInvite}
@@ -30,10 +35,8 @@
 		dispatcherIds={sf.dispatcherIds}
 		accounts={sf.allAccounts}
 		onsubmit={sf.submit}
+		{promptTools}
 	/>
-	{#if hasFeature('voice')}
-		<SpawnDictation {sf} />
-	{/if}
 {:else}
 	<MachineFields
 		bind:form={sf.form}
@@ -44,10 +47,8 @@
 		bind:promptEl={sf.promptEl}
 		cwdCheck={sf.cwdCheck}
 		machineName={sf.machineName}
+		{promptTools}
 	/>
-	{#if hasFeature('voice')}
-		<SpawnDictation {sf} />
-	{/if}
 	{#if hasInvite && !cctuiverseConfig.enabled}
 		<Callout tone="warn" style="flex-basis:100%">{m.cctuiverse_disabled_invite()}</Callout>
 	{:else if hasInvite}

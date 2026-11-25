@@ -22,8 +22,7 @@
 
 <style>
 	.spawn-dictation {
-		display: flex;
-		flex-basis: 100%;
-		justify-content: flex-end;
+		display: inline-flex;
+		align-items: center;
 	}
 </style>

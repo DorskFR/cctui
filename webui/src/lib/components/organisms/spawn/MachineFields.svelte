@@ -1,4 +1,5 @@
 <script lang="ts">
+	import type { Snippet } from 'svelte';
 	// The "Machine" branch of the spawn form: where (machine badge · cwd ·
 	// branch), the session name, and the prompt. The harness / account / model /
 	// effort / permission knobs come from the selected profile (ProfileList).
@@ -38,7 +39,8 @@
 		att,
 		promptEl = $bindable(null),
 		cwdCheck = 'unknown',
-		machineName = ''
+		machineName = '',
+		promptTools
 	}: {
 		form: Form;
 		machines: MachineResourcesRow[];
@@ -48,6 +50,7 @@
 		promptEl?: HTMLTextAreaElement | null;
 		cwdCheck?: CwdCheck;
 		machineName?: string;
+		promptTools?: Snippet;
 	} = $props();
 
 	let revealed = $state<ReadonlySet<string>>(new Set());
@@ -167,6 +170,7 @@
 			}}
 		/>
 		<label class="prompt-label" for="sp-prompt">{m.spawn_prompt_label()}</label>
+		{#if promptTools}<span class="prompt-tools">{@render promptTools()}</span>{/if}
 	</div>
 	<PromptField
 		{att}
@@ -226,5 +230,10 @@
 		.chord-hint {
 			display: none;
 		}
+	}
+	.prompt-tools {
+		display: inline-flex;
+		align-items: center;
+		margin-inline-start: auto;
 	}
 </style>

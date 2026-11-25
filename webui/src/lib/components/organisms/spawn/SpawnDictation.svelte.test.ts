@@ -100,7 +100,7 @@ describe('spawn prompt dictation', () => {
 		render({ stt: true, tts: true });
 		expect(mic()).not.toBeNull();
 		expect(document.querySelector('[data-journey="voice-controls"]')).not.toBeNull();
-		expect(document.querySelector('[aria-label="Live voice conversation with this session"]')).toBeNull();
+		expect(document.querySelector('button[aria-label="More voice options"]')).toBeNull();
 	});
 
 	it('lands the dictated transcript in the prompt', async () => {

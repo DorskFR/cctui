@@ -109,6 +109,16 @@ test('390px: closed, the picker is one card and Labels/Files/Env vars and Launch
 	await inViewport(dialog.getByText('Labels', { exact: true }).first());
 	await inViewport(dialog.getByText('Files', { exact: true }).first());
 	await inViewport(dialog.getByText('Env vars', { exact: true }).first());
+	const addonTops = await dialog
+		.locator('[data-journey="spawn-addons"] > *')
+		.evaluateAll((els) =>
+			els
+				.map((el) => el.getBoundingClientRect())
+				.filter((r) => r.height > 0)
+				.map((r) => r.top + r.height / 2)
+		);
+	expect(addonTops.length).toBe(3);
+	expect(Math.max(...addonTops) - Math.min(...addonTops)).toBeLessThan(4);
 	await inViewport(dialog.getByRole('button', { name: /^Launch/ }));
 	await expect(dialog.locator('.chord-hint').first()).toBeVisible();
 

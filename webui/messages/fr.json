@@ -3437,6 +3437,5 @@
 	"error_search_archived_placeholder": "Nom, dossier ou identifiant",
 	"error_session_missing_body": "Cette session a été archivée ou supprimée. Cherchez-la dans les sessions archivées, ou revenez à vos sessions.",
 	"error_session_missing_title": "Session introuvable",
-	"list_auto_approve": "approbation auto",
-	"spawn_optional_settings": "Paramètres optionnels"
+	"list_auto_approve": "approbation auto"
 }
