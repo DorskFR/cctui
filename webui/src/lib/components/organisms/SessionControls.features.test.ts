@@ -56,6 +56,13 @@ describe('SessionControls search box', () => {
 		expect(document.querySelector('.bar')?.classList.contains('no-search')).toBe(false);
 	});
 
+	it('asks for a plain search, not query syntax', () => {
+		setCapabilitiesForTest({ features: ['transcript_search'], switchable: ['transcript_search'] });
+		render();
+		const input = document.querySelector<HTMLInputElement>('[data-journey="search"] input');
+		expect(input?.getAttribute('placeholder')).toBe('Search sessions');
+	});
+
 	it('is gone, scope chips included, without transcript search', () => {
 		setCapabilitiesForTest({ features: [], switchable: ['transcript_search'] });
 		const values = render('machine:box');

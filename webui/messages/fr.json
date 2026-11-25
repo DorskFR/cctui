@@ -1611,6 +1611,7 @@
 	"sessions_rebind_reason_redirect": "règle de redirection",
 	"sessions_rebind_reason_outage": "incident {family}",
 	"sessions_rebinds_tip": "Cette session a changé de compte en cours d'exécution",
+	"sessions_search_placeholder": "Rechercher des sessions",
 	"sessions_search_failed": "Impossible de rechercher : {error}",
 	"sessions_search_live_only_hint": "(sessions actives uniquement — cochez Archivées pour tout rechercher).",
 	"sessions_search_no_match": "Aucune conversation ne correspond à « {query} »",

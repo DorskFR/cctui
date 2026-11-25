@@ -1611,6 +1611,7 @@
 	"sessions_rebind_reason_redirect": "redirect rule",
 	"sessions_rebind_reason_outage": "{family} incident",
 	"sessions_rebinds_tip": "This session changed accounts while running",
+	"sessions_search_placeholder": "Search sessions",
 	"sessions_search_failed": "Could not search: {error}",
 	"sessions_search_live_only_hint": "(live only — pick Archived to search all).",
 	"sessions_search_no_match": "No chats match “{query}”",

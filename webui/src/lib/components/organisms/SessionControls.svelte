@@ -4,7 +4,6 @@
 	import type { Section } from '../../../routes/sessions/sessions.logic';
 	import { Button, Field, FilterSearchBar, Heading, Icon, Popover, type Schema } from '@dorsk/tsumikit';
 	import { m } from '#lib/paraglide/messages.js';
-	import { sessionSearchPlaceholder } from '#lib/searchSchema.ts';
 	import SectionFilter from '../molecules/SectionFilter.svelte';
 	import LabelFilter from '../molecules/LabelFilter.svelte';
 	import ViewPicker from '../molecules/ViewPicker.svelte';
@@ -17,11 +16,8 @@
 	import type { Dimension } from '../../../routes/sessions/sessions.logic';
 	import type { ViewMode } from '#lib/sessionsView.svelte.ts';
 
-	// The sessions list toolbar: title + search + section/label filters +
-	// view picker + multi-select toggle + New. A uniform, self-contained block —
-	// each control is its own molecule so this layer only owns composition and the
-	// responsive bar layout. Two-way state stays owned by the page (persisted to
-	// drafts) and flows in via bindable props.
+	// The sessions list toolbar. Each control is its own molecule; this layer owns
+	// composition and the responsive layout. State stays with the page, bound in.
 	let {
 		rawQuery = $bindable(),
 		searchSchema,
@@ -82,17 +78,9 @@
 	const searchId = $props.id();
 	const searchable = $derived(hasFeature('transcript_search'));
 
-	// Overflow menu: the toolbar grew too many buttons and squeezed the
-	// search bar. A ⋯ Popover collapses the secondary controls — the native
-	// popover gives light dismiss, Escape and focus return. On desktop it holds
-	// the two DimensionPickers (color-by · group-by) so the search bar reclaims
-	// width; below the fold the label/view/select controls move in too, leaving
-	// only the section filter inline.
-	//
-	// The fold is measured, not queried: the panel renders in the top layer, so a
-	// `@container` rule on the bar cannot reliably style its contents. The bar's
-	// own width still drives it (not the viewport, mirroring DrawerHeader) at the
-	// same threshold as the row reorg below.
+	// The ⋯ menu always holds select mode and the two DimensionPickers; below the
+	// fold the label filter and view picker join them. The fold is measured, not
+	// container-queried: the panel renders in the top layer, out of the bar's reach.
 	const FOLD_W = 640;
 	let barEl = $state<HTMLElement | null>(null);
 	let narrow = $state(false);
@@ -123,28 +111,15 @@
 		<LabelFilter {menu} {labels} bind:selected={labelFilter} onUpdate={onUpdateLabel} onDelete={onDeleteLabel} />
 	{/if}
 	<ViewPicker {menu} {tiles} bind:view />
-	<!-- Stays mounted (disabled) while searching: unmounting it re-wraps the
-	     flex bar mid-type and makes the search field jump. -->
+{/snippet}
+{#snippet selectControl()}
 	{#if selecting}
-		<!-- Cancel selection. -->
-		{#if menu}
-			<Button variant="ghost" size="sm" block style={MENU_ROW} onclick={onCancelSelect}>
-				<span style={MENU_ROW_ICON}><Icon name="x" size={18} /></span><span>{m.sessions_cancel_selection()}</span>
-			</Button>
-		{:else}
-			<Button class="ctl" square title={m.sessions_cancel_selection()} aria-label={m.sessions_cancel_selection()} onclick={onCancelSelect}>
-				<Icon name="x" size={18} />
-			</Button>
-		{/if}
-	{:else if menu}
-		<Button variant="ghost" size="sm" block style={MENU_ROW} disabled={searching} onclick={onStartSelect}>
-			<span style={MENU_ROW_ICON}>{@render listChecks()}</span><span>{m.sessions_select_multiple()}</span>
+		<Button variant="ghost" size="sm" block style={MENU_ROW} onclick={onCancelSelect}>
+			<span style={MENU_ROW_ICON}><Icon name="x" size={18} /></span><span>{m.sessions_cancel_selection()}</span>
 		</Button>
 	{:else}
-		<!-- "Select multiple" wants a checklist/multi-select glyph the registry
-		     doesn't ship; feed Icon a raw list-checks svg via its children. -->
-		<Button class="ctl" square disabled={searching} title={m.sessions_select_multiple()} aria-label={m.sessions_select_multiple()} onclick={onStartSelect}>
-			{@render listChecks()}
+		<Button variant="ghost" size="sm" block style={MENU_ROW} disabled={searching} onclick={onStartSelect}>
+			<span style={MENU_ROW_ICON}>{@render listChecks()}</span><span>{m.sessions_select_multiple()}</span>
 		</Button>
 	{/if}
 {/snippet}
@@ -162,7 +137,8 @@
 				<FilterSearchBar
 					schema={searchSchema}
 					bind:value={rawQuery}
-					placeholder={sessionSearchPlaceholder()}
+					font="sans"
+					placeholder={m.sessions_search_placeholder()}
 				/>
 			</Field>
 		</div>
@@ -189,10 +165,9 @@
 			{#snippet trigger()}
 				<Icon name="more" size={18} />
 			{/snippet}
-			<!-- The two DimensionPickers live here at all widths; below the fold the
-			     foldable controls join them. -->
 			<div class="menu" data-journey="display-options">
 				{#if narrow}{@render foldControls(true)}{/if}
+				{@render selectControl()}
 				<DimensionPicker menu kind="group" value={groupBy} onchange={onGroupBy} />
 				<DimensionPicker menu kind="color" value={colorBy} onchange={onColorBy} />
 			</div>
