@@ -781,6 +781,7 @@ impl Supervisor {
         match frame {
             DaemonFrameDown::Features { off } => crate::serverfeatures::announce(&off),
             DaemonFrameDown::Reconcile { adapters, secret_scrub } => {
+                crate::transcript_scrub::configure(&secret_scrub);
                 *scrub = compile_scrub(&secret_scrub);
                 self.reconcile(adapters, running, event_tx, shutdown);
             }
@@ -1969,7 +1970,7 @@ mod tests {
 
     #[test]
     fn scrub_event_masks_tool_use_secret_before_send() {
-        let cfg = cctui_proto::ws::SecretScrubConfig { enabled: true, patterns: vec![] };
+        let cfg = cctui_proto::ws::SecretScrubConfig { enabled: true, ..Default::default() };
         let scrub = compile_scrub(&cfg);
         let event = cctui_proto::adapter::AdapterEvent::ToolUse {
             local_id: "sess-1".to_owned(),
@@ -1995,8 +1996,10 @@ mod tests {
     fn scrub_event_keeps_a_pty_repaint_intact() {
         use base64::Engine as _;
         use std::fmt::Write as _;
-        let scrub =
-            compile_scrub(&cctui_proto::ws::SecretScrubConfig { enabled: true, patterns: vec![] });
+        let scrub = compile_scrub(&cctui_proto::ws::SecretScrubConfig {
+            enabled: true,
+            ..Default::default()
+        });
         let words = ["Read", "src/main.rs", "Bash", "cargo test", "Edit", "\u{2500}\u{2502}"];
         let mut repaint = String::from("\x1b[?2026h\x1b[2J\x1b[H");
         for row in 0..40_usize {
@@ -2013,8 +2016,10 @@ mod tests {
     #[test]
     fn scrub_event_keeps_non_utf8_pty_bytes_intact() {
         use base64::Engine as _;
-        let scrub =
-            compile_scrub(&cctui_proto::ws::SecretScrubConfig { enabled: true, patterns: vec![] });
+        let scrub = compile_scrub(&cctui_proto::ws::SecretScrubConfig {
+            enabled: true,
+            ..Default::default()
+        });
         let bytes: Vec<u8> = (0..=255_u8).cycle().take(4096).collect();
         let data = base64::engine::general_purpose::STANDARD.encode(&bytes);
         let out = scrub_event(AdapterEvent::PtyChunk { local_id: "s".to_owned(), data }, &scrub);
@@ -2024,8 +2029,10 @@ mod tests {
     #[test]
     fn scrub_event_masks_a_secret_inside_pty_text() {
         use base64::Engine as _;
-        let scrub =
-            compile_scrub(&cctui_proto::ws::SecretScrubConfig { enabled: true, patterns: vec![] });
+        let scrub = compile_scrub(&cctui_proto::ws::SecretScrubConfig {
+            enabled: true,
+            ..Default::default()
+        });
         let token = format!("{}{}", "ghp_ABCDEFGHIJKL", "MNOPQRSTUVWX0123");
         let frame = format!("\x1b[1m$ export GH_TOKEN={token}\x1b[0m\r\n");
         let data = base64::engine::general_purpose::STANDARD.encode(&frame);
