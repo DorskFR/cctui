@@ -1480,7 +1480,6 @@
 	"resource_gauge_mem": "Mémoire",
 	"resource_gauge_stale": "Périmé : aucun battement depuis quelques minutes.",
 	"resource_gauge_unknown": "Aucune donnée pour l'instant : le daemon est trop ancien pour les remonter, ou la machine n'a pas de /proc.",
-	"search_bar_placeholder": "Rechercher — status:active machine:… label:… ou texte libre",
 	"search_field_account": "Compte",
 	"search_field_adapter": "Adaptateur",
 	"search_field_created": "Création",

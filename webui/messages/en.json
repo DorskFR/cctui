@@ -1480,7 +1480,6 @@
 	"resource_gauge_mem": "Memory",
 	"resource_gauge_stale": "Stale: no heartbeat for a few minutes.",
 	"resource_gauge_unknown": "No figures yet: the daemon is too old to report them, or the machine has no /proc.",
-	"search_bar_placeholder": "Search — status:active machine:… label:… or free text",
 	"search_field_account": "Account",
 	"search_field_adapter": "Adapter",
 	"search_field_created": "Created",
