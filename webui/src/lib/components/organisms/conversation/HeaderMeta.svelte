@@ -533,7 +533,7 @@
 		text-decoration: underline;
 	}
 	.mp-sep {
-		border-top: 1px solid var(--border);
+		height: var(--sp-1);
 	}
 	.mp-hooks {
 		margin: 0;

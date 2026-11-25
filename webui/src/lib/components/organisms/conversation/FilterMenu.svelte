@@ -52,7 +52,6 @@
 		display: flex;
 		gap: var(--sp-1);
 		padding-bottom: var(--sp-1);
-		border-bottom: 1px solid var(--border);
 	}
 	.group {
 		display: flex;

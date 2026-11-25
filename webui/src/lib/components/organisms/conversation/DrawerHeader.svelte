@@ -256,7 +256,6 @@
 		flex-direction: column;
 		gap: var(--sp-2);
 		padding: var(--sp-2) var(--sp-3);
-		border-bottom: 1px solid var(--border);
 		background: var(--bg-elevated);
 		/* TokenUsage degrades its readout against this container. */
 		container: drawer-head / inline-size;

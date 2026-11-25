@@ -193,7 +193,7 @@
 		align-items: center;
 		gap: var(--sp-2) var(--sp-3);
 		padding: var(--sp-2) var(--sp-3);
-		border-bottom: 1px solid var(--border);
+		background: var(--bg-elevated);
 		font-size: var(--fs-xs);
 		/* Px, not rem: the text-size control must not shift the bar under the cursor. */
 		--bar-ctl-h: 24px;
@@ -224,8 +224,6 @@
 	.behbar {
 		flex: none;
 		margin-left: auto;
-		padding-left: var(--sp-3);
-		border-left: 1px solid var(--border);
 	}
 	.narrow {
 		display: none;
@@ -237,10 +235,6 @@
 		}
 		.narrow {
 			display: inline;
-		}
-		.behbar {
-			padding-left: 0;
-			border-left: none;
 		}
 	}
 	/* A phone wraps the behaviour group under the filters instead of clipping it. */
