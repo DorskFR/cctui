@@ -25,11 +25,18 @@
 
 	let instanceDraft = $state('');
 	let instanceEditing = $state(false);
+	// The name just written, until /version catches up with it.
+	let instanceSaved = $state<string | null>(null);
 	$effect(() => {
-		const saved = version.data?.instance_name ?? '';
+		void version.data;
+		instanceSaved = null;
+	});
+	const savedName = $derived(instanceSaved ?? version.data?.instance_name ?? '');
+	$effect(() => {
+		const saved = savedName;
 		if (!instanceEditing) instanceDraft = saved;
 	});
-	const instanceDirty = $derived(instanceDraft.trim() !== (version.data?.instance_name ?? ''));
+	const instanceDirty = $derived(instanceDraft.trim() !== savedName);
 
 	let instanceSending: string | null = null;
 	async function saveInstanceName() {
@@ -39,6 +46,7 @@
 		try {
 			await serverSave.run(async () => {
 				await endpoints.updateInstance(name || null);
+				instanceSaved = name;
 				await qc.invalidateQueries({ queryKey: qk.version });
 			});
 		} finally {
