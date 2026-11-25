@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import header from './DrawerHeader.svelte?raw';
+import menu from './DrawerMenu.svelte?raw';
 import toolbar from './DrawerToolbar.svelte?raw';
 import keys from './headerKeys.ts?raw';
 import pane from '../ConversationPane.svelte?raw';
@@ -7,18 +8,19 @@ import meta from './HeaderMeta.svelte?raw';
 import footer from '../sessioncard/Footer.svelte?raw';
 
 const items = () => {
-	const start = header.indexOf('const overflowItems');
+	const start = menu.indexOf('const overflowItems');
 	expect(start).toBeGreaterThan(-1);
-	return header.slice(start, header.indexOf(']);', start));
+	return menu.slice(start, menu.indexOf(']);', start));
 };
 
 const markup = () => header.slice(header.indexOf('</script>'));
+const menuMarkup = () => menu.slice(menu.indexOf('</script>'));
 
 describe('drawer header ⋯ menu', () => {
 	it('renders its own always-present menu, not the collapse-only kit overflow', () => {
-		expect(markup()).toContain('<Menu label={m.drawer_more_actions()} items={overflowItems}');
+		expect(menuMarkup()).toContain('<Menu label={m.drawer_more_actions()} items={overflowItems}');
 		expect(markup()).not.toMatch(/<Toolbar[^>]*\bitems=/);
-		const menuAt = markup().indexOf('<Menu');
+		const menuAt = markup().indexOf('<DrawerMenu');
 		const lastIf = markup().lastIndexOf('{#if', menuAt);
 		const lastEnd = markup().lastIndexOf('{/if}', menuAt);
 		expect(lastEnd).toBeGreaterThan(lastIf);
@@ -32,6 +34,7 @@ describe('drawer header ⋯ menu', () => {
 		expect(list).not.toContain('m.drawer_terminal_label()');
 		expect(list).not.toContain('terminal');
 		expect(header).not.toContain('onterminal');
+		expect(menu).not.toContain('onterminal');
 	});
 
 	it('only stands in for rename while the bar is collapsed', () => {
@@ -56,7 +59,7 @@ describe('drawer header ⋯ menu', () => {
 	});
 
 	it('anchors the tour on the menu trigger', () => {
-		expect(markup()).toContain('data-journey="actions"');
+		expect(menuMarkup()).toContain('data-journey="actions"');
 		expect(markup()).not.toContain('data-journey="fork"');
 	});
 
@@ -64,7 +67,7 @@ describe('drawer header ⋯ menu', () => {
 		const head = pane.slice(pane.indexOf('<DrawerHeader'), pane.indexOf('/>', pane.indexOf('<DrawerHeader')));
 		const bar = pane.slice(pane.indexOf('<DrawerToolbar'), pane.indexOf('/>', pane.indexOf('<DrawerToolbar')));
 		expect(head).not.toContain('terminal');
-		expect(bar).toContain('{terminalOpen}');
+		expect(bar).toContain('terminalOpen={p.terminalOpen}');
 		expect(bar).toContain('ontoggleTerminal=');
 		expect(toolbar).toContain('data-journey="terminal"');
 	});
@@ -78,16 +81,13 @@ describe('drawer header ⋯ menu', () => {
 
 	it('binds ⌘F / Ctrl+F to the find bar and gives it first refusal on Escape', () => {
 		expect(keys).toContain('isFindChord(e)');
-		expect(header).toContain("if (action === 'search')");
-		expect(header).toMatch(/if \(onescape\?\.\(\)\) \{/);
-		const esc = header.indexOf("action !== 'escape'");
-		const close = header.indexOf('onclose)?.()', esc);
-		expect(close).toBeGreaterThan(-1);
-		expect(header.indexOf('onescape?.()', esc)).toBeLessThan(close);
+		expect(header).toContain('runHeaderKey(');
+		expect(header).toContain('onescapeaction: onescapeaction ?? onclose');
 	});
 
 	it('adds no :global override', () => {
 		expect(header).not.toContain(':global(');
+		expect(menu).not.toContain(':global(');
 	});
 });
 

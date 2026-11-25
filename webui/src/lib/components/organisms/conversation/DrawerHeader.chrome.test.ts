@@ -1,11 +1,12 @@
 // @vitest-environment happy-dom
 import { describe, expect, it } from 'vitest';
 import header from './DrawerHeader.svelte?raw';
+import menu from './DrawerMenu.svelte?raw';
 
 const markup = header.slice(header.indexOf('</script>'));
 const controls = markup
-	.split(/(?=<IconButton|<FontScalePicker|<Menu )/)
-	.filter((c) => /^<(IconButton|FontScalePicker|Menu )/.test(c))
+	.split(/(?=<IconButton|<FontScalePicker|<DrawerMenu)/)
+	.filter((c) => /^<(IconButton|FontScalePicker|DrawerMenu)/.test(c))
 	.map((c) => c.slice(0, c.indexOf('>') + 1));
 
 const named = (label: string) => {
@@ -27,9 +28,10 @@ describe('drawer header control chrome', () => {
 			expect(named(label)).toContain('chip');
 		}
 		expect(markup).not.toContain('chip={!collapsed}');
-		for (const label of ['<FontScalePicker', 'm.drawer_more_actions()']) {
+		for (const label of ['<FontScalePicker', '<DrawerMenu']) {
 			expect(named(label)).toContain('style={CHIP_CHROME}');
 		}
+		expect(menu).toContain('placement="bottom-end" {box} {style}');
 		expect(header).toContain("const CHIP_CHROME = 'border-color: var(--border-strong); background: var(--surface)'");
 		expect(header).not.toContain('--pop-trigger-');
 	});
@@ -39,7 +41,7 @@ describe('drawer header control chrome', () => {
 	});
 
 	it('makes the ⋯ trigger a single button so its tooltip stays on it', () => {
-		const trigger = markup.slice(markup.indexOf('<Menu '), markup.indexOf('</Menu>'));
+		const trigger = menu.slice(menu.indexOf('<Menu '), menu.indexOf('</Menu>'));
 		expect(trigger).not.toContain('<IconButton');
 		expect(trigger).toContain('data-journey="actions"');
 		expect(trigger).toContain('title={m.drawer_more_actions()}');

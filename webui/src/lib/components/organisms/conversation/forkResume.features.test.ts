@@ -4,7 +4,8 @@ import { mount, unmount } from 'svelte';
 import { m } from '#lib/paraglide/messages.js';
 import ArchivedActions from './ArchivedActions.svelte';
 import pane from '../ConversationPane.svelte?raw';
-import header from './DrawerHeader.svelte?raw';
+import overlays from './PaneOverlays.svelte?raw';
+import menu from './DrawerMenu.svelte?raw';
 import meta from './HeaderMeta.svelte?raw';
 
 let comp: ReturnType<typeof mount> | null = null;
@@ -40,13 +41,13 @@ describe('fork and resume follow machine spawn', () => {
 		expect(pane).toContain('onfork={canFork ? fork.openDialog : undefined}');
 		expect(pane).toContain('onFork={canFork ? fork.openDialog : undefined}');
 		expect(pane).toContain('onResume={canFork ? sa.resume : undefined}');
-		expect(pane).toContain('{#if forkSelect.active && canFork}');
-		expect(pane).toContain('{#if fork.open && canFork}');
+		expect(overlays).toContain('{#if forkSelect.active && canFork}');
+		expect(overlays).toContain('{#if fork.open && canFork}');
 	});
 
 	it('drops the header fork entry and the fork-to-change-model chip without a handler', () => {
-		expect(header).toContain('const forkAction = $derived(onforkselect ?? onfork);');
-		expect(header).toMatch(/\.\.\.\(forkAction\s*\?\s*\[\s*\{\s*label: m\.drawer_fork_label\(\)/);
+		expect(menu).toContain('const forkAction = $derived(onforkselect ?? onfork);');
+		expect(menu).toMatch(/\.\.\.\(forkAction\s*\?\s*\[\s*\{\s*label: m\.drawer_fork_label\(\)/);
 		expect(meta).toContain('onfork?: () => void;');
 		expect(meta).toContain('&& !onfork}');
 	});

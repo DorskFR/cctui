@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { MIN_PANE_CHROME, MIN_PANE_HEIGHT } from '#lib/tiles.ts';
 import header from './DrawerHeader.svelte?raw';
+import menu from './DrawerMenu.svelte?raw';
 import composer from './ConversationComposer.svelte?raw';
 import pane from '../ConversationPane.svelte?raw';
 
@@ -8,7 +9,8 @@ const markup = header.slice(header.indexOf('</script>'));
 
 describe('a tile wears one row of header chrome', () => {
 	it('is the pane that asks for it, drawer untouched', () => {
-		expect(pane).toContain("compact={chrome === 'tile'}");
+		expect(pane).toContain("const tile = $derived(chrome === 'tile');");
+		expect(pane).toContain('compact={tile}');
 		expect(header).toContain('compact = false');
 		expect(composer).toContain('compact = false');
 	});
@@ -20,8 +22,8 @@ describe('a tile wears one row of header chrome', () => {
 
 	it('puts interrupt and archive behind the ⋯ menu instead of the bar', () => {
 		expect(markup).toContain('{#if !archived && !compact}');
-		const start = header.indexOf('const overflowItems');
-		const items = header.slice(start, header.indexOf(']);', start));
+		const start = menu.indexOf('const overflowItems');
+		const items = menu.slice(start, menu.indexOf(']);', start));
 		expect(items).toContain('...(compact && !archived');
 		expect(items).toContain("icon: 'stop' as const");
 		expect(items).toContain("icon: 'archive' as const");
@@ -32,8 +34,8 @@ describe('a tile wears one row of header chrome', () => {
 	});
 
 	it('drops the Assistant/User/Tools filter bar', () => {
-		expect(pane).toContain("{#if chrome !== 'tile'}");
-		const gated = pane.slice(pane.indexOf("{#if chrome !== 'tile'}"));
+		expect(pane).toContain('{#if !tile}');
+		const gated = pane.slice(pane.indexOf('{#if !tile}'));
 		expect(gated.slice(0, gated.indexOf('{/if}'))).toContain('<DrawerToolbar');
 	});
 });

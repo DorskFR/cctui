@@ -1,14 +1,15 @@
 import { describe, expect, it } from 'vitest';
-import header from './DrawerHeader.svelte?raw';
+import menu from './DrawerMenu.svelte?raw';
 import meta from './HeaderMeta.svelte?raw';
 import composer from './ConversationComposer.svelte?raw';
 import pane from '../ConversationPane.svelte?raw';
+import model from './paneModel.svelte.ts?raw';
 import langfuseChip from '#lib/components/molecules/LangfuseChip.svelte?raw';
 import profileForm from '../spawn/ProfileForm.svelte?raw';
 
-const items = header.slice(
-	header.indexOf('const overflowItems'),
-	header.indexOf(']);', header.indexOf('const overflowItems'))
+const items = menu.slice(
+	menu.indexOf('const overflowItems'),
+	menu.indexOf(']);', menu.indexOf('const overflowItems'))
 );
 const prop = (src: string, tag: string, name: string) => {
 	const markup = src.slice(src.indexOf('</script>'));
@@ -43,20 +44,20 @@ describe('conversation pane gates', () => {
 	});
 
 	it('wires the terminal only with terminal', () => {
-		expect(pane).toContain("const canTerminal = $derived(harnessCaps.live_view && hasFeature('terminal'));");
-		expect(pane).toContain('{#if terminalOpen && canTerminal}');
+		expect(pane).toContain("const canTerminal = $derived(p.harnessCaps.live_view && hasFeature('terminal'));");
+		expect(pane).toContain('{#if p.terminalOpen && canTerminal}');
 	});
 
 	it('links local files only with files', () => {
-		expect(pane).toContain("machineId: () => (hasFeature('files') ? session.machine_id : ''),");
+		expect(model).toContain("machineId: () => (hasFeature('files') ? this.session.machine_id : ''),");
 	});
 
 	it('takes attachments only with uploads', () => {
-		expect(pane).toMatch(/supportsAttachments = \$derived\(\s*hasFeature\('uploads'\) &&/);
+		expect(model).toMatch(/supportsAttachments = \$derived\(\s*hasFeature\('uploads'\) &&/);
 	});
 
 	it('lists plugins only with plugins', () => {
-		expect(pane).toContain("installed: () => (pluginsOn ? (installedPlugins.data ?? []) : []),");
+		expect(model).toContain("installed: () => (hasFeature('plugins') ? (this.#installedPlugins.data ?? []) : []),");
 	});
 
 	it('sets rooms only with rooms', () => {

@@ -1,27 +1,18 @@
 <script lang="ts">
-	// Conversation drawer header. Owns the title + rename (collapsed into the ⋯
-	// menu on narrow bars), the always-present ⋯ menu of less-used actions (copy
-	// link, copy markdown, export, fork), the interrupt/archive controls
-	// and the label strip; the meta row is HeaderMeta. Action side-effects are
-	// delegated to callbacks; the editing UI state lives here.
+	// Conversation drawer header: title row, label strip and meta row. Action
+	// side-effects are delegated to callbacks; rename UI state lives here.
 	import type { SessionListItem } from '@bindings/SessionListItem';
-	import type { Label } from '@bindings/Label';
-	import { fontScale, SCALE_LEVELS } from '#lib/fontscale.svelte.ts';
 	import { settings } from '#lib/settings.svelte.ts';
-	import { headerKeyAction } from './headerKeys';
+	import { runHeaderKey } from './headerKeys';
+	import type { LabelHandlers } from './headerLabels';
 	import RebindTrail from '#lib/components/molecules/RebindTrail.svelte';
 	import SessionGlyphs from '#lib/components/molecules/SessionGlyphs.svelte';
-	import LabelBadge from '#lib/components/molecules/LabelBadge.svelte';
-	import RoomMenu from '#lib/components/molecules/RoomMenu.svelte';
-	import RoomBadge from '#lib/components/molecules/RoomBadge.svelte';
-	import KeepaliveModal from '#lib/components/molecules/KeepaliveModal.svelte';
-	import CctuiverseInviteModal from '#lib/components/molecules/CctuiverseInviteModal.svelte';
-	import CctuiverseJoinModal from '#lib/components/molecules/CctuiverseJoinModal.svelte';
-	import CctuiverseLinkChips from '#lib/components/molecules/CctuiverseLinkChips.svelte';
-	import { cctuiverseConfig, loadCctuiverseConfig } from '#lib/cctuiverseConfig.svelte.ts';
-	import { Button, Icon, IconButton, Input, Menu, Modal, Text, Toolbar, FontScalePicker, type MenuItem } from '@dorsk/tsumikit';
+	import { IconButton, Toolbar, FontScalePicker } from '@dorsk/tsumikit';
 	import HeaderMeta from './HeaderMeta.svelte';
-	import { headerTitleOf, nameOf } from '#lib/sessionName.ts';
+	import HeaderLabels from './HeaderLabels.svelte';
+	import DrawerTitle from './DrawerTitle.svelte';
+	import DrawerMenu from './DrawerMenu.svelte';
+	import { nameOf } from '#lib/sessionName.ts';
 	import { m } from '#lib/paraglide/messages.js';
 	import { hasFeature } from '#lib/features.svelte.ts';
 
@@ -52,21 +43,11 @@
 		onarchive,
 		onstoparchive,
 		onTogglePin,
-		// Opens the at-will account switcher from the key glyph; when omitted
-		// the badge stays a read-only indicator.
 		onAccountClick,
-		// Label editing: same picker as the session card — when
-		// `onAttachLabel` is supplied the strip is interactive, else read-only.
-		allLabels = [],
-		onCreateLabel,
-		onAttachLabel,
-		onDetachLabel,
-		onUpdateLabel,
-		onDeleteLabel,
-		// Room = a field on the session: pick one (by id or by name) or clear it.
 		onsetroom,
 		onclearroom,
-		onthreadjump
+		onthreadjump,
+		...labels
 	}: {
 		session: SessionListItem;
 		archived: boolean;
@@ -99,34 +80,23 @@
 		/** Omitted with `onforkselect` → no fork entry at all. */
 		onfork?: () => void;
 		onfollowup?: () => void;
-		// Toggle multi-select-to-fork mode; omitted → plain fork
-		// (codex sessions have no partial-fork primitive).
+		/** Multi-select-to-fork mode; omitted → plain fork. */
 		onforkselect?: () => void;
 		forkSelectActive?: boolean;
 		oninterrupt: () => void;
 		onarchive: () => void;
-		// Stop-then-archive, fired by the ⌘/Ctrl+E keyboard chord.
+		/** Stop-then-archive, fired by the ⌘/Ctrl+E chord. */
 		onstoparchive: () => void;
 		onTogglePin?: (s: SessionListItem) => void;
+		/** Omitted → the account glyph is a read-only indicator. */
 		onAccountClick?: () => void;
-		allLabels?: Label[];
-		onCreateLabel?: (name: string, color: string) => Promise<Label>;
-		onAttachLabel?: (id: string, labelId: string) => void | Promise<void>;
-		onDetachLabel?: (id: string, labelId: string) => void | Promise<void>;
-		onUpdateLabel?: (labelId: string, patch: { name?: string; color?: string }) => Promise<Label>;
-		onDeleteLabel?: (labelId: string) => void | Promise<void>;
 		onsetroom?: (sessionId: string, pick: { id: string } | { name: string }) => void;
 		onclearroom?: (sessionId: string) => void;
 		/** Scrolls to a session of the shown thread; false when it is not in it. */
 		onthreadjump?: (sessionId: string) => boolean;
-	} = $props();
+	} & LabelHandlers = $props();
 
-	// Label picker is interactive only when an attach handler is wired in.
-	const labelEditable = $derived(!!onAttachLabel);
 	const showLabels = $derived(hasFeature('organising'));
-
-	const plainTitle = $derived(nameOf(session) || session.working_dir);
-	const headTitle = $derived(headerTitleOf(session));
 
 	let renaming = $state(false);
 	// svelte-ignore state_referenced_locally
@@ -143,22 +113,6 @@
 		onrename(n);
 	}
 
-	let keepaliveOpen = $state(false);
-	let roomOpen = $state(false);
-	let inviteOpen = $state(false);
-	let joinOpen = $state(false);
-
-	$effect(() => {
-		void loadCctuiverseConfig();
-	});
-
-
-	const forkAction = $derived(onforkselect ?? onfork);
-
-	const followupItem = $derived<MenuItem | null>(
-		onfollowup ? { label: m.drawer_followup_label(), icon: 'arrow-right', onselect: onfollowup } : null
-	);
-
 	// Mirrors the Toolbar's `collapseBelow`: the rename stand-in joins the menu
 	// only while its inline button is hidden.
 	const COLLAPSE_BELOW = 640;
@@ -172,128 +126,14 @@
 	// IconButton gets it from `chip`.
 	const CHIP_CHROME = 'border-color: var(--border-strong); background: var(--surface)';
 
-	const overflowItems = $derived<MenuItem[]>([
-		...(collapsed
-			? [
-					renaming
-						? { label: m.common_save(), icon: 'check' as const, onselect: doRename }
-						: { label: m.drawer_rename(), icon: 'edit' as const, onselect: startRename },
-					...(onsearch
-						? [
-								{
-									label: m.conversation_search_label(),
-									icon: 'search' as const,
-									attrs: { title: m.conversation_search_title() },
-									onselect: onsearch
-								}
-							]
-						: [])
-				]
-			: []),
-		...(compact && !archived
-			? [
-					{
-						label: m.drawer_interrupt_label(),
-						icon: 'stop' as const,
-						attrs: { title: m.drawer_interrupt_title() },
-						onselect: oninterrupt
-					},
-					{ label: m.drawer_archive(), icon: 'archive' as const, onselect: onarchive }
-				]
-			: []),
-		{
-			label: m.drawer_copy_link_label(),
-			icon: 'link' as const,
-			attrs: { title: m.drawer_copy_link_title() },
-			onselect: oncopylink
-		},
-		{
-			label: m.drawer_copy_markdown_label(),
-			icon: 'markdown' as const,
-			attrs: { title: m.drawer_copy_markdown_title() },
-			onselect: oncopymarkdown
-		},
-		{
-			label: m.drawer_export_label(),
-			icon: 'download' as const,
-			attrs: { title: m.drawer_export_title() },
-			onselect: onexport
-		},
-		...(followupItem && settings.preferFollowupOverFork ? [followupItem] : []),
-		...(forkAction
-			? [
-					{
-						label: m.drawer_fork_label(),
-						icon: 'fork' as const,
-						pressed: onforkselect ? forkSelectActive : undefined,
-						attrs: { title: onforkselect ? m.drawer_fork_select_title() : m.drawer_fork_title() },
-						onselect: forkAction
-					}
-				]
-			: []),
-		...(hasFeature('automation')
-			? [
-					{
-						label: m.drawer_keepalive_label(),
-						icon: 'recycle' as const,
-						pressed: !!session.keepalive,
-						onselect: () => (keepaliveOpen = true)
-					}
-				]
-			: []),
-		...(onsetroom && hasFeature('rooms')
-			? [
-					{
-						label: m.rooms_menu_action(),
-						icon: 'grid' as const,
-						attrs: { title: session.room_name ?? m.rooms_menu_label() },
-						onselect: () => (roomOpen = true)
-					}
-				]
-			: []),
-		...(cctuiverseConfig.enabled && !archived
-			? [
-					{
-						label: m.cctuiverse_menu_invite(),
-						icon: 'link' as const,
-						onselect: () => (inviteOpen = true)
-					},
-					{
-						label: m.cctuiverse_menu_join(),
-						icon: 'link' as const,
-						onselect: () => (joinOpen = true)
-					}
-				]
-			: []),
-		...(followupItem && !settings.preferFollowupOverFork ? [followupItem] : [])
-	]);
-
 	// Window-level so the chords work wherever focus sits, including the
 	// composer. `shortcuts` is what keeps N tiles from firing N times.
 	function onWinKey(e: KeyboardEvent) {
-		const action = headerKeyAction(e, {
-			active: shortcuts,
-			renaming,
-			archived,
-			canSearch: !!onsearch,
-			archiveShortcut: settings.archiveShortcut
-		});
-		if (action === 'search') {
-			e.preventDefault();
-			onsearch?.();
-			return;
-		}
-		if (action === 'archive') {
-			e.preventDefault();
-			onstoparchive();
-			return;
-		}
-		if (action !== 'escape') return;
-		if (onescape?.()) {
-			e.preventDefault();
-			return;
-		}
-		(onescapeaction ?? onclose)?.();
+		runHeaderKey(
+			e,
+			{ active: shortcuts, renaming, archived, canSearch: !!onsearch, archiveShortcut: settings.archiveShortcut },
+			{ onsearch, onstoparchive, onescape, onescapeaction: onescapeaction ?? onclose }
+		);
 	}
 </script>
 
@@ -314,36 +154,7 @@
 			{onAccountClick}
 		/>
 		<RebindTrail sessionId={session.id} />
-		<div class="dtitle">
-			{#if renaming}
-				<Input
-					bind:value={newName}
-					aria-label={m.a11y_rename_session()}
-					onsubmit={doRename}
-				/>
-			{:else}
-				<Text weight="semibold" size="md" truncate>{headTitle}</Text>
-				{#if showLabels && session.labels.length === 0 && labelEditable}
-					<!-- No labels yet: the tag picker rides inline right after the title
-					     text rather than claiming an empty full-width row. Once labels
-					     exist the strip moves to its own row below (see .hlabels). -->
-					<LabelBadge
-						labels={[]}
-						editable
-						{allLabels}
-						onCreate={onCreateLabel}
-						onAttach={(lid) => onAttachLabel?.(session.id, lid)}
-						onDetach={(lid) => onDetachLabel?.(session.id, lid)}
-						onUpdate={onUpdateLabel}
-						onDelete={onDeleteLabel}
-					/>
-				{/if}
-				<RoomBadge name={session.room_name} />
-				{#if !compact}
-					<CctuiverseLinkChips target={{ session: session.id }} />
-				{/if}
-			{/if}
-		</div>
+		<DrawerTitle {session} {compact} {showLabels} {labels} {renaming} bind:name={newName} onsubmit={doRename} />
 		<!-- Text size: the same kit picker as the main header, writing the one
 		     global fontScale. It stays out of the ⋯ flyout on mobile. -->
 		{#if !compact}
@@ -406,32 +217,34 @@
 				onclick={oninterrupt}
 			/>
 		{/if}
-		<Menu label={m.drawer_more_actions()} items={overflowItems} placement="bottom-end" {box} style={CHIP_CHROME}>
-			{#snippet trigger()}
-				<span class="mtrig" data-journey="actions" title={m.drawer_more_actions()}>
-					<Icon name="more" size={18} />
-				</span>
-			{/snippet}
-		</Menu>
+		<DrawerMenu
+			{session}
+			{archived}
+			{compact}
+			{collapsed}
+			{box}
+			style={CHIP_CHROME}
+			{renaming}
+			onstartrename={startRename}
+			onsaverename={doRename}
+			{onsearch}
+			{oninterrupt}
+			{onarchive}
+			{oncopylink}
+			{oncopymarkdown}
+			{onexport}
+			{onfork}
+			{onfollowup}
+			{onforkselect}
+			{forkSelectActive}
+			{onsetroom}
+			{onclearroom}
+		/>
 	</Toolbar>
 	</div>
 	{#if showLabels && session.labels.length > 0 && !compact}
-		<!-- Labels get their own full-width row in the header's column stack, so the
-		     strip can spread edge-to-edge and wrap freely instead of being boxed
-		     into the title row's leftover width (under the action buttons). The
-		     empty-state trigger lives inline by the title (above), so this row only
-		     appears once there's at least one label. -->
 		<div class="hlabels">
-			<LabelBadge
-				labels={session.labels}
-				editable={labelEditable}
-				{allLabels}
-				onCreate={onCreateLabel}
-				onAttach={(lid) => onAttachLabel?.(session.id, lid)}
-				onDetach={(lid) => onDetachLabel?.(session.id, lid)}
-				onUpdate={onUpdateLabel}
-				onDelete={onDeleteLabel}
-			/>
+			<HeaderLabels {session} handlers={labels} />
 		</div>
 	{/if}
 	{#if !compact}
@@ -447,45 +260,6 @@
 		/>
 	{/if}
 </div>
-
-{#if keepaliveOpen}
-	<KeepaliveModal {session} onclose={() => (keepaliveOpen = false)} />
-{/if}
-
-{#if inviteOpen}
-	<CctuiverseInviteModal
-		target={{ session: session.id }}
-		defaultLabel={plainTitle}
-		onclose={() => (inviteOpen = false)}
-	/>
-{/if}
-
-{#if joinOpen}
-	<CctuiverseJoinModal sessionId={session.id} defaultLabel={plainTitle} onclose={() => (joinOpen = false)} />
-{/if}
-
-{#if roomOpen}
-	<Modal title={m.rooms_menu_label()} onclose={() => (roomOpen = false)}>
-		{#snippet body()}
-			<RoomMenu
-				current={session.room_id ?? null}
-				onpick={(pick) => {
-					onsetroom?.(session.id, pick);
-					roomOpen = false;
-				}}
-				onclear={session.room_id
-					? () => {
-							onclearroom?.(session.id);
-							roomOpen = false;
-						}
-					: undefined}
-			/>
-		{/snippet}
-		{#snippet footer()}
-			<Button size="sm" variant="ghost" onclick={() => (roomOpen = false)}>{m.common_close()}</Button>
-		{/snippet}
-	</Modal>
-{/if}
 
 <style>
 	.dhead {
@@ -512,28 +286,13 @@
 	   row's box scale makes it the square `box` asks for. */
 	.dbar {
 		--box-lg: var(--box-md);
+		min-width: 0;
 	}
 	.dbar.compact {
 		--box-lg: var(--box-sm);
 	}
-	.dbar {
-		min-width: 0;
-	}
-	/* Labels on their own row so the strip spans the full header width. */
 	.hlabels {
 		display: flex;
 		min-width: 0;
-	}
-	.mtrig {
-		display: inline-flex;
-		align-items: center;
-		line-height: 1;
-	}
-	.dtitle {
-		flex: 1;
-		min-width: 0;
-		display: flex;
-		align-items: center;
-		gap: var(--sp-1);
 	}
 </style>
