@@ -41,8 +41,14 @@ fn stub_proxy(body: fn(u64) -> String) -> StubProxy {
     std::thread::spawn(move || {
         for stream in listener.incoming() {
             let Ok(mut stream) = stream else { continue };
+            let mut head = Vec::new();
             let mut buf = [0u8; 1024];
-            let _ = stream.read(&mut buf);
+            while !head.windows(4).any(|w| w == b"\r\n\r\n") {
+                match stream.read(&mut buf) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => head.extend_from_slice(&buf[..n]),
+                }
+            }
             h.fetch_add(1, Ordering::SeqCst);
             let body = body(r.load(Ordering::SeqCst));
             let _ = write!(

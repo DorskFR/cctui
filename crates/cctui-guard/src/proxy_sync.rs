@@ -48,7 +48,8 @@ pub fn probe(addr: &str) -> io::Result<Probe> {
     let mut stream = TcpStream::connect_timeout(&target, IO_TIMEOUT)?;
     stream.set_read_timeout(Some(IO_TIMEOUT))?;
     stream.set_write_timeout(Some(IO_TIMEOUT))?;
-    write!(stream, "GET /ready HTTP/1.0\r\nHost: {addr}\r\nConnection: close\r\n\r\n")?;
+    let request = format!("GET /ready HTTP/1.0\r\nHost: {addr}\r\nConnection: close\r\n\r\n");
+    stream.write_all(request.as_bytes())?;
     let mut raw = Vec::new();
     stream.read_to_end(&mut raw)?;
     let raw = String::from_utf8_lossy(&raw);
