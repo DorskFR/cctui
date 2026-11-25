@@ -809,6 +809,217 @@ async fn a_bare_term_matches_from_a_word_start_and_each_term_narrows() {
     drop_owner(&pool, uid).await;
 }
 
+/// `n` sessions of `uid` on `machine`, `<prefix>-<g>` registered `g` minutes
+/// ago, newest first by `g`.
+async fn add_sessions(
+    pool: &sqlx::PgPool,
+    uid: uuid::Uuid,
+    machine: uuid::Uuid,
+    prefix: &str,
+    n: i32,
+) {
+    sqlx::query(
+        "INSERT INTO sessions (id, machine_id, machine_uuid, user_id, working_dir, status, registered_at) \
+         SELECT $1 || '-' || g, $2, $2, $3, '/w', 'active', now() - make_interval(mins => g) \
+         FROM generate_series(0, $4 - 1) g",
+    )
+    .bind(prefix)
+    .bind(machine)
+    .bind(uid)
+    .bind(n)
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+async fn say_indexed(pool: &sqlx::PgPool, sid: &str, text: &str) {
+    insert_payload(pool, sid, "message", serde_json::json!({"role": "assistant", "text": text}))
+        .await;
+    index_session(pool, sid).await;
+}
+
+fn page_ids(found: &super::FoundPage) -> Vec<String> {
+    found.rows.iter().map(|r| r.id.clone()).collect()
+}
+
+/// The chunk-index page of `q`, checked against the per-session scan given all
+/// the time it needs.
+async fn indexed_page(
+    pool: &sqlx::PgPool,
+    q: &str,
+    live_ids: Option<&[String]>,
+    page: &super::SearchPage,
+) -> super::FoundPage {
+    let root = cctui_query::parse(q);
+    let found = super::index_matches(pool, &root, live_ids, page)
+        .await
+        .unwrap()
+        .unwrap_or_else(|| panic!("{q}: the chunk index answers"));
+    let deadline = std::time::Instant::now() + std::time::Duration::from_mins(2);
+    let walked = super::window_matches(pool, &root, live_ids, page, deadline).await.unwrap();
+    assert!(!found.partial && !walked.partial, "{q}: complete");
+    assert_eq!(page_ids(&found), page_ids(&walked), "{q}: same rows as the session scan");
+    assert_eq!(found.total, walked.total, "{q}: same total as the session scan");
+    found
+}
+
+#[tokio::test]
+async fn a_rare_phrase_across_many_sessions_comes_back_whole() {
+    let Some((pool, uid)) = search_owner("search_rare_phrase_index").await else {
+        return;
+    };
+    let own = add_machine(&pool, uid, "persistent").await;
+    let token = uuid::Uuid::new_v4().simple().to_string();
+    add_sessions(&pool, uid, own, &token, 450).await;
+    let hits = [3, 140, 260, 381, 449];
+    for g in hits {
+        say_indexed(&pool, &format!("{token}-{g}"), &format!("the rare{token} phrase lands")).await;
+    }
+    for g in [0, 10, 300] {
+        say_indexed(&pool, &format!("{token}-{g}"), "nothing to see").await;
+    }
+    let want: Vec<String> = hits.iter().map(|g| format!("{token}-{g}")).collect();
+    let q = format!("\"rare{token} phrase\"");
+
+    let page = search_page(100, Some(uid));
+    let found = super::scan_matches(&pool, &cctui_query::parse(&q), None, &page).await.unwrap();
+    assert!(!found.partial, "a rare phrase is not cut short");
+    assert_eq!(page_ids(&found), want, "every match, newest first");
+    assert_eq!(found.total, Some(cctui_proto::api::SearchTotal { count: 5, at_least: false }));
+    assert_eq!(found.next_cursor, None, "nothing follows the last match");
+
+    let found = indexed_page(&pool, &q, None, &page).await;
+    assert_eq!(page_ids(&found), want);
+    for q in [
+        format!("rare{token} lands"),
+        format!("rare{token} -nothing"),
+        format!("rare{token} OR \"nothing to see\""),
+        format!("(rare{token} OR {token}-0) dir:/w"),
+        format!("-rare{token} \"nothing to see\""),
+        format!("{token}-44"),
+    ] {
+        indexed_page(&pool, &q, None, &page).await;
+    }
+
+    let short = super::index_matches(&pool, &cctui_query::parse("\"zq\""), None, &page).await;
+    assert!(short.unwrap().is_none(), "a term with no trigram goes to the session scan");
+
+    drop_owner(&pool, uid).await;
+}
+
+#[tokio::test]
+async fn chunk_index_search_keeps_owner_archive_and_dispatched_scope() {
+    let Some((pool, uid)) = search_owner("search_index_scope").await else {
+        return;
+    };
+    let Some((_, other)) = search_owner("search_index_scope_other").await else {
+        return;
+    };
+    let own = add_machine(&pool, uid, "persistent").await;
+    let worker = add_machine(&pool, uid, "dispatch").await;
+    let theirs = add_machine(&pool, other, "persistent").await;
+    let token = uuid::Uuid::new_v4().simple().to_string();
+    let id = |name: &str| format!("{token}-{name}");
+    let (worker_id, archived_id) = (id("worker"), id("archived"));
+    let ids = ["mine", "archived", "worker", "pinned-worker", "child", "fork", "theirs"].map(id);
+    let seeds = [
+        (uid, Seed::on(&ids[0], own, 1)),
+        (uid, Seed::on(&ids[1], own, 2)),
+        (uid, Seed::on(&ids[2], worker, 3)),
+        (uid, Seed { pinned: true, ..Seed::on(&ids[3], worker, 4) }),
+        (uid, Seed { parent: Some(worker_id.as_str()), ..Seed::on(&ids[4], own, 5) }),
+        (
+            uid,
+            Seed {
+                parent: Some(worker_id.as_str()),
+                relation: Some("fork"),
+                ..Seed::on(&ids[5], own, 6)
+            },
+        ),
+        (other, Seed::on(&ids[6], theirs, 0)),
+    ];
+    for (owner, seed) in seeds {
+        add_session(&pool, owner, "/w", seed).await;
+        say_indexed(&pool, seed.id, &format!("scope{token} marker")).await;
+    }
+    sqlx::query("UPDATE sessions SET status = 'archived' WHERE id = $1")
+        .bind(&archived_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let q = format!("\"scope{token} marker\"");
+    let names = |found: &super::FoundPage| {
+        page_ids(found).iter().map(|s| s[token.len() + 1..].to_owned()).collect::<Vec<_>>()
+    };
+
+    let mine = search_page(50, Some(uid));
+    let all = indexed_page(&pool, &q, None, &mine).await;
+    assert_eq!(
+        names(&all),
+        ["mine", "archived", "worker", "pinned-worker", "child", "fork"],
+        "another owner's session is left out"
+    );
+    let live = indexed_page(&pool, &q, Some(&[][..]), &mine).await;
+    assert!(!names(&live).contains(&"archived".to_owned()), "live-only drops the archived");
+    let registry = [archived_id.clone()];
+    let held = indexed_page(&pool, &q, Some(registry.as_slice()), &mine).await;
+    assert!(names(&held).contains(&"archived".to_owned()), "unless the registry holds it live");
+
+    let undispatched = super::SearchPage { exclude_dispatched: true, ..search_page(50, Some(uid)) };
+    let kept = indexed_page(&pool, &q, None, &undispatched).await;
+    assert_eq!(names(&kept), ["mine", "archived", "pinned-worker", "fork"]);
+
+    let admin = indexed_page(&pool, &q, None, &search_page(50, None)).await;
+    assert_eq!(names(&admin).first().map(String::as_str), Some("theirs"), "admin sees every owner");
+
+    drop_owner(&pool, uid).await;
+    drop_owner(&pool, other).await;
+}
+
+#[tokio::test]
+async fn chunk_index_pages_follow_the_cursor_without_gaps_or_repeats() {
+    let Some((pool, uid)) = search_owner("search_index_cursor").await else {
+        return;
+    };
+    let own = add_machine(&pool, uid, "persistent").await;
+    let token = uuid::Uuid::new_v4().simple().to_string();
+    add_sessions(&pool, uid, own, &token, 260).await;
+    let hits = [0, 1, 50, 120, 199, 200, 201, 259];
+    for g in hits {
+        say_indexed(&pool, &format!("{token}-{g}"), &format!("page{token} walk")).await;
+    }
+    let want: Vec<String> = hits.iter().map(|g| format!("{token}-{g}")).collect();
+    let q = format!("\"page{token} walk\"");
+
+    let mut page = search_page(3, Some(uid));
+    let mut pages: Vec<Vec<String>> = Vec::new();
+    loop {
+        let found = indexed_page(&pool, &q, None, &page).await;
+        if pages.is_empty() {
+            assert_eq!(
+                found.total,
+                Some(cctui_proto::api::SearchTotal { count: 8, at_least: false })
+            );
+            let newer = format!("{token}-new");
+            add_session(&pool, uid, "/w", Seed::on(&newer, own, -1)).await;
+            say_indexed(&pool, &newer, &format!("page{token} walk")).await;
+        } else {
+            assert_eq!(found.total, None, "only the first page counts");
+        }
+        pages.push(page_ids(&found));
+        let Some(next) = found.next_cursor else { break };
+        page.cursor = super::parse_search_cursor(&next);
+    }
+    assert_eq!(pages.iter().map(Vec::len).collect::<Vec<_>>(), [3, 3, 2]);
+    assert_eq!(pages.concat(), want, "a match added after the first page does not shift the rest");
+
+    let root = cctui_query::parse(&q);
+    let again = super::scan_matches(&pool, &root, None, &search_page(3, Some(uid))).await.unwrap();
+    assert_eq!(page_ids(&again)[0], format!("{token}-new"), "a fresh first page sees it");
+
+    drop_owner(&pool, uid).await;
+}
+
 async fn conv_scan(
     pool: &sqlx::PgPool,
     sid: &str,

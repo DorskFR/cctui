@@ -1369,6 +1369,8 @@ fn word_start_regex(term: &str) -> Option<String> {
 struct TermBinds {
     like: usize,
     word: Option<usize>,
+    /// Longest run of word characters, what a trigram can come from.
+    word_run: usize,
 }
 
 impl TermBinds {
@@ -1378,7 +1380,12 @@ impl TermBinds {
             Anchor::Word => word_start_regex(term).map(|re| ph_text(params, re)),
             Anchor::Anywhere => None,
         };
-        Self { like, word }
+        let word_run = term
+            .split(|c: char| !c.is_alphanumeric())
+            .map(|w| w.chars().count())
+            .max()
+            .unwrap_or(0);
+        Self { like, word, word_run }
     }
 
     fn test(self, col: &str) -> String {
@@ -1472,9 +1479,10 @@ fn ph_text(params: &mut Vec<SqlParam>, s: String) -> usize {
 }
 
 /// SQL predicate for one fielded value. The bind is appended to `params` and
-/// the returned string references it by its `$N` position (1-based).
-fn leaf_predicate(field: &str, value: &str, params: &mut Vec<SqlParam>) -> String {
-    match field {
+/// the returned string references it by its `$N` position (1-based). `None`
+/// for a field matched as transcript text, with nothing bound.
+fn leaf_predicate(field: &str, value: &str, params: &mut Vec<SqlParam>) -> Option<String> {
+    let pred = match field {
         "machine" => {
             let p = ph_text(params, value.to_string());
             format!(
@@ -1528,22 +1536,66 @@ fn leaf_predicate(field: &str, value: &str, params: &mut Vec<SqlParam>) -> Strin
             let p = ph_text(params, ilike_contains(value));
             format!("s.working_dir ILIKE ${p}")
         }
-        // Transcript-scoped fields, meaningful only to `/sessions/{id}/search`.
-        // Across sessions they stay the literal free text they were before the
-        // query registry learned them.
-        "role" | "tool" | "after" | "before" => {
-            text_leaf(&format!("{field}:{value}"), Anchor::Anywhere, params)
-        }
-        _ => text_leaf(value, Anchor::Anywhere, params),
+        _ => return None,
+    };
+    Some(pred)
+}
+
+/// The free text a non-session field stands for. Transcript-scoped fields are
+/// meaningful only to `/sessions/{id}/search`; across sessions they stay the
+/// literal `field:value` text.
+fn filter_text(field: &str, value: &str) -> String {
+    match field {
+        "role" | "tool" | "after" | "before" => format!("{field}:{value}"),
+        _ => value.to_owned(),
     }
 }
 
-fn text_leaf(term: &str, anchor: Anchor, params: &mut Vec<SqlParam>) -> String {
-    free_text_predicate(TermBinds::bind(
-        params,
-        &cctui_server_kernel::search_text::fold(term),
-        anchor,
-    ))
+/// A query AST compiling into a `WHERE` fragment and its binds.
+///
+/// With `hoisted` set, each free-text leaf's transcript test becomes
+/// membership in its own `hit_<k>` set (see [`hoisted_ctes`]), resolved once
+/// over all chunks; otherwise each session is probed on its own.
+struct Compiler {
+    params: Vec<SqlParam>,
+    hoisted: Option<Vec<TermBinds>>,
+}
+
+impl Compiler {
+    fn text_leaf(&mut self, term: &str, anchor: Anchor) -> String {
+        let t = TermBinds::bind(
+            &mut self.params,
+            &cctui_server_kernel::search_text::fold(term),
+            anchor,
+        );
+        let Some(hoisted) = self.hoisted.as_mut() else {
+            return free_text_predicate(t);
+        };
+        hoisted.push(t);
+        format!(
+            "(({}) OR ({}) OR ({}) OR s.id IN (SELECT session_id FROM hit_{}))",
+            t.test("s.id"),
+            t.test("COALESCE(s.session_name, '')"),
+            t.test("s.working_dir"),
+            hoisted.len(),
+        )
+    }
+}
+
+/// `WITH` items for a hoisting [`Compiler`]'s leaves: the sessions holding a
+/// chunk that matches each, found through the chunk trigram index.
+fn hoisted_ctes(hoisted: &[TermBinds]) -> String {
+    let items: Vec<String> = (1..)
+        .zip(hoisted)
+        .map(|(k, t)| {
+            format!(
+                "hit_{k} AS MATERIALIZED (SELECT DISTINCT c.session_id FROM search_chunks c \
+                 WHERE {})",
+                t.test("c.body")
+            )
+        })
+        .collect();
+    if items.is_empty() { String::new() } else { format!("WITH {} ", items.join(", ")) }
 }
 
 /// `(SELECT s.id)` must not be simplified to `s.id`: the wrapper keeps the
@@ -1562,9 +1614,16 @@ fn free_text_predicate(t: TermBinds) -> String {
     )
 }
 
-fn compile_filter(filter: &cctui_query::Filter, params: &mut Vec<SqlParam>) -> String {
-    let preds: Vec<String> =
-        filter.values.iter().map(|v| leaf_predicate(&filter.field, v, params)).collect();
+fn compile_filter(filter: &cctui_query::Filter, c: &mut Compiler) -> String {
+    let field = filter.field.as_str();
+    let preds: Vec<String> = filter
+        .values
+        .iter()
+        .map(|v| {
+            leaf_predicate(field, v, &mut c.params)
+                .unwrap_or_else(|| c.text_leaf(&filter_text(field, v), Anchor::Anywhere))
+        })
+        .collect();
     let joined = match preds.len() {
         0 => "TRUE".to_string(),
         1 => preds.into_iter().next().unwrap(),
@@ -1580,12 +1639,15 @@ fn compile_filter(filter: &cctui_query::Filter, params: &mut Vec<SqlParam>) -> S
 /// predicates / join-EXISTS, free text takes the `pg_trgm` path, and the
 /// boolean/negation structure maps straight to `AND`/`OR`/`NOT`.
 pub fn compile_node(node: &cctui_query::Node, params: &mut Vec<SqlParam>) -> String {
-    compile_node_at(node, params, 0)
+    let mut c = Compiler { params: std::mem::take(params), hoisted: None };
+    let sql = compile_node_at(node, &mut c, 0);
+    *params = c.params;
+    sql
 }
 
 const MAX_COMPILE_DEPTH: usize = 4 * cctui_query::MAX_DEPTH + 8;
 
-fn compile_node_at(node: &cctui_query::Node, params: &mut Vec<SqlParam>, depth: usize) -> String {
+fn compile_node_at(node: &cctui_query::Node, c: &mut Compiler, depth: usize) -> String {
     use cctui_query::Node;
     if depth > MAX_COMPILE_DEPTH {
         return "FALSE".to_string();
@@ -1594,23 +1656,23 @@ fn compile_node_at(node: &cctui_query::Node, params: &mut Vec<SqlParam>, depth: 
         Node::Empty => "TRUE".to_string(),
         Node::Text { value, phrase } => {
             let (term, anchor) = search_term(value, *phrase);
-            text_leaf(term, anchor, params)
+            c.text_leaf(term, anchor)
         }
-        Node::Filter { filter } => compile_filter(filter, params),
-        Node::Not { child } => format!("(NOT {})", compile_node_at(child, params, depth + 1)),
-        Node::And { children } => join_children(children, "AND", params, depth),
-        Node::Or { children } => join_children(children, "OR", params, depth),
+        Node::Filter { filter } => compile_filter(filter, c),
+        Node::Not { child } => format!("(NOT {})", compile_node_at(child, c, depth + 1)),
+        Node::And { children } => join_children(children, "AND", c, depth),
+        Node::Or { children } => join_children(children, "OR", c, depth),
     }
 }
 
 fn join_children(
     children: &[cctui_query::Node],
     sep: &str,
-    params: &mut Vec<SqlParam>,
+    c: &mut Compiler,
     depth: usize,
 ) -> String {
     let preds: Vec<String> =
-        children.iter().map(|c| compile_node_at(c, params, depth + 1)).collect();
+        children.iter().map(|child| compile_node_at(child, c, depth + 1)).collect();
     if preds.is_empty() {
         "TRUE".to_string()
     } else {
@@ -2053,26 +2115,126 @@ async fn count_rest(
     }
 }
 
-/// Walk in-scope sessions newest first, one window per statement, testing the
-/// compiled query against each window until the page is full, the sessions
-/// run out, or [`SEARCH_BUDGET`] is spent; the last returns what was found
-/// with `partial` set and a cursor to resume from.
-///
-/// A first page that fills
-/// goes on counting the matches past it with [`count_rest`].
-#[allow(clippy::too_long_first_doc_paragraph)]
+/// One page of matches: [`index_matches`] when the chunk index answers in
+/// time, else [`window_matches`] for what is left of [`SEARCH_BUDGET`].
 pub async fn scan_matches(
     pool: &sqlx::PgPool,
     root: &cctui_query::Node,
     live_ids: Option<&[String]>,
     page: &SearchPage,
 ) -> Result<FoundPage, AppError> {
+    let deadline = std::time::Instant::now() + SEARCH_BUDGET;
+    if let Some(found) = index_matches(pool, root, live_ids, page).await? {
+        return Ok(found);
+    }
+    window_matches(pool, root, live_ids, page, deadline).await
+}
+
+/// A term shorter than this has no trigram to narrow the chunk index by.
+const MIN_TRIGRAM_CHARS: usize = 3;
+/// Past this the chunk-index statement gives way to the per-session scan.
+const INDEX_STATEMENT_TIMEOUT: &str = "SET LOCAL statement_timeout = '2s'";
+
+/// `None` when a term is too short for the trigram index or the statement
+/// outlives [`INDEX_STATEMENT_TIMEOUT`]; the per-session scan fills such pages
+/// sooner.
+pub async fn index_matches(
+    pool: &sqlx::PgPool,
+    root: &cctui_query::Node,
+    live_ids: Option<&[String]>,
+    page: &SearchPage,
+) -> Result<Option<FoundPage>, AppError> {
+    let mut c = Compiler { params: Vec::new(), hoisted: Some(Vec::new()) };
+    let where_sql = compile_node_at(root, &mut c, 0);
+    let hoisted = c.hoisted.unwrap_or_default();
+    if hoisted.iter().any(|t| t.word_run < MIN_TRIGRAM_CHARS) {
+        return Ok(None);
+    }
+    let sql =
+        index_sql(&hoisted_ctes(&hoisted), &where_sql, c.params.len(), live_ids.is_some(), page);
+    let mut q = sqlx::query(sqlx::AssertSqlSafe(sql));
+    for p in &c.params {
+        q = match p {
+            SqlParam::Text(s) => q.bind(s.clone()),
+            SqlParam::Bool(b) => q.bind(*b),
+        };
+    }
+    q = q
+        .bind(page.uid)
+        .bind(page.cursor.as_ref().map(|c| c.0))
+        .bind(page.cursor.as_ref().map(|c| c.1.clone()))
+        .bind(page.limit.saturating_add(1))
+        .bind(if page.cursor.is_some() { 0 } else { page.offset });
+    if let Some(live) = live_ids {
+        q = q.bind(live);
+    }
+    let mut tx = pool.begin().await?;
+    sqlx::query(INDEX_STATEMENT_TIMEOUT).execute(&mut *tx).await?;
+    let rows = match q.fetch_all(&mut *tx).await {
+        Ok(rows) => rows,
+        Err(e) if is_statement_timeout(&e) => return Ok(None),
+        Err(e) => return Err(e.into()),
+    };
+    tx.commit().await?;
+    index_page(&rows, page).map(Some).map_err(Into::into)
+}
+
+/// `$1…$n` are the compiled query's binds, then owner, cursor position, row
+/// limit, offset and, when live-only, the live registry ids.
+fn index_sql(ctes: &str, where_sql: &str, n: usize, live_only: bool, page: &SearchPage) -> String {
+    let (uid, at, id, limit, offset, live) = (n + 1, n + 2, n + 3, n + 4, n + 5, n + 6);
+    let scope = if live_only {
+        format!("({} OR s.id = ANY(${live}))", live_sessions_predicate!("s"))
+    } else {
+        "TRUE".to_owned()
+    };
+    format!(
+        "{ctes}SELECT q.*, count(*) OVER () AS match_total FROM ( \
+           {DB_SESSION_SELECT} WHERE ({scope}) AND (${uid}::uuid IS NULL OR m.user_id = ${uid}) \
+           AND (${at}::timestamptz IS NULL OR (s.registered_at, s.id) < (${at}, ${id})){} \
+           AND ({where_sql})) q \
+         ORDER BY q.registered_at DESC, q.id DESC LIMIT ${limit} OFFSET ${offset}",
+        dispatched_filter(page.exclude_dispatched)
+    )
+}
+
+/// The page out of [`index_sql`]'s rows, which run one past the limit when
+/// more follow.
+fn index_page(rows: &[sqlx::postgres::PgRow], page: &SearchPage) -> Result<FoundPage, sqlx::Error> {
+    use sqlx::{FromRow, Row};
+    let want = usize::try_from(page.limit).unwrap_or(1);
+    let matched = match rows.first() {
+        Some(r) => usize::try_from(r.try_get::<i64, _>("match_total")?).unwrap_or(0),
+        None => 0,
+    };
+    let found: Vec<DbSession> =
+        rows.iter().take(want).map(DbSession::from_row).collect::<Result<_, _>>()?;
+    let next_cursor =
+        found.last().filter(|_| rows.len() > want).map(|r| search_cursor(r.registered_at, &r.id));
+    let total = page.total(matched.min(SEARCH_COUNT_CAP), matched >= SEARCH_COUNT_CAP);
+    Ok(FoundPage { rows: found, next_cursor, partial: false, total })
+}
+
+/// Walk in-scope sessions newest first, one window per statement, testing the
+/// compiled query against each window until the page is full, the sessions
+/// run out, or `deadline` passes; the last returns what was found with
+/// `partial` set and a cursor to resume from.
+///
+/// A first page that fills
+/// goes on counting the matches past it with [`count_rest`].
+#[allow(clippy::too_long_first_doc_paragraph)]
+pub async fn window_matches(
+    pool: &sqlx::PgPool,
+    root: &cctui_query::Node,
+    live_ids: Option<&[String]>,
+    page: &SearchPage,
+    deadline: std::time::Instant,
+) -> Result<FoundPage, AppError> {
     let scan = Scan::compile(root, live_ids, page);
     let want = usize::try_from(page.limit).unwrap_or(1);
     let mut skip =
         if page.cursor.is_some() { 0 } else { usize::try_from(page.offset).unwrap_or(0) };
     let mut cursor = page.cursor.clone();
-    let deadline = std::time::Instant::now() + SEARCH_BUDGET;
     let mut rows: Vec<DbSession> = Vec::new();
     let mut tx = pool.begin().await?;
     sqlx::query(SEARCH_STATEMENT_TIMEOUT).execute(&mut *tx).await?;
