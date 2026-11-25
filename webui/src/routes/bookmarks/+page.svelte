@@ -115,10 +115,11 @@
 
 <ConfirmModal
 	open={deleting !== null}
-	tone="warn"
+	tone="danger"
 	title={m.bookmarks_delete()}
 	message={m.bookmarks_delete_confirm()}
 	confirmLabel={m.bookmarks_delete()}
+	cancelLabel={m.common_cancel()}
 	onconfirm={confirmDelete}
 	oncancel={() => (deleting = null)}
 />
