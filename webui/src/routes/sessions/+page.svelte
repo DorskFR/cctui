@@ -42,6 +42,7 @@
 	import { settings } from '#lib/settings.svelte.ts';
 	import { m } from '#lib/paraglide/messages.js';
 	import {
+		foldedPrefill,
 		sessionIdFromLocation,
 		sessionHrefFor,
 		sessionNavState,
@@ -264,6 +265,7 @@
 		const open = !!sp.liveOpen;
 		untrack(() => {
 			if (!open && spawnDockHold.collapsed) sp.showSpawn = false;
+			if (open && sp.dockSide) sp.spawnPrefill = foldedPrefill(sp.spawnPrefill);
 			spawnDockHold.collapsed = open;
 		});
 	});

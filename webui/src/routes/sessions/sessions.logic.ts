@@ -768,6 +768,16 @@ export function sectionVisibility(i: SectionVisibilityInput): SectionVisibility 
 }
 
 // ── Draft payload + spawn prefills ─────────────────────────────────
+/** What a docked spawn form's prefill keeps across a fold: the follow-up link,
+ *  which only the prefill carries. The form fields are dropped so the remount
+ *  reads them back from the autosave slot, edits included; `null` when nothing
+ *  is left. */
+const FOLD_KEEP = ['relation', 'parent_session_id', 'followup_file', 'archive_source'];
+export function foldedPrefill(p: Record<string, string> | null): Record<string, string> | null {
+	if (!p) return null;
+	const kept = Object.fromEntries(Object.entries(p).filter(([k]) => FOLD_KEEP.includes(k)));
+	return Object.keys(kept).length > 0 ? kept : null;
+}
 export function draftPayload(s: SessionListItem): Record<string, unknown> {
 	const m = s.metadata as Record<string, unknown> | null;
 	const d = m?.draft;
