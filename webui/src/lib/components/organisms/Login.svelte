@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { auth } from '#lib/auth.svelte.ts';
-	import { PasskeyAborted, conditionalUiSupported } from '#lib/passkeys.ts';
+	import { conditionalUiSupported } from '#lib/passkeys.ts';
+	import { runPasskeyAttempt } from './login.logic';
 	import { Button, Card, Field, Input, Text } from '@dorsk/tsumikit';
 	import { m } from '#lib/paraglide/messages.js';
 	import type { PasskeyConfig } from '@bindings/PasskeyConfig';
@@ -29,7 +30,7 @@
 			passkeys = cfg;
 			if (!cfg?.available || !cfg.enrolled) return;
 			if (cfg.auto_prompt) {
-				await signInWithPasskey();
+				await signInWithPasskey(false);
 			} else if (await conditionalUiSupported()) {
 				armConditional();
 			}
@@ -49,7 +50,7 @@
 		void auth.loginWithPasskey('conditional', conditional.signal).catch(() => {});
 	}
 
-	async function signInWithPasskey() {
+	async function signInWithPasskey(userInitiated: boolean) {
 		if (passkeyBusy) return;
 		// A conditional request already holds the authenticator; drop it or the
 		// modal call is rejected outright.
@@ -58,11 +59,8 @@
 		passkeyBusy = true;
 		err = '';
 		try {
-			const ok = await auth.loginWithPasskey();
-			if (!ok) err = m.login_passkey_failed();
-		} catch (e) {
-			// A dismissed dialog is a choice, not an error worth shouting about.
-			if (!(e instanceof PasskeyAborted)) err = m.login_passkey_failed();
+			const outcome = await runPasskeyAttempt(() => auth.loginWithPasskey(), userInitiated);
+			if (outcome === 'failed') err = m.login_passkey_failed();
 		} finally {
 			passkeyBusy = false;
 		}
@@ -105,7 +103,7 @@
 			{m.login_sign_in()}
 		</Button>
 		{#if offerPasskey}
-			<Button block type="button" loading={passkeyBusy} disabled={passkeyBusy} onclick={signInWithPasskey}>
+			<Button block type="button" loading={passkeyBusy} disabled={passkeyBusy} onclick={() => signInWithPasskey(true)}>
 				{m.login_passkey_button()}
 			</Button>
 		{/if}
