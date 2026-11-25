@@ -12,6 +12,7 @@
 	import HeaderLabels from './HeaderLabels.svelte';
 	import DrawerTitle from './DrawerTitle.svelte';
 	import DrawerMenu from './DrawerMenu.svelte';
+	import { ComposerFocus } from './composerFocus.svelte';
 	import { nameOf } from '#lib/sessionName.ts';
 	import { m } from '#lib/paraglide/messages.js';
 	import { hasFeature } from '#lib/features.svelte.ts';
@@ -130,6 +131,10 @@
 	// only Back and ⋯ (search folds into ⋯ below COLLAPSE_BELOW).
 	const titleOwnLine = $derived(collapsed && !compact);
 
+	let headEl = $state<HTMLElement>();
+	const composer = new ComposerFocus();
+	$effect(() => (headEl ? composer.attach(headEl) : undefined));
+
 	// Window-level so the chords work wherever focus sits, including the
 	// composer. `shortcuts` is what keeps N tiles from firing N times.
 	function onWinKey(e: KeyboardEvent) {
@@ -147,7 +152,7 @@
 	<DrawerTitle {session} {compact} {showLabels} {labels} {renaming} bind:name={newName} onsubmit={doRename} />
 {/snippet}
 
-<div class="dhead" class:compact data-journey="header">
+<div class="dhead" class:compact class:typing={!compact && composer.collapse} bind:this={headEl} data-journey="header">
 	<div class="dbar" bind:clientWidth={barWidth}>
 	<Toolbar collapseBelow="{COLLAPSE_BELOW}px" density={collapsed ? 'compact' : 'default'}>
 		{#if onclose}
@@ -255,6 +260,10 @@
 		background: var(--bg-elevated);
 		/* TokenUsage degrades its readout against this container. */
 		container: drawer-head / inline-size;
+	}
+	/* Typing on a phone: the transcript gets the height back. */
+	.dhead.typing {
+		display: none;
 	}
 	/* One row, tight: a tile's header may not eat the transcript. */
 	.dhead.compact {

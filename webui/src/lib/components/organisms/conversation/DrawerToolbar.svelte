@@ -13,6 +13,7 @@
 	import { quickFilterLabel, type MsgCategory, type QuickFilterId, type ViewOpts } from './types';
 	import { Icon, Menu, Popover, Switch, Toggle } from '@dorsk/tsumikit';
 	import { panelItems } from './toolbarPanels';
+	import { ComposerFocus } from './composerFocus.svelte';
 	import PinsPanel from './PinsPanel.svelte';
 	import SessionContextChip from './SessionContextChip.svelte';
 	import type { MessagePin } from '@bindings/MessagePin';
@@ -56,6 +57,10 @@
 	// One pinned height for every control, so glyph fonts can't size them.
 	const CTL = 'height:var(--bar-ctl-h);box-sizing:border-box;padding-block:0;line-height:1';
 
+	let hostEl = $state<HTMLElement>();
+	const composer = new ComposerFocus();
+	$effect(() => (hostEl ? composer.attach(hostEl) : undefined));
+
 	const panels = $derived(
 		panelItems(
 			ontoggleTerminal && hasFeature('terminal') ? { open: terminalOpen, toggle: ontoggleTerminal } : null,
@@ -84,7 +89,7 @@
 	}
 </script>
 
-<div class="tbhost">
+<div class="tbhost" class:typing={composer.collapse} bind:this={hostEl}>
 <div class="toolbar">
 	<!-- A quick chip is on only when every category it covers is on; a partly-on
 	     group gets a dashed border. -->
@@ -178,6 +183,9 @@
 <style>
 	.tbhost {
 		container: drawer-toolbar / inline-size;
+	}
+	.tbhost.typing {
+		display: none;
 	}
 	.toolbar {
 		display: flex;
