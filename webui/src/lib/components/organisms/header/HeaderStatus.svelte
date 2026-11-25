@@ -24,12 +24,8 @@
 	const RANK: Record<ResourceTone, number> = { unknown: 0, ok: 1, warn: 2, danger: 3 };
 	const machineTone = (r: (typeof rows)[number]): ResourceTone =>
 		!r.resources || isStale(r.updated_at, now) ? 'unknown' : worstTone(r.resources);
-	const tone = $derived(
-		[...rows.map(machineTone), gauge.worst?.tone ?? 'unknown'].reduce<ResourceTone>(
-			(a, b) => (RANK[b] > RANK[a] ? b : a),
-			'unknown'
-		)
-	);
+	const tones = $derived<ResourceTone[]>([...rows.map(machineTone), gauge.worst?.tone ?? 'unknown']);
+	const tone = $derived(tones.reduce((a, b) => (RANK[b] > RANK[a] ? b : a), 'unknown'));
 	const pct = (v: number | null | undefined) => {
 		const p = pctOf(v);
 		return p === null ? '?' : `${p}%`;
