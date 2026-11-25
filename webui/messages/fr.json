@@ -3396,6 +3396,17 @@
 			}
 		}
 	],
+	"error_failed_body": "Cette page n'a pas pu se charger. Revenez à vos sessions, ou rechargez pour réessayer.",
+	"error_failed_title": "Une erreur est survenue",
+	"error_go_to_sessions": "Aller aux sessions",
+	"error_not_found_body": "Rien ne se trouve à l'adresse {path}.",
+	"error_not_found_title": "Page introuvable",
+	"error_recent_sessions": "Sessions récentes",
+	"error_search_archived": "Rechercher dans les sessions archivées",
+	"error_search_archived_none": "Aucune session archivée ne correspond.",
+	"error_search_archived_placeholder": "Nom, dossier ou identifiant",
+	"error_session_missing_body": "Cette session a été archivée ou supprimée. Cherchez-la dans les sessions archivées, ou revenez à vos sessions.",
+	"error_session_missing_title": "Session introuvable",
 	"list_auto_approve": "approbation auto",
 	"spawn_optional_settings": "Paramètres optionnels"
 }
