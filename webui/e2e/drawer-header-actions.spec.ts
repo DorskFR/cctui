@@ -8,6 +8,8 @@ const trailing = (page: Page) =>
 
 for (const viewport of [WIDE, NARROW]) {
 	const w = viewport.width;
+	// Back, Search and ⋯ when wide; a narrow bar folds Search into ⋯.
+	const minControls = viewport === NARROW ? 2 : 3;
 
 	test(`${w}px: every trailing header control shares one height and top y`, async ({
 		page
@@ -15,7 +17,7 @@ for (const viewport of [WIDE, NARROW]) {
 		await openDrawer(page, viewport);
 
 		const controls = await rects(trailing(page));
-		expect(controls.length).toBeGreaterThan(2);
+		expect(controls.length).toBeGreaterThanOrEqual(minControls);
 		for (const c of controls) console.log('control', c.label, JSON.stringify(c));
 
 		expect([...new Set(controls.map((c) => Math.round(c.height)))]).toHaveLength(1);
@@ -28,7 +30,7 @@ for (const viewport of [WIDE, NARROW]) {
 		await openDrawer(page, viewport);
 
 		const controls = await rects(trailing(page));
-		expect(controls.length).toBeGreaterThan(2);
+		expect(controls.length).toBeGreaterThanOrEqual(minControls);
 		for (const c of controls) console.log('control', c.label, JSON.stringify(c));
 
 		expect([...new Set(controls.map((c) => Math.round(c.width)))]).toHaveLength(1);
