@@ -335,7 +335,7 @@ mod tests {
         ] {
             let body = check_body(&call);
             assert_ne!(body["tool_name"], "Bash", "{call} -> {body}");
-            assert!(body["tool_input"].get("command").is_none(), "{call} -> {body}");
+            assert_eq!(body.pointer("/tool_input/command"), call.pointer("/rawInput/command"));
         }
         let named = json!({ "kind": "execute", "_meta": { "toolName": "run_shell_command" } });
         assert_eq!(check_body(&named)["tool_name"], "run_shell_command");
