@@ -16,13 +16,8 @@ pub const UNDO_WINDOW: Duration = Duration::from_secs(10);
 
 #[derive(Clone, Default)]
 pub struct PendingTeardowns {
-    pending: Arc<DashMap<String, Pending>>,
+    pending: Arc<DashMap<String, u64>>,
     next: Arc<AtomicU64>,
-}
-
-struct Pending {
-    generation: u64,
-    descendants: Vec<String>,
 }
 
 impl PendingTeardowns {
@@ -32,32 +27,26 @@ impl PendingTeardowns {
     }
 
     /// A new schedule for the same id replaces the old one.
-    pub fn schedule<F>(
-        &self,
-        session_id: &str,
-        descendants: Vec<String>,
-        window: Duration,
-        teardown: F,
-    ) where
+    pub fn schedule<F>(&self, session_id: &str, window: Duration, teardown: F)
+    where
         F: Future<Output = ()> + Send + 'static,
     {
         let generation = self.next.fetch_add(1, Ordering::Relaxed);
-        self.pending.insert(session_id.to_owned(), Pending { generation, descendants });
+        self.pending.insert(session_id.to_owned(), generation);
         let pending = Arc::clone(&self.pending);
         let id = session_id.to_owned();
         tokio::spawn(async move {
             tokio::time::sleep(window).await;
-            if pending.remove_if(&id, |_, p| p.generation == generation).is_some() {
+            if pending.remove_if(&id, |_, g| *g == generation).is_some() {
                 teardown.await;
             }
         });
     }
 
-    /// Drop the pending teardown of `session_id`; the descendants it would
-    /// have torn down along with it, or `None` when nothing was pending.
+    /// Whether a teardown was pending here.
     #[must_use]
-    pub fn cancel(&self, session_id: &str) -> Option<Vec<String>> {
-        self.pending.remove(session_id).map(|(_, p)| p.descendants)
+    pub fn cancel(&self, session_id: &str) -> bool {
+        self.pending.remove(session_id).is_some()
     }
 
     #[must_use]
@@ -68,15 +57,16 @@ impl PendingTeardowns {
 
 /// Revoke the live tokens of archived sessions past their undo window.
 ///
-/// A restart inside the window loses the teardown; an archive with no
-/// `session.archived` event counts as old.
+/// A restart inside the window loses the teardown. A row is inside the window
+/// while a recent `session.archived` event names it, as subject or descendant;
+/// an archive with no event counts as old.
 pub async fn revoke_orphaned_tokens<S: SessionsContext>(state: &S) -> usize {
     let ids: Vec<String> = match sqlx::query_scalar(
         "SELECT DISTINCT s.id FROM session_tokens t JOIN sessions s ON s.id = t.session_id \
           WHERE t.revoked_at IS NULL AND s.status = 'archived' \
             AND NOT EXISTS (SELECT 1 FROM events e \
-                 WHERE e.session_id = s.id AND e.kind = $1 \
-                   AND e.occurred_at > now() - make_interval(secs => $2))",
+                 WHERE e.kind = $1 AND e.occurred_at > now() - make_interval(secs => $2) \
+                   AND (e.session_id = s.id OR e.detail -> 'descendants' ? s.id))",
     )
     .bind(kind::SESSION_ARCHIVED)
     .bind(UNDO_WINDOW.as_secs_f64())
@@ -101,6 +91,26 @@ pub async fn revoke_orphaned_tokens<S: SessionsContext>(state: &S) -> usize {
     revoked
 }
 
+/// The descendants archived together with `session_id` by its archive still
+/// inside the window, whichever replica holds that window.
+pub async fn archived_with<S: SessionsContext>(
+    state: &S,
+    session_id: &str,
+) -> Result<Vec<String>, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT jsonb_array_elements_text(COALESCE(detail -> 'descendants', '[]'::jsonb)) \
+           FROM (SELECT detail FROM events \
+                  WHERE kind = $1 AND session_id = $2 \
+                    AND occurred_at > now() - make_interval(secs => $3) \
+                  ORDER BY occurred_at DESC, id DESC LIMIT 1) last",
+    )
+    .bind(kind::SESSION_ARCHIVED)
+    .bind(session_id)
+    .bind(UNDO_WINDOW.as_secs_f64())
+    .fetch_all(state.pool())
+    .await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -109,7 +119,7 @@ mod tests {
     fn schedule_send(p: &PendingTeardowns, id: &str, tx: &mpsc::UnboundedSender<String>) {
         let tx = tx.clone();
         let sent = id.to_owned();
-        p.schedule(id, vec!["child".into()], UNDO_WINDOW, async move {
+        p.schedule(id, UNDO_WINDOW, async move {
             let _ = tx.send(sent);
         });
     }
@@ -120,7 +130,7 @@ mod tests {
         let (tx, mut rx) = mpsc::unbounded_channel();
         schedule_send(&p, "s1", &tx);
         tokio::time::sleep(UNDO_WINDOW / 2).await;
-        assert_eq!(p.cancel("s1"), Some(vec!["child".to_owned()]));
+        assert!(p.cancel("s1"));
         tokio::time::sleep(UNDO_WINDOW * 2).await;
         assert!(rx.try_recv().is_err(), "a cancelled teardown must not run");
         assert!(!p.is_pending("s1"));
@@ -139,7 +149,7 @@ mod tests {
         tokio::time::sleep(UNDO_WINDOW * 2).await;
         assert!(rx.try_recv().is_err(), "the teardown runs exactly once");
         assert!(!p.is_pending("s1"));
-        assert_eq!(p.cancel("s1"), None, "too late to undo");
+        assert!(!p.cancel("s1"), "too late to undo");
     }
 
     #[tokio::test(start_paused = true)]

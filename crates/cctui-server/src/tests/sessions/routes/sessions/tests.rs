@@ -1120,13 +1120,11 @@ async fn a_blank_query_is_not_refused_when_transcript_search_is_off() {
     assert!(found.sessions.is_empty());
 }
 
-async fn archived_with_live_token(pool: &sqlx::PgPool, tag: &str) -> String {
-    let (uid, machine) = crate::events::tests::seed_user_machine(pool, tag).await;
-    let sid = crate::events::tests::seed_session(pool, uid, machine, None).await;
+async fn add_live_token(pool: &sqlx::PgPool, uid: uuid::Uuid, sid: &str) {
     let account: uuid::Uuid =
         sqlx::query_scalar("INSERT INTO accounts (user_id, name) VALUES ($1, $2) RETURNING id")
             .bind(uid)
-            .bind(format!("{tag}-{uid}"))
+            .bind(format!("acct-{}", uuid::Uuid::new_v4()))
             .fetch_one(pool)
             .await
             .unwrap();
@@ -1139,21 +1137,121 @@ async fn archived_with_live_token(pool: &sqlx::PgPool, tag: &str) -> String {
     .fetch_one(pool)
     .await
     .unwrap();
+    sqlx::query(
+        "INSERT INTO session_tokens (token_hash, session_id, account_id) VALUES ($1, $2, $3)",
+    )
+    .bind(format!("hash-{}", uuid::Uuid::new_v4()))
+    .bind(sid)
+    .bind(provider)
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+async fn archived_with_live_token(pool: &sqlx::PgPool, tag: &str) -> String {
+    let (uid, machine) = crate::events::tests::seed_user_machine(pool, tag).await;
+    let sid = crate::events::tests::seed_session(pool, uid, machine, None).await;
     sqlx::query("UPDATE sessions SET status = 'archived' WHERE id = $1")
         .bind(&sid)
         .execute(pool)
         .await
         .unwrap();
-    sqlx::query(
-        "INSERT INTO session_tokens (token_hash, session_id, account_id) VALUES ($1, $2, $3)",
+    add_live_token(pool, uid, &sid).await;
+    sid
+}
+
+/// A parent with one child that owns a live token, archived by a human.
+async fn archived_family(
+    state: &crate::state::AppState,
+    pool: &sqlx::PgPool,
+    tag: &str,
+) -> (uuid::Uuid, String, String) {
+    let (uid, machine) = crate::events::tests::seed_user_machine(pool, tag).await;
+    let parent = crate::events::tests::seed_session(pool, uid, machine, None).await;
+    let child = crate::events::tests::seed_session(pool, uid, machine, None).await;
+    sqlx::query("UPDATE sessions SET parent_id = $1 WHERE id = $2")
+        .bind(&parent)
+        .bind(&child)
+        .execute(pool)
+        .await
+        .unwrap();
+    add_live_token(pool, uid, &child).await;
+    let outcome = super::archive_one(
+        state,
+        &parent,
+        true,
+        RemoveInitiator::User,
+        cctui_server_kernel::state_events::Actor::User(uid),
     )
-    .bind(format!("hash-{}", uuid::Uuid::new_v4()))
-    .bind(&sid)
-    .bind(provider)
-    .execute(pool)
     .await
     .unwrap();
-    sid
+    assert_eq!(outcome, super::ArchiveOutcome::Archived);
+    (uid, parent, child)
+}
+
+async fn status_of(pool: &sqlx::PgPool, sid: &str) -> String {
+    sqlx::query_scalar("SELECT status FROM sessions WHERE id = $1")
+        .bind(sid)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn a_child_token_lives_through_the_window_and_dies_after_it() {
+    use cctui_server_sessions::undo_window::{PendingTeardowns, revoke_orphaned_tokens};
+    let Some(url) = cctui_server_kernel::test_support::db_url("child_token_window") else {
+        return;
+    };
+    let pool = sqlx::PgPool::connect(&url).await.expect("connect test db");
+    let state = crate::state::AppState::for_test(pool.clone());
+    let (_, parent, child) = archived_family(&state, &pool, "child-window").await;
+    assert_eq!(status_of(&pool, &child).await, "archived");
+    // Another replica's reaper: it holds no window for this archive.
+    assert!(PendingTeardowns::global().cancel(&parent));
+
+    revoke_orphaned_tokens(&state).await;
+    assert_eq!(live_tokens(&pool, &child).await, 1, "inside the window the child keeps its token");
+
+    sqlx::query(
+        "UPDATE events SET occurred_at = now() - interval '1 hour' \
+          WHERE session_id = $1 AND kind = 'session.archived'",
+    )
+    .bind(&parent)
+    .execute(&pool)
+    .await
+    .unwrap();
+    revoke_orphaned_tokens(&state).await;
+    assert_eq!(live_tokens(&pool, &child).await, 0, "past the window the child token is revoked");
+}
+
+#[tokio::test]
+async fn an_undo_on_another_replica_restores_the_children() {
+    use cctui_server_sessions::undo_window::PendingTeardowns;
+    let Some(url) = cctui_server_kernel::test_support::db_url("undo_other_replica") else {
+        return;
+    };
+    let pool = sqlx::PgPool::connect(&url).await.expect("connect test db");
+    let state = crate::state::AppState::for_test(pool.clone());
+    let (uid, parent, child) = archived_family(&state, &pool, "undo-replica").await;
+    assert!(PendingTeardowns::global().cancel(&parent), "this replica no longer holds the window");
+
+    let ctx = AuthContext {
+        user_id: uid,
+        key_id: uuid::Uuid::new_v4(),
+        machine_id: None,
+        scopes: std::collections::BTreeSet::new(),
+    };
+    super::unarchive_session(
+        axum::extract::State(state.clone()),
+        axum::Extension(ctx),
+        axum::extract::Path(parent.clone()),
+    )
+    .await
+    .unwrap();
+    assert_eq!(status_of(&pool, &parent).await, "inactive");
+    assert_eq!(status_of(&pool, &child).await, "inactive", "the child comes back with its parent");
+    assert_eq!(live_tokens(&pool, &child).await, 1);
 }
 
 async fn live_tokens(pool: &sqlx::PgPool, sid: &str) -> i64 {
@@ -1195,7 +1293,7 @@ async fn an_archive_whose_window_was_lost_has_its_token_revoked() {
     .await
     .unwrap();
     let held = archived_with_live_token(&pool, "orphan-held").await;
-    PendingTeardowns::global().schedule(&held, Vec::new(), UNDO_WINDOW * 60, async {});
+    PendingTeardowns::global().schedule(&held, UNDO_WINDOW * 60, async {});
 
     cctui_server_sessions::undo_window::revoke_orphaned_tokens(&state).await;
 

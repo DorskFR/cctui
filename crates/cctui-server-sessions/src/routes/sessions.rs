@@ -4314,6 +4314,7 @@ pub async fn archive_one<S: SessionsContext>(
     // Clear the classifier signals on archive so a session that was waiting on
     // input doesn't keep its ✋ "needs input" glyph in the archived view — an
     // archived session is, by definition, no longer waiting on anyone.
+    let mut tx = state.pool().begin().await?;
     let archived: Vec<String> = sqlx::query_scalar(
         "UPDATE sessions SET status = 'archived', tempo = NULL, agent_state = NULL, \
                 activity = NULL, soft_limit_reason = NULL, archived_by = $4 \
@@ -4324,9 +4325,21 @@ pub async fn archive_one<S: SessionsContext>(
     .bind(force)
     .bind(&descendant_ids)
     .bind(initiator.as_str())
-    .fetch_all(state.pool())
+    .fetch_all(&mut *tx)
     .await?;
     let parent_archived = archived.iter().any(|id| id == session_id);
+    if parent_archived {
+        // Before the commit: the undo window of every row it archives is read
+        // from this event, so it must be visible no later than the rows.
+        let descendants: Vec<&String> = archived.iter().filter(|id| *id != session_id).collect();
+        let mut detail = archived_detail(descendants.len(), initiator, swept.then_some(kept.len()));
+        detail["descendants"] = serde_json::json!(descendants);
+        let event = Event::new(kind::SESSION_ARCHIVED, actor.clone()).session(session_id);
+        if let Err(err) = events::record_now(state, event.detail(detail)).await {
+            tracing::warn!(%session_id, %err, "session.archived event insert failed");
+        }
+    }
+    tx.commit().await?;
     let teardown = ArchiveTeardown {
         session_id: session_id.to_owned(),
         job_children: crate::store::sessions::job_children(&children, &archived)
@@ -4342,7 +4355,6 @@ pub async fn archive_one<S: SessionsContext>(
         let state = state.clone();
         crate::undo_window::PendingTeardowns::global().schedule(
             session_id,
-            children.clone(),
             crate::undo_window::UNDO_WINDOW,
             async move {
                 if still_archived(&state, &teardown.session_id).await {
@@ -4354,13 +4366,6 @@ pub async fn archive_one<S: SessionsContext>(
         teardown.run(state).await;
     }
     tracing::info!(session_id = %session_id, children = children.len(), "session archived");
-    if parent_archived {
-        let detail = archived_detail(children.len(), initiator, swept.then_some(kept.len()));
-        events::record(
-            state,
-            Event::new(kind::SESSION_ARCHIVED, actor).session(session_id).detail(detail),
-        );
-    }
     Ok(ArchiveOutcome::Archived)
 }
 
@@ -4451,11 +4456,17 @@ async fn unarchive_one<S: SessionsContext>(
     by: uuid::Uuid,
 ) -> Result<(), sqlx::Error> {
     let undone = crate::undo_window::PendingTeardowns::global().cancel(session_id);
-    for child in undone.iter().flatten() {
+    let descendants = crate::undo_window::archived_with(state, session_id).await?;
+    for child in &descendants {
         crate::store::sessions::set_inactive(state.pool(), child, true).await?;
     }
     if crate::store::sessions::set_inactive(state.pool(), session_id, true).await? {
-        tracing::info!(session_id = %session_id, undone = undone.is_some(), "session unarchived");
+        tracing::info!(
+            session_id = %session_id,
+            undone,
+            descendants = descendants.len(),
+            "session unarchived"
+        );
         events::record(
             state,
             Event::new(kind::SESSION_UNARCHIVED, Actor::User(by)).session(session_id),
