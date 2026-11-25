@@ -155,6 +155,7 @@
 	);
 	const owned = $derived(ownsSession(me.data, myMachines.data, session.machine_id));
 	const needsInput = $derived(session.attention === 'needs_input' && !archived);
+	const waitingSince = $derived(session.last_message_at ? Date.parse(session.last_message_at) : null);
 	const showStatusBadge = $derived(session.status === 'new' || session.status === 'archived');
 	const qc = useQueryClient();
 
@@ -708,7 +709,7 @@
 				{speakingKey}
 			/>
 
-			<ActivityBanner {stream} {archived} />
+			<ActivityBanner {stream} {archived} {needsInput} {waitingSince} />
 			<AutoArchiveNotice {session} onpin={organising ? () => togglePin(session) : undefined} />
 
 			{#if liveVoice.active}
