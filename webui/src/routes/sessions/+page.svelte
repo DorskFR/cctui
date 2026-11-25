@@ -264,9 +264,11 @@
 	$effect(() => {
 		const open = !!sp.liveOpen;
 		untrack(() => {
-			if (!open && spawnDockHold.collapsed) sp.showSpawn = false;
 			if (open && sp.dockSide) sp.spawnPrefill = foldedPrefill(sp.spawnPrefill);
+			const wasHeld = spawnDockHold.collapsed;
 			spawnDockHold.collapsed = open;
+			// The dock returning takes over a modal opened while it was folded.
+			if (!open && wasHeld && sp.dockSide) sp.showSpawn = false;
 		});
 	});
 	$effect(() => () => {
