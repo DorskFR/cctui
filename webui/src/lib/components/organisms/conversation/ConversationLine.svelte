@@ -2,7 +2,7 @@
 	// A single rendered conversation message. Pure presentation: the meta row
 	// (role badge, tool name, time, delivery state, actions), the bubble and the
 	// footers, delegating retry/edit/save/copy to callbacks.
-	import { Badge, Checkbox, Link, Tooltip } from '@dorsk/tsumikit';
+	import { Badge, Checkbox, Icon, Link, Tooltip } from '@dorsk/tsumikit';
 	import ContextBlock from './ContextBlock.svelte';
 	import HarnessCommandCard from './HarnessCommandCard.svelte';
 	import LineActions from './LineActions.svelte';
@@ -135,6 +135,7 @@
 	class="line {ln.role}"
 	class:tinted={settings.roleTintedBackground}
 	class:pinned
+	class:bookmarked
 	data-seq={ln.seq}
 	data-journey="line"
 	data-journey-key={ln.role}
@@ -207,6 +208,13 @@
 			>{shortTime(ln.ts)}</time
 		>
 		<LineDelivery {ln} {archived} {queueWaiting} {onretry} {onedit} />
+		{#if bookmarked}
+			<span class="bm-mark">
+				<Link href="/bookmarks" tone="inherit" underline="none" title={m.bookmarks_line_saved_title()} aria-label={m.bookmarks_line_saved_title()}
+					><Icon name="bookmark" size={14} filled /></Link
+				>
+			</span>
+		{/if}
 		<span class="acts" class:keep={speaking}>
 			<LineActions
 				{ln}
@@ -332,6 +340,15 @@
 		flex: none;
 		margin-left: auto;
 		display: inline-flex;
+	}
+	.bm-mark {
+		flex: none;
+		margin-left: auto;
+		display: inline-flex;
+		color: var(--role-assistant);
+	}
+	.bm-mark + .acts {
+		margin-left: 0;
 	}
 	/* Touch has no hover: a tap focuses the line, which reveals only its own actions. */
 	@media (hover: hover) {

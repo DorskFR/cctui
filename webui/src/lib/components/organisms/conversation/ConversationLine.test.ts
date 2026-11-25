@@ -15,7 +15,7 @@ afterEach(() => {
 	document.body.innerHTML = '';
 });
 
-async function render(ln: Line, sessionId: string | null = null) {
+async function render(ln: Line, sessionId: string | null = null, extra: Record<string, unknown> = {}) {
 	comp = mount(ConversationLine, {
 		target: document.body,
 		props: {
@@ -25,7 +25,8 @@ async function render(ln: Line, sessionId: string | null = null) {
 			onretry: vi.fn(),
 			onedit: vi.fn(),
 			onsaveimage: vi.fn(),
-			oncopymarkdown: vi.fn()
+			oncopymarkdown: vi.fn(),
+			...extra
 		}
 	});
 	await flush();
@@ -402,5 +403,21 @@ describe('result line meta', () => {
 		const el = await render(line({ role: 'result', tool: 'Bash' }));
 		expect(el.querySelector('.lmeta .tool-name')?.textContent).toBe('Bash');
 		expect(el.querySelector('.lmeta .role')?.textContent).toBe('result');
+	});
+});
+
+describe('bookmarked line', () => {
+	it('keeps a visible bookmark mark outside the hover-gated actions', async () => {
+		const el = await render(line(), null, { bookmarked: true, onbookmark: vi.fn() });
+		const mark = el.querySelector('.lmeta .bm-mark a') as HTMLAnchorElement;
+		expect(el.classList.contains('bookmarked')).toBe(true);
+		expect(mark.getAttribute('href')).toBe('/bookmarks');
+		expect(mark.getAttribute('aria-label')).toBe('Already bookmarked — open it in Bookmarks');
+		expect(mark.closest('.acts')).toBeNull();
+	});
+
+	it('shows no mark on a line that is not bookmarked', async () => {
+		const el = await render(line(), null, { bookmarked: false, onbookmark: vi.fn() });
+		expect(el.querySelector('.bm-mark')).toBeNull();
 	});
 });
