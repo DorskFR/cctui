@@ -11,7 +11,7 @@ handle: string, namespace?: string | null,
  */
 status: string, 
 /**
- * 1-based place among the profile's queued workers while `queued`.
+ * 1-based place among the profile's queued workers, on `queued` and on a `deduplicated` re-send that joined a still-queued run.
  */
 queue_position?: number | null, 
 /**
