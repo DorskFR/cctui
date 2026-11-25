@@ -17,9 +17,14 @@ describe('the session deep link', () => {
 
 	it('raises a 404 for a deleted session, keeping the URL', async () => {
 		session.mockRejectedValueOnce(new ApiError(404, 'not found'));
-		const err = await run().catch((e) => e);
+		let err: unknown;
+		try {
+			await run();
+		} catch (e) {
+			err = e;
+		}
 		expect(isHttpError(err, 404)).toBe(true);
-		expect(err.body.message).toBe('session_missing');
+		expect(isHttpError(err) && err.body.message).toBe('session_missing');
 	});
 
 	it('leaves other failures to the sessions page', async () => {
