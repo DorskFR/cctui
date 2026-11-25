@@ -724,6 +724,8 @@
 	"drawer_menu_group_collaborate": "Collaborer",
 	"drawer_menu_group_session": "Session",
 	"drawer_meta_details": "Détails de la session",
+	"drawer_meta_tokens": "{tokens} jetons",
+	"drawer_meta_tokens_title": "Entrée {in} · sortie {out} · cache {cache}",
 	"drawer_thread_previous": "Session précédente du fil",
 	"drawer_thread_next": "Session suivante du fil",
 	"drawer_thread_menu": "Sessions du fil",

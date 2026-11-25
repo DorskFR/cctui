@@ -37,6 +37,13 @@ describe('drawer header meta row', () => {
 		expect(body).toContain('.tokens');
 	});
 
+	it('spells the token total in words instead of Σ ↑ ↓ ⚡ glyphs', () => {
+		expect(trail).not.toContain('<TokenUsage');
+		expect(trail).toContain('m.drawer_meta_tokens({ tokens: compact(totals.total) })');
+		expect(trail).toContain('title={m.drawer_meta_tokens_title(');
+		for (const msgs of [en, fr]) expect(JSON.parse(msgs).drawer_meta_tokens).toContain('{tokens}');
+	});
+
 	it('declares the model-edit base rule before the query that hides it', () => {
 		expect(css.indexOf('.model-edit {')).toBeLessThan(css.indexOf('@container drawer-head (max-width: 26rem)'));
 	});

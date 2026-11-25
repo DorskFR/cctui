@@ -724,6 +724,8 @@
 	"drawer_menu_group_collaborate": "Collaborate",
 	"drawer_menu_group_session": "Session",
 	"drawer_meta_details": "Session details",
+	"drawer_meta_tokens": "{tokens} tokens",
+	"drawer_meta_tokens_title": "In {in} · out {out} · cache {cache}",
 	"drawer_thread_previous": "Previous session in this thread",
 	"drawer_thread_next": "Next session in this thread",
 	"drawer_thread_menu": "Sessions in this thread",

@@ -1,8 +1,7 @@
 <script lang="ts">
-	// Drawer header meta row: status badge, thread links, cwd, branch, context meter, token usage, langfuse
-	// chip, the in-place codex model editor or the claude "fork to change model"
-	// chip, and the adapter logo, which is the trigger of the popover holding
-	// what a narrow row dropped.
+	// Drawer header meta row: status, thread links, cwd, branch, context meter,
+	// token total, cost, model chip and the adapter logo, which opens the full
+	// session details.
 	import type { SessionListItem } from '@bindings/SessionListItem';
 	import { compact, modelShort, statusBadgeTone, usd } from '#lib/format.ts';
 	import { tokenUsageLayout, bustReasonKey } from '#lib/components/molecules/TokenUsage.logic.ts';
@@ -11,7 +10,6 @@
 	import AdapterIcon from '#lib/components/atoms/AdapterIcon.svelte';
 	import ThreadMenu from './ThreadMenu.svelte';
 	import ContextMeter from './ContextMeter.svelte';
-	import TokenUsage from '#lib/components/molecules/TokenUsage.svelte';
 	import LangfuseChip from '#lib/components/molecules/LangfuseChip.svelte';
 	import { Badge, Icon, IconButton, Popover, Select, Switch, Text, WorkingDir } from '@dorsk/tsumikit';
 	import { harnessModelsFallback } from '#lib/domainTables.ts';
@@ -274,7 +272,19 @@
 	{/if}
 	<div class="meta-trail">
 	<span class="ctx"><ContextMeter {session} {archived} /></span>
-	<span class="tokens"><TokenUsage usage={session.token_usage} /></span>
+	<span class="tokens"
+		><Text
+			numeric
+			nowrap
+			size="xs"
+			tone="muted"
+			title={m.drawer_meta_tokens_title({
+				in: compact(Number(usage.tokens_in)),
+				out: compact(Number(usage.tokens_out)),
+				cache: compact(totals.cacheTotal)
+			})}>{m.drawer_meta_tokens({ tokens: compact(totals.total) })}</Text
+		></span
+	>
 	<span class="langfuse"><LangfuseChip id={session.id} /></span>
 	{@render modelMeta('drawer')}
 	<Popover
