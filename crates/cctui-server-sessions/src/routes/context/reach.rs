@@ -10,7 +10,7 @@ use uuid::Uuid;
 use super::{
     BulkContextOutcome, BulkContextResponse, BulkContextUpdate, COLS, ContextItem, ContextItemSpec,
     ContextMatch, ContextMatchLists, ContextMatchSet, ContextReach, Row, clean_match, clean_spec,
-    db_err, get_one, spec_of, targets,
+    db_err, get_one, is_unborn_proposal, spec_of, targets,
 };
 use crate::auth::AuthContext;
 use crate::context::SessionsContext;
@@ -48,11 +48,26 @@ pub fn hold_agent_reach(base: &ContextMatch, next: &mut ContextMatch) -> Result<
             "an agent cannot set reach or dispatch: a human sets them in Settings → Context",
         ));
     }
+    keep_reach(base, next);
+    Ok(())
+}
+
+fn keep_reach(base: &ContextMatch, next: &mut ContextMatch) {
     next.reach = base.reach;
     next.dispatch = base.dispatch;
     next.dispatchers.clone_from(&base.dispatchers);
     next.profiles.clone_from(&base.profiles);
-    Ok(())
+}
+
+/// What approving `item`'s proposal makes live: the proposed content under the
+/// item's reach as it stands now, or the default reach for an agent's new item.
+#[must_use]
+pub fn approved_spec(item: &ContextItem) -> Option<ContextItemSpec> {
+    let mut spec = item.pending.clone()?;
+    let default = ContextMatch::default();
+    let base = if is_unborn_proposal(item) { &default } else { &item.match_ };
+    keep_reach(base, &mut spec.match_);
+    Some(spec)
 }
 
 fn lists(l: ContextMatchLists) -> Result<ContextMatch, AppError> {
@@ -284,6 +299,55 @@ mod tests {
         assert_eq!((rewritten.reach, rewritten.dispatch), (ContextReach::AllUsers, true));
         assert_eq!(rewritten.dispatchers, ["kube"]);
         assert_eq!(rewritten.paths, ["/w"]);
+    }
+
+    #[test]
+    fn an_approval_takes_the_content_and_keeps_the_live_reach() {
+        let live = ContextMatch {
+            reach: ContextReach::AllUsers,
+            dispatch: true,
+            dispatchers: strings(&["kube"]),
+            ..ContextMatch::default()
+        };
+        let stale = ContextMatch { paths: strings(&["/w"]), ..ContextMatch::default() };
+        let item = ContextItem {
+            id: Uuid::new_v4(),
+            user_id: Uuid::new_v4(),
+            kind: "memory".into(),
+            name: "note".into(),
+            title: "note".into(),
+            body: "live".into(),
+            scope: "user".into(),
+            scope_ref: None,
+            match_: live,
+            tags: Vec::new(),
+            enabled: true,
+            version: 3,
+            pending: Some(ContextItemSpec {
+                body: "proposed".into(),
+                match_: stale,
+                ..memory("note")
+            }),
+            created_by_session: Some("agent-1".into()),
+            updated_by_session: Some("agent-1".into()),
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        };
+        let spec = approved_spec(&item).expect("pending");
+        assert_eq!(spec.body, "proposed");
+        assert_eq!(spec.match_.paths, ["/w"], "the proposed filter");
+        assert_eq!((spec.match_.reach, spec.match_.dispatch), (ContextReach::AllUsers, true));
+        assert_eq!(spec.match_.dispatchers, ["kube"]);
+
+        let mut unborn = item.clone();
+        unborn.version = 1;
+        unborn.enabled = false;
+        unborn.body = String::new();
+        let spec = approved_spec(&unborn).expect("pending");
+        assert_eq!((spec.match_.reach, spec.match_.dispatch), (ContextReach::Owner, false));
+        assert!(spec.match_.dispatchers.is_empty(), "an agent's new item gets the default reach");
+
+        assert!(approved_spec(&ContextItem { pending: None, ..item }).is_none());
     }
 
     async fn test_pool(tag: &str) -> Option<PgPool> {
