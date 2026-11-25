@@ -98,3 +98,20 @@ describe('InstanceSection auto-save', () => {
 		expect(api.setSelfUpdateTarget).not.toHaveBeenCalled();
 	});
 });
+
+describe('InstanceSection labels', () => {
+	it('shows no admin or server scope pills', async () => {
+		await render();
+		const leaves = [...document.body.querySelectorAll('*')]
+			.filter((el) => el.children.length === 0)
+			.map((el) => el.textContent?.trim());
+		expect(leaves).not.toContain(m.settings_scope_admin());
+		expect(leaves).not.toContain(m.settings_scope_server());
+	});
+
+	it('names the self-update row once', async () => {
+		await render();
+		const text = document.body.textContent ?? '';
+		expect(text.split(m.settings_self_update_label()).length - 1).toBe(1);
+	});
+});

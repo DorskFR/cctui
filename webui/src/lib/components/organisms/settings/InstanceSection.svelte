@@ -100,14 +100,12 @@
 	});
 </script>
 
-<SettingSection id="instance-general" icon="⚙" title={m.settings_sec_general()} admin>
+<SettingSection id="instance-general" icon="⚙" title={m.settings_sec_general()}>
 	{#if isAdmin}
-		<SettingGroup title={m.settings_group_server()}>
+		<SettingGroup>
 			<SettingRow
 				label={m.settings_admin_instance_name_label()}
 				help={m.settings_admin_instance_name_help()}
-				server
-				admin
 			>
 				<Input
 					bind:value={instanceDraft}
@@ -126,7 +124,7 @@
 			</SettingRow>
 		</SettingGroup>
 		{#if selfUpdate}
-			<SettingGroup title={m.settings_self_update_label()}>
+			<SettingGroup>
 				<SettingRow
 					label={m.settings_self_update_label()}
 					help={suTarget?.source === 'env'

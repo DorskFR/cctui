@@ -151,7 +151,7 @@
 					{half === 'stt' ? m.settings_speech_hint_stt() : m.settings_speech_hint_tts()}
 				</p>
 			{/each}
-			<SettingRow label={m.settings_speech_enabled()} help={m.settings_speech_help()} server admin>
+			<SettingRow label={m.settings_speech_enabled()} help={m.settings_speech_help()}>
 				<Switch
 					checked={draft.enabled}
 					label={m.settings_speech_enabled()}
@@ -159,7 +159,7 @@
 					onclick={() => draft && (draft.enabled = !draft.enabled)}
 				/>
 			</SettingRow>
-			<SettingRow label={m.settings_speech_url()} server admin>
+			<SettingRow label={m.settings_speech_url()}>
 				<Input
 					value={draft.base_url}
 					placeholder="https://speech.example/v1"
@@ -167,7 +167,7 @@
 					oninput={(e: Event) => draft && (draft.base_url = inputValue(e))}
 				/>
 			</SettingRow>
-			<SettingRow label={m.settings_speech_key()} server admin wide selfLabelled>
+			<SettingRow label={m.settings_speech_key()} wide selfLabelled>
 				<div class="line">
 					<Badge size="sm">{info.has_key ? m.settings_speech_key_set() : m.settings_speech_key_unset()}</Badge>
 					<Input
@@ -186,7 +186,7 @@
 				</div>
 			</SettingRow>
 			{#each pickers as [field, label, options] (field)}
-				<SettingRow {label} server admin>
+				<SettingRow {label}>
 					<Select
 						value={draft[field]}
 						aria-label={label}
@@ -207,8 +207,6 @@
 			<SettingRow
 				label={m.settings_speech_summary_model()}
 				help={m.settings_speech_summary_model_help()}
-				server
-				admin
 			>
 				<Select
 					value={draft.summary_model}
@@ -222,7 +220,7 @@
 					{/each}
 				</Select>
 			</SettingRow>
-			<SettingRow label={m.settings_speech_stt_language()} server admin>
+			<SettingRow label={m.settings_speech_stt_language()}>
 				<Input
 					value={draft.stt_language ?? ''}
 					placeholder="en"
@@ -230,7 +228,7 @@
 					oninput={(e: Event) => draft && (draft.stt_language = inputValue(e))}
 				/>
 			</SettingRow>
-			<SettingRow label={m.settings_speech_stt_part()} help={m.settings_speech_stt_part_help()} server admin>
+			<SettingRow label={m.settings_speech_stt_part()} help={m.settings_speech_stt_part_help()}>
 				<Input
 					type="number"
 					min="1"
@@ -242,7 +240,7 @@
 					oninput={(e: Event) => draft && (draft.stt_part_ms = partMs(e))}
 				/>
 			</SettingRow>
-			<SettingRow label={m.settings_speech_tts_format()} server admin>
+			<SettingRow label={m.settings_speech_tts_format()}>
 				<Select
 					value={draft.tts_format}
 					aria-label={m.settings_speech_tts_format()}

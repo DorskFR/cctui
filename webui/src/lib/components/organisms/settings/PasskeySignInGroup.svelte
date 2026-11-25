@@ -31,8 +31,6 @@
 		<SettingRow
 			label={m.settings_passkeys_auto_prompt_label()}
 			help={m.settings_passkeys_auto_prompt_help()}
-			server
-			admin
 		>
 			<Switch
 				bind:checked={() => cfg?.auto_prompt === true, (v) => setAutoPrompt(v)}

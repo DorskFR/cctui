@@ -13,7 +13,7 @@
 	const forbidden = $derived(overview.error instanceof ApiError && overview.error.status === 403);
 </script>
 
-<SettingSection id="redteam" icon="⚔" title={m.redteam_title()} description={m.redteam_desc()} admin>
+<SettingSection id="redteam" icon="⚔" title={m.redteam_title()} description={m.redteam_desc()}>
 	{#if overview.isPending}
 		<EmptyState size="compact" loading title={m.common_loading()} />
 	{:else if forbidden}

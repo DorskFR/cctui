@@ -4,7 +4,6 @@
 	// wrappers on `settings` drive the runtime theme/fontScale singletons AND
 	// persist, so this section and the header pickers share one surface.
 	import {
-		Badge,
 		LookPicker,
 		MotionSettings,
 		SegmentedControl,
@@ -44,17 +43,11 @@
 	<Text style="font-size: {Math.min(scaleOf(o.value), 1.5)}em; line-height: 1" aria-hidden="true">A</Text>
 {/snippet}
 
-{#snippet lookHelp()}
-	{m.settings_look_help()} <Badge size="xs" border>{m.settings_this_device()}</Badge>
-{/snippet}
-{#snippet motionHelp()}
-	{m.settings_motion_help()} <Badge size="xs" border>{m.settings_this_device()}</Badge>
-{/snippet}
-{#snippet soundHelp()}
-	{m.settings_sound_help()} <Badge size="xs" border>{m.settings_this_device()}</Badge>
+{#snippet description()}
+	{m.settings_appearance_desc()} {m.settings_appearance_device_note()}
 {/snippet}
 
-<SettingSection id="theme" icon="◐" title={m.settings_sec_theme()} description={m.settings_appearance_desc()}>
+<SettingSection id="theme" icon="◐" title={m.settings_sec_theme()} descriptionSlot={description}>
 	<SettingGroup>
 		<SettingRow label={m.settings_theme_label()} help={m.settings_theme_help()}>
 			<Select
@@ -72,12 +65,12 @@
 				{/each}
 			</Select>
 		</SettingRow>
-		<SettingRow label={m.settings_look_label()} helpSlot={lookHelp} selfLabelled>
+		<SettingRow label={m.settings_look_label()} help={m.settings_look_help()} selfLabelled>
 			<div data-testid="appearance-look">
 				<LookPicker looks={LOOKS} experimental={false} size="sm" control label={m.settings_look_label()} />
 			</div>
 		</SettingRow>
-		<SettingRow label={m.settings_motion_label()} helpSlot={motionHelp} selfLabelled>
+		<SettingRow label={m.settings_motion_label()} help={m.settings_motion_help()} selfLabelled>
 			<div data-testid="appearance-motion">
 				<MotionSettings
 					size="sm"
@@ -88,7 +81,7 @@
 				/>
 			</div>
 		</SettingRow>
-		<SettingRow label={m.settings_sound_label()} helpSlot={soundHelp} selfLabelled>
+		<SettingRow label={m.settings_sound_label()} help={m.settings_sound_help()} selfLabelled>
 			<div data-testid="appearance-sound">
 				<SoundSettings
 					size="sm"
