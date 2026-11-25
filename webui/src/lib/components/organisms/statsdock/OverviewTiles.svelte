@@ -18,7 +18,7 @@
 	const pctOrDash = (v: number | null) => (v === null ? '–' : `${v}%`);
 	const label = (key: MetricKey) =>
 		key === 'live'
-			? m.home_stat_live()
+			? m.home_stat_working()
 			: key === 'needs_input'
 				? m.home_stat_needs_input()
 				: key === 'machines'
