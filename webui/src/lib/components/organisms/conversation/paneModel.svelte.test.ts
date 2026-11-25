@@ -99,7 +99,7 @@ describe('pane effects track only the props they read', () => {
 		const { props, spies } = build({ highlight: ['needle'] });
 		expect(spies.openBar).toHaveBeenCalledTimes(1);
 		expect(spies.openBar).toHaveBeenCalledWith('needle');
-		props.opened = session({ status: 'idle' } as Partial<SessionListItem>);
+		props.opened = session({ status: 'inactive' });
 		flushSync();
 		expect(spies.openBar).toHaveBeenCalledTimes(1);
 	});
