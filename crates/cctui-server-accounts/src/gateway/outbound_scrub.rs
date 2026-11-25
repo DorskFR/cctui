@@ -21,7 +21,11 @@ type CompiledCache = dashmap::DashMap<UserPatterns, Arc<CompiledPatterns>>;
 static SETTINGS_CACHE: LazyLock<SettingsCache> = LazyLock::new(SettingsCache::new);
 static COMPILED_CACHE: LazyLock<CompiledCache> = LazyLock::new(CompiledCache::new);
 
-pub(crate) async fn outbound_patterns(
+/// # Errors
+///
+/// A failed settings read; the caller refuses the request rather than forward
+/// an opted-in user's secrets unscrubbed.
+pub async fn outbound_patterns(
     pool: &sqlx::PgPool,
     session_token: &str,
 ) -> Result<Option<Arc<CompiledPatterns>>, sqlx::Error> {

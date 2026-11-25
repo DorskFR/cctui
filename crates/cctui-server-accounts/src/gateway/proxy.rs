@@ -397,6 +397,15 @@ pub trait ProxyContext:
         account: &Account,
         token: &str,
     ) -> impl Future<Output = ()> + Send;
+    /// Hosts without per-user settings leave the opt-in off.
+    fn outbound_scrub(
+        &self,
+        _session_token: &str,
+    ) -> impl Future<
+        Output = Result<Option<Arc<cctui_crypto::redact::CompiledPatterns>>, sqlx::Error>,
+    > + Send {
+        std::future::ready(Ok(None))
+    }
 }
 
 fn guard_context(state: &impl ProxyContext) -> GuardContext {
@@ -980,12 +989,7 @@ async fn observers(
         tracing::warn!(account = %acct.id, error = %e, "tool policy unavailable, refusing unguarded");
         StatusCode::SERVICE_UNAVAILABLE
     })?;
-    let outbound_scrub = super::outbound_scrub::outbound_patterns(
-        state.proxy_pool(),
-        session_token,
-    )
-    .await
-    .map_err(|e| {
+    let outbound_scrub = state.outbound_scrub(session_token).await.map_err(|e| {
         tracing::warn!(account = %acct.id, error = %e, "scrub setting unavailable, refusing");
         StatusCode::SERVICE_UNAVAILABLE
     })?;
