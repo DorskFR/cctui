@@ -7,7 +7,6 @@
 	import { Button, IconButton, Text, Timestamp } from '@dorsk/tsumikit';
 	import { m } from '#lib/paraglide/messages.js';
 	import { providerLabel } from '#lib/providers.ts';
-	import { fullTime } from './fullTime';
 	import { useAccountActions } from '#lib/queries/index.ts';
 	import { errMessage } from '#lib/api.ts';
 	import { toasts } from '#lib/toast.svelte.ts';
@@ -103,7 +102,7 @@
 	<div class="stats">
 		<Text as="span" size="xs" tone="faint">{m.providers_requests({ n: compact(p.request_count) })}</Text>
 		<Text as="span" size="xs" tone="faint">
-			{m.providers_used()} <span title={fullTime(p.last_used_at)}><Timestamp value={p.last_used_at} mode="relative" tone="inherit" details={false} /></span>
+			{m.providers_used()} <Timestamp value={p.last_used_at} mode="relative" tone="inherit" />
 		</Text>
 	</div>
 	{/if}

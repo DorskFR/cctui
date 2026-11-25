@@ -9,7 +9,6 @@
 	import { exhaustedWindow } from '#lib/components/organisms/accounts/pools.logic.ts';
 	import { accountHandleDrag } from '#lib/components/organisms/accounts/handleDrag.svelte.ts';
 	import { providerLabel } from '#lib/providers.ts';
-	import { fullTime } from '#lib/components/organisms/accounts/fullTime.ts';
 	import {
 		componentNames,
 		indicatorTone
@@ -195,12 +194,11 @@
 			<span class="exhausted">
 				<span class="dot"></span>
 				<Text as="span" size="xs" tone="danger">
-					{exhaustedLabel}{#if exhausted.window.resets_at}{' · '}<span title={fullTime(exhausted.window.resets_at)}><Timestamp
+					{exhaustedLabel}{#if exhausted.window.resets_at}{' · '}<Timestamp
 							value={exhausted.window.resets_at}
 							mode="relative"
 							tone="inherit"
-							details={false}
-						/></span>{/if}
+						/>{/if}
 				</Text>
 			</span>
 		{/if}
@@ -234,7 +232,7 @@
 				<Text as="span" tone="faint" size="xs">{r.family}</Text>
 				<Text as="span" size="sm">{m.accounts_redirect_to({ target: r.targetName })}</Text>
 				{#if r.until}
-					<Text as="span" tone="faint" size="xs">{m.accounts_until()} <span title={fullTime(r.until)}><Timestamp value={r.until} mode="relative" tone="inherit" details={false} /></span></Text>
+					<Text as="span" tone="faint" size="xs">{m.accounts_until()} <Timestamp value={r.until} mode="relative" tone="inherit" /></Text>
 				{/if}
 			</Badge>
 		{/each}
@@ -313,7 +311,7 @@
 		{/if}
 		<span class="spacer"></span>
 		<Text as="span" size="xs" tone="faint">
-			{m.accounts_created()} <span title={fullTime(a.created_at)}><Timestamp value={a.created_at} mode="short-iso" tone="inherit" details={false} /></span>
+			{m.accounts_created()} <Timestamp value={a.created_at} mode="short-iso" tone="inherit" />
 		</Text>
 	</footer>
 	{/if}
