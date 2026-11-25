@@ -2475,6 +2475,9 @@
 	"usage_battery_pace_neutral": "on pace",
 	"usage_battery_pace_wall": "wall in ~{time}",
 	"usage_battery_resets_in": "resets in {time}",
+	"usage_gauge_aria": "Worst usage across accounts: {window} {pct}%",
+	"usage_gauge_open_accounts": "Open accounts",
+	"usage_gauge_weekly_short": "7d",
 	"usage_notices_enabled": "Notify sessions on usage steps",
 	"usage_notices_help": "Tell running sessions, in their next turn, each time this account crosses another step of a 5h, weekly or per-model usage window (percentage, soft-limit cap, reset time and countdown) so an orchestrator can pace itself. Off by default.",
 	"usage_notices_label": "Usage notices",
@@ -3353,11 +3356,6 @@
 		}
 	],
 	"list_auto_approve": "auto-approve",
-	"usage_battery_aggregate_aria": "Usage across accounts: 5h {five}, weekly {weekly}",
-	"usage_battery_aggregate_title": "All accounts (worst headroom)",
-	"usage_battery_aria": "Usage: {account} {provider}, 5h {five}, weekly {weekly}",
-	"usage_battery_unknown": "unknown",
-	"usage_battery_weekly": "weekly",
 	"dispatch_failed_dispatched_at": "Dispatched {at}",
 	"dispatch_failed_prompt_file": "Prompt file: {file}",
 	"spawn_optional_settings": "Optional settings"

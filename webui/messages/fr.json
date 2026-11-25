@@ -2475,6 +2475,9 @@
 	"usage_battery_pace_neutral": "dans le rythme",
 	"usage_battery_pace_wall": "mur dans ~{time}",
 	"usage_battery_resets_in": "réinitialisation dans {time}",
+	"usage_gauge_aria": "Utilisation la plus haute des comptes : {window} {pct} %",
+	"usage_gauge_open_accounts": "Ouvrir les comptes",
+	"usage_gauge_weekly_short": "7 j",
 	"usage_notices_enabled": "Prévenir les sessions à chaque palier",
 	"usage_notices_help": "Prévenez les sessions en cours, à leur prochain tour, chaque fois que ce compte franchit un nouveau palier d'une fenêtre d'utilisation 5 h, hebdomadaire ou par modèle (pourcentage, plafond souple, heure de réinitialisation et compte à rebours) pour qu'un orchestrateur puisse se rythmer. Désactivé par défaut.",
 	"usage_notices_label": "Avis d'utilisation",
@@ -3353,11 +3356,6 @@
 		}
 	],
 	"list_auto_approve": "approbation auto",
-	"usage_battery_aggregate_aria": "Consommation tous comptes : 5h {five}, hebdo {weekly}",
-	"usage_battery_aggregate_title": "Tous les comptes (marge la plus faible)",
-	"usage_battery_aria": "Consommation : {account} {provider}, 5h {five}, hebdo {weekly}",
-	"usage_battery_unknown": "inconnu",
-	"usage_battery_weekly": "hebdo",
 	"dispatch_failed_dispatched_at": "Dispatché {at}",
 	"dispatch_failed_prompt_file": "Fichier de prompt : {file}",
 	"spawn_optional_settings": "Paramètres optionnels"
