@@ -717,6 +717,7 @@
 	"drawer_fork_title": "Bifurquer vers une nouvelle conversation (avec changement de modèle optionnel)",
 	"drawer_interrupt_label": "Interrompre le tour",
 	"drawer_interrupt_title": "Interrompre le tour en cours",
+	"drawer_stop": "Arrêter",
 	"drawer_meta_details": "Détails de la session",
 	"drawer_thread_previous": "Session précédente du fil",
 	"drawer_thread_next": "Session suivante du fil",

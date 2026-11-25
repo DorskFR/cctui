@@ -17,10 +17,8 @@
 		compact,
 		collapsed,
 		box,
-		style,
-		renaming,
-		onstartrename,
-		onsaverename,
+		working = false,
+		onrename,
 		onsearch,
 		oninterrupt,
 		onarchive,
@@ -39,10 +37,9 @@
 		compact: boolean;
 		collapsed: boolean;
 		box: 'sm' | 'md';
-		style?: string;
-		renaming: boolean;
-		onstartrename: () => void;
-		onsaverename: () => void;
+		/** A turn is running: the tile, which has no inline Stop, offers it here. */
+		working?: boolean;
+		onrename: () => void;
 		onsearch?: () => void;
 		oninterrupt: () => void;
 		onarchive: () => void;
@@ -75,34 +72,28 @@
 	);
 
 	const overflowItems = $derived<MenuItem[]>([
-		...(collapsed
+		...(collapsed && onsearch
 			? [
-					renaming
-						? { label: m.common_save(), icon: 'check' as const, onselect: onsaverename }
-						: { label: m.drawer_rename(), icon: 'edit' as const, onselect: onstartrename },
-					...(onsearch
-						? [
-								{
-									label: m.conversation_search_label(),
-									icon: 'search' as const,
-									attrs: { title: m.conversation_search_title() },
-									onselect: onsearch
-								}
-							]
-						: [])
+					{
+						label: m.conversation_search_label(),
+						icon: 'search' as const,
+						attrs: { title: m.conversation_search_title() },
+						onselect: onsearch
+					}
 				]
 			: []),
-		...(compact && !archived
+		...(compact && working && !archived
 			? [
 					{
 						label: m.drawer_interrupt_label(),
 						icon: 'stop' as const,
 						attrs: { title: m.drawer_interrupt_title() },
 						onselect: oninterrupt
-					},
-					{ label: m.drawer_archive(), icon: 'archive' as const, onselect: onarchive }
+					}
 				]
 			: []),
+		{ label: m.drawer_rename(), icon: 'edit' as const, onselect: onrename },
+		...(archived ? [] : [{ label: m.drawer_archive(), icon: 'archive' as const, onselect: onarchive }]),
 		{
 			label: m.drawer_copy_link_label(),
 			icon: 'link' as const,
@@ -171,7 +162,7 @@
 	]);
 </script>
 
-<Menu label={m.drawer_more_actions()} items={overflowItems} placement="bottom-end" {box} {style}>
+<Menu label={m.drawer_more_actions()} items={overflowItems} placement="bottom-end" variant="ghost" {box}>
 	{#snippet trigger()}
 		<span class="mtrig" data-journey="actions" title={m.drawer_more_actions()}>
 			<Icon name="more" size={18} />

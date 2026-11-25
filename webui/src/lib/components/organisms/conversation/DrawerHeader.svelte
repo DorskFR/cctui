@@ -7,7 +7,7 @@
 	import type { LabelHandlers } from './headerLabels';
 	import RebindTrail from '#lib/components/molecules/RebindTrail.svelte';
 	import SessionGlyphs from '#lib/components/molecules/SessionGlyphs.svelte';
-	import { IconButton, Toolbar } from '@dorsk/tsumikit';
+	import { Button, IconButton, Spinner, Toolbar } from '@dorsk/tsumikit';
 	import HeaderMeta from './HeaderMeta.svelte';
 	import HeaderLabels from './HeaderLabels.svelte';
 	import DrawerTitle from './DrawerTitle.svelte';
@@ -24,6 +24,7 @@
 		showStatusBadge,
 		maximized = false,
 		compact = false,
+		working = false,
 		onmaximize,
 		onclose,
 		onrename,
@@ -59,6 +60,8 @@
 		/** Tile chrome: one row only — no meta row, no label strip, every action
 		 *  but maximize behind the ⋯ menu. */
 		compact?: boolean;
+		/** A turn is running: the only time Stop is offered. */
+		working?: boolean;
 		onmaximize?: () => void;
 		/** Omitted in a tile, which has nothing to close back to. */
 		onclose?: () => void;
@@ -113,18 +116,16 @@
 		onrename(n);
 	}
 
-	// Mirrors the Toolbar's `collapseBelow`: the rename stand-in joins the menu
-	// only while its inline button is hidden.
+	// Mirrors the Toolbar's `collapseBelow`: search joins the menu only while
+	// its inline button is hidden.
 	const COLLAPSE_BELOW = 640;
 	let barWidth = $state(Infinity);
 	const collapsed = $derived(compact || barWidth < COLLAPSE_BELOW);
 
 	// One square per density for every control in the bar, so they share a
-	// height and a top edge whatever chrome or glyph they carry.
+	// height and a top edge whatever glyph they carry.
 	const box: 'sm' | 'md' = $derived(collapsed ? 'sm' : 'md');
-	// The popover-backed ⋯ trigger wears the chip chrome inline;
-	// IconButton gets it from `chip`.
-	const CHIP_CHROME = 'border-color: var(--border-strong); background: var(--surface)';
+	const canStop = $derived(working && !archived && !compact);
 
 	// Window-level so the chords work wherever focus sits, including the
 	// composer. `shortcuts` is what keeps N tiles from firing N times.
@@ -140,7 +141,7 @@
 <svelte:window onkeydown={onWinKey} />
 
 <div class="dhead" class:compact data-journey="header">
-	<div class="dbar" class:compact={collapsed} bind:clientWidth={barWidth}>
+	<div class="dbar" bind:clientWidth={barWidth}>
 	<Toolbar collapseBelow="{COLLAPSE_BELOW}px" density={collapsed ? 'compact' : 'default'}>
 		{#if onclose}
 			<IconButton icon="chevron-left" label={m.drawer_back()} {box} onclick={onclose} />
@@ -155,24 +156,19 @@
 		/>
 		<RebindTrail sessionId={session.id} />
 		<DrawerTitle {session} {compact} {showLabels} {labels} {renaming} bind:name={newName} onsubmit={doRename} />
+		{#if canStop}
+			<Button size="sm" title={m.drawer_interrupt_title()} onclick={oninterrupt} data-journey="stop">
+				<Spinner size={12} label="" />
+				{m.drawer_stop()}
+			</Button>
+		{/if}
 		{#if renaming}
-			<IconButton data-overflow chip {box} variant="default" icon="check" label={m.common_save()} onclick={doRename} />
-		{:else}
-			<IconButton
-				data-overflow
-				chip
-				{box}
-				variant="default"
-				icon="edit"
-				label={m.drawer_rename()}
-				onclick={startRename}
-			/>
+			<IconButton {box} variant="ghost" icon="check" label={m.common_save()} onclick={doRename} />
 		{/if}
 		{#if onmaximize}
 			<IconButton
-				chip
 				{box}
-				variant="default"
+				variant="ghost"
 				icon={maximized ? 'grid' : 'external'}
 				label={maximized ? m.tiles_restore() : m.tiles_maximize()}
 				onclick={onmaximize}
@@ -182,34 +178,12 @@
 			<IconButton
 				data-overflow
 				data-journey="find"
-				chip
 				{box}
-				variant="default"
+				variant="ghost"
 				icon="search"
 				label={m.conversation_search_label()}
 				title={m.conversation_search_title()}
 				onclick={onsearch}
-			/>
-		{/if}
-		{#if !archived && !compact}
-			<IconButton
-				chip
-				variant="default"
-				tone="warn"
-				{box}
-				icon="archive"
-				label={m.drawer_archive()}
-				onclick={onarchive}
-			/>
-			<IconButton
-				chip
-				variant="default"
-				tone="danger"
-				{box}
-				icon="stop"
-				label={m.drawer_interrupt_label()}
-				title={m.drawer_interrupt_title()}
-				onclick={oninterrupt}
 			/>
 		{/if}
 		<DrawerMenu
@@ -218,10 +192,8 @@
 			{compact}
 			{collapsed}
 			{box}
-			style={CHIP_CHROME}
-			{renaming}
-			onstartrename={startRename}
-			onsaverename={doRename}
+			{working}
+			onrename={startRename}
 			{onsearch}
 			{oninterrupt}
 			{onarchive}
@@ -275,16 +247,8 @@
 		gap: 0;
 		padding: var(--sp-1) var(--sp-2);
 	}
-	/* `chip` and `box` disagree in the kit: `.btn-chip:has(> svg:only-child)`
-	   takes its width from `--box-lg` and outranks `.btn-box-*`, so a chip
-	   action renders `--box-lg` wide and `box` tall. Pinning `--box-lg` to the
-	   row's box scale makes it the square `box` asks for. */
 	.dbar {
-		--box-lg: var(--box-md);
 		min-width: 0;
-	}
-	.dbar.compact {
-		--box-lg: var(--box-sm);
 	}
 	.hlabels {
 		display: flex;

@@ -23,15 +23,34 @@ describe('drawer header control chrome', () => {
 		expect(markup).not.toMatch(/box="(xs|sm|md|lg)"/);
 	});
 
-	it('gives every trailing control the same chip chrome', () => {
-		for (const label of ['m.drawer_archive()', 'm.drawer_interrupt_label()', 'm.drawer_rename()']) {
-			expect(named(label)).toContain('chip');
+	it('draws every header control unboxed, the ⋯ trigger included', () => {
+		expect(markup).not.toMatch(/\bchip\b/);
+		expect(header).not.toContain('CHIP_CHROME');
+		for (const c of controls.filter((x) => x.startsWith('<IconButton') && !x.includes('m.drawer_back()'))) {
+			expect(c, c).toContain('variant="ghost"');
 		}
-		expect(markup).not.toContain('chip={!collapsed}');
-		expect(named('<DrawerMenu')).toContain('style={CHIP_CHROME}');
-		expect(menu).toContain('placement="bottom-end" {box} {style}');
-		expect(header).toContain("const CHIP_CHROME = 'border-color: var(--border-strong); background: var(--surface)'");
+		expect(menu).toContain('placement="bottom-end" variant="ghost" {box}');
 		expect(header).not.toContain('--pop-trigger-');
+	});
+
+	it('keeps only back, title, search and ⋯; rename and archive live in ⋯', () => {
+		for (const icon of ['edit', 'archive', 'stop']) {
+			expect(markup, icon).not.toMatch(new RegExp(`<IconButton[^>]*icon="${icon}"`));
+		}
+		const items = menu.slice(menu.indexOf('const overflowItems'));
+		expect(items).toContain("{ label: m.drawer_rename(), icon: 'edit' as const, onselect: onrename }");
+		expect(items).toContain("...(archived ? [] : [{ label: m.drawer_archive(), icon: 'archive' as const, onselect: onarchive }])");
+	});
+
+	it('offers Stop only while a turn runs, outlined with a spinner', () => {
+		expect(header).toContain('working = false');
+		expect(header).toContain('const canStop = $derived(working && !archived && !compact)');
+		const stop = markup.slice(markup.indexOf('{#if canStop}'), markup.indexOf('{/if}', markup.indexOf('{#if canStop}')));
+		expect(stop).toContain('<Button size="sm"');
+		expect(stop).not.toMatch(/variant=|tone=/);
+		expect(stop).toContain('<Spinner size={12} label="" />');
+		expect(stop).toContain('{m.drawer_stop()}');
+		expect(stop).toContain('onclick={oninterrupt}');
 	});
 
 	it('leaves text size to Settings, not the drawer header', () => {
