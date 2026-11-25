@@ -4271,8 +4271,10 @@ pub fn remove_command(
 /// Archive a single session (+ its subagents) — the reusable core shared by the
 /// single-session route and the batch route.
 ///
-/// Dispatches `Remove`, marks the row
-/// `archived`, clears classifier signals, and drops it from the live registry.
+/// Marks the row `archived` and clears classifier signals, then dispatches
+/// `Remove` and drops it from the live registry. A human's archive holds that
+/// teardown for [`crate::undo_window::UNDO_WINDOW`], so an unarchive inside it
+/// finds the session still running.
 ///
 /// Pinned sessions are protected: without `force` a pinned session (or a
 /// pinned child of the session) is left untouched and the call reports
@@ -4324,44 +4326,35 @@ pub async fn archive_one<S: SessionsContext>(
     .bind(initiator.as_str())
     .fetch_all(state.pool())
     .await?;
-    // An archived session is over: its gateway credential dies with it, exactly
-    // as it does on a reported end. Without this an archived session keeps a
-    // live token, which still counts as load on its account in
-    // `in_flight_by_provider` for the whole recent-binding window and skews
-    // every election away from an account that is in fact free. The token row
-    // survives revoked and still names the account, so an unarchive + resume
-    // re-mints a fresh one (see `resolve_session_accounts`).
-    for id in &archived {
-        state.revoke_session_tokens(id).await;
-    }
-    // Deepest first, and always before the parent: a live descendant holds its
-    // parent's worktree, and `claude rm` refuses a job whose worktree is the
-    // working directory of a live session. Task-tool subagents are observe-only
-    // and covered by their parent's `Remove`; CctuiAgent children and forks own
-    // a claude job each, which stays in `claude agents` until removed.
-    for child in crate::store::sessions::job_children(&children, &archived) {
-        dispatch_remove(state, child, initiator).await;
-    }
-    dispatch_remove(state, session_id, initiator).await;
-    let children: Vec<String> =
-        children.into_iter().map(|c| c.id).filter(|c| archived.contains(c)).collect();
-    {
-        let mut registry = state.registry().write().await;
-        registry.deregister(session_id);
-        for child in &children {
-            registry.deregister(child);
-        }
-    }
-    crate::guard_step::forget(session_id);
-    for child in &children {
-        crate::guard_step::forget(child);
-    }
-    state.bus().deregister_session_stream(session_id);
-    for child in &children {
-        state.bus().deregister_session_stream(child);
+    let parent_archived = archived.iter().any(|id| id == session_id);
+    let teardown = ArchiveTeardown {
+        session_id: session_id.to_owned(),
+        job_children: crate::store::sessions::job_children(&children, &archived)
+            .into_iter()
+            .map(ToOwned::to_owned)
+            .collect(),
+        children: children.into_iter().map(|c| c.id).filter(|c| archived.contains(c)).collect(),
+        archived,
+        initiator,
+    };
+    let children = teardown.children.clone();
+    if parent_archived && matches!(actor, Actor::User(_)) {
+        let state = state.clone();
+        crate::undo_window::PendingTeardowns::global().schedule(
+            session_id,
+            children.clone(),
+            crate::undo_window::UNDO_WINDOW,
+            async move {
+                if still_archived(&state, &teardown.session_id).await {
+                    teardown.run(&state).await;
+                }
+            },
+        );
+    } else {
+        teardown.run(state).await;
     }
     tracing::info!(session_id = %session_id, children = children.len(), "session archived");
-    if archived.iter().any(|id| id == session_id) {
+    if parent_archived {
         let detail = archived_detail(children.len(), initiator, swept.then_some(kept.len()));
         events::record(
             state,
@@ -4369,6 +4362,60 @@ pub async fn archive_one<S: SessionsContext>(
         );
     }
     Ok(ArchiveOutcome::Archived)
+}
+
+/// What an archive tears down once its undo window has passed.
+struct ArchiveTeardown {
+    session_id: String,
+    archived: Vec<String>,
+    job_children: Vec<String>,
+    children: Vec<String>,
+    initiator: RemoveInitiator,
+}
+
+impl ArchiveTeardown {
+    async fn run<S: SessionsContext>(&self, state: &S) {
+        // An archived session is over: its gateway credential dies with it, as
+        // on a reported end, or its live token keeps counting as load on its
+        // account in `in_flight_by_provider`. The revoked row still names the
+        // account, so an unarchive + resume re-mints a fresh one.
+        for id in &self.archived {
+            state.revoke_session_tokens(id).await;
+        }
+        // Deepest first, and always before the parent: a live descendant holds
+        // its parent's worktree, and `claude rm` refuses a job whose worktree is
+        // the working directory of a live session. Task-tool subagents are
+        // covered by their parent's `Remove`; CctuiAgent children and forks own
+        // a claude job each.
+        for child in &self.job_children {
+            dispatch_remove(state, child, self.initiator).await;
+        }
+        dispatch_remove(state, &self.session_id, self.initiator).await;
+        {
+            let mut registry = state.registry().write().await;
+            registry.deregister(&self.session_id);
+            for child in &self.children {
+                registry.deregister(child);
+            }
+        }
+        crate::guard_step::forget(&self.session_id);
+        for child in &self.children {
+            crate::guard_step::forget(child);
+        }
+        state.bus().deregister_session_stream(&self.session_id);
+        for child in &self.children {
+            state.bus().deregister_session_stream(child);
+        }
+    }
+}
+
+/// A DB error counts as archived, so the teardown runs as it would have.
+async fn still_archived<S: SessionsContext>(state: &S, session_id: &str) -> bool {
+    sqlx::query_scalar::<_, String>("SELECT status FROM sessions WHERE id = $1")
+        .bind(session_id)
+        .fetch_optional(state.pool())
+        .await
+        .map_or(true, |status| status.as_deref() == Some("archived"))
 }
 
 /// `session.archived` detail. A sweep also records how many live descendants
@@ -4403,8 +4450,12 @@ async fn unarchive_one<S: SessionsContext>(
     session_id: &str,
     by: uuid::Uuid,
 ) -> Result<(), sqlx::Error> {
+    let undone = crate::undo_window::PendingTeardowns::global().cancel(session_id);
+    for child in undone.iter().flatten() {
+        crate::store::sessions::set_inactive(state.pool(), child, true).await?;
+    }
     if crate::store::sessions::set_inactive(state.pool(), session_id, true).await? {
-        tracing::info!(session_id = %session_id, "session unarchived");
+        tracing::info!(session_id = %session_id, undone = undone.is_some(), "session unarchived");
         events::record(
             state,
             Event::new(kind::SESSION_UNARCHIVED, Actor::User(by)).session(session_id),

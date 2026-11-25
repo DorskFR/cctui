@@ -1007,12 +1007,69 @@ async fn archiving_forgets_the_guard_step_mirror() {
         &sid,
         true,
         RemoveInitiator::User,
-        cctui_server_kernel::state_events::Actor::User(uid),
+        cctui_server_kernel::state_events::Actor::System,
     )
     .await
     .unwrap();
     assert_eq!(outcome, super::ArchiveOutcome::Archived);
     assert_eq!(cctui_server_sessions::guard_step::get(&sid), None);
+}
+
+#[tokio::test]
+async fn an_undo_inside_the_window_keeps_the_session_alive() {
+    use cctui_server_sessions::undo_window::PendingTeardowns;
+    let Some(url) = cctui_server_kernel::test_support::db_url("undo_inside_the_window") else {
+        return;
+    };
+    let pool = sqlx::PgPool::connect(&url).await.expect("connect test db");
+    let state = crate::state::AppState::for_test(pool.clone());
+    let (uid, machine) = crate::events::tests::seed_user_machine(&pool, "arch-undo").await;
+    let sid = crate::events::tests::seed_session(&pool, uid, machine, Some("u")).await;
+    let step = cctui_proto::guard_step::GuardStepState { step: 3, ..Default::default() };
+    cctui_server_sessions::guard_step::record(sid.clone(), step.clone());
+
+    let outcome = super::archive_one(
+        &state,
+        &sid,
+        true,
+        RemoveInitiator::User,
+        cctui_server_kernel::state_events::Actor::User(uid),
+    )
+    .await
+    .unwrap();
+    assert_eq!(outcome, super::ArchiveOutcome::Archived);
+    assert!(PendingTeardowns::global().is_pending(&sid), "a human archive waits out the window");
+    assert_eq!(
+        cctui_server_sessions::guard_step::get(&sid),
+        Some(step.clone()),
+        "no teardown inside the window"
+    );
+
+    let ctx = AuthContext {
+        user_id: uid,
+        key_id: uuid::Uuid::new_v4(),
+        machine_id: None,
+        scopes: std::collections::BTreeSet::new(),
+    };
+    let status = super::unarchive_session(
+        axum::extract::State(state.clone()),
+        axum::Extension(ctx),
+        axum::extract::Path(sid.clone()),
+    )
+    .await
+    .unwrap();
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    assert!(!PendingTeardowns::global().is_pending(&sid), "the undo cancels the teardown");
+    assert_eq!(cctui_server_sessions::guard_step::get(&sid), Some(step));
+    let row: String = sqlx::query_scalar("SELECT status FROM sessions WHERE id = $1")
+        .bind(&sid)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(row, "inactive");
+
+    cctui_server_sessions::guard_step::forget(&sid);
+    sqlx::query("DELETE FROM sessions WHERE id = $1").bind(&sid).execute(&pool).await.unwrap();
 }
 
 async fn search_without_transcript_search(
