@@ -396,3 +396,11 @@ describe('meta row type', () => {
 		expect(css).not.toMatch(/\.context-from \{[^}]*font-mono/);
 	});
 });
+
+describe('result line meta', () => {
+	it('names the tool without an arrow glyph, the RESULT label already says what it is', async () => {
+		const el = await render(line({ role: 'result', tool: 'Bash' }));
+		expect(el.querySelector('.lmeta .tool-name')?.textContent).toBe('Bash');
+		expect(el.querySelector('.lmeta .role')?.textContent).toBe('result');
+	});
+});

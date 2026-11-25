@@ -192,7 +192,7 @@
 			</span>
 		{/if}
 		{#if ln.role === 'tool' || ln.role === 'result'}
-			<span class="who tool-name">{ln.role === 'result' ? '↳ ' : ''}{ln.tool ?? 'tool'}</span>
+			<span class="who tool-name">{ln.tool ?? 'tool'}</span>
 		{/if}
 		{#if ln.role === 'peer' && ln.peerRoom}
 			<Badge size="xs" color="var(--bc)">{m.rooms_line_from_room({ room: ln.peerRoom })}</Badge>
