@@ -56,6 +56,14 @@ describe('drawer header meta row', () => {
 		for (const msgs of [en, fr]) expect(JSON.parse(msgs).drawer_cost_plan).toBeTruthy();
 	});
 
+	it('keeps mono for the branch and hook rules only; figures use tabular sans', () => {
+		const monos = markup.match(/<Badge[^>]*\bmono\b|variant="code"/g) ?? [];
+		expect(monos).toHaveLength(2);
+		expect(markup).toContain('<Badge mono title={m.sessions_branch_title({ branch })}');
+		expect(markup).toContain('<Text variant="code" size="xs" tone="muted">{describeRule(rule)}</Text>');
+		expect(popover).toContain('<Text numeric size="xs" tone="muted">{row.v}</Text>');
+	});
+
 	it('declares the model-edit base rule before the query that hides it', () => {
 		expect(css.indexOf('.model-edit {')).toBeLessThan(css.indexOf('@container drawer-head (max-width: 26rem)'));
 	});

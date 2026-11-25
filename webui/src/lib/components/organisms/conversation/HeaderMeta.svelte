@@ -232,7 +232,6 @@
 			<span class="model">
 				<Badge
 					as="button"
-					mono
 					title={m.drawer_change_model_title()}
 					onclick={openModelEditor}
 					style="min-width:0;max-width:100%"
@@ -242,13 +241,12 @@
 		{/if}
 	{:else if (session.model || session.effort) && !onfork}
 		<span class="model">
-			<Badge mono style="min-width:0;max-width:100%">{@render modelText(session.model ?? '')}</Badge>
+			<Badge style="min-width:0;max-width:100%">{@render modelText(session.model ?? '')}</Badge>
 		</span>
 	{:else if session.model || session.effort}
 		<span class="model">
 			<Badge
 				as="button"
-				mono
 				title={m.drawer_no_inplace_model_title()}
 				onclick={onfork}
 				style="min-width:0;max-width:100%"
@@ -335,11 +333,11 @@
 					{ k: m.drawer_details_cache_write(), v: compact(Number(usage.cache_creation_tokens)) }
 				] as row (row.k)}
 					<span class="mp-key"><Text size="xs" tone="faint">{row.k}</Text></span>
-					<span class="mp-num"><Text variant="code" size="xs" tone="muted">{row.v}</Text></span>
+					<span class="mp-num"><Text numeric size="xs" tone="muted">{row.v}</Text></span>
 				{/each}
 				<span class="mp-key"><Text size="xs" tone="muted" weight="semibold">{m.drawer_details_total()}</Text></span>
 				<span class="mp-num"
-					><Text variant="code" size="xs" tone="accent" weight="semibold"
+					><Text numeric size="xs" weight="semibold"
 						>{compact(totals.total)}</Text
 					></span
 				>
@@ -365,7 +363,7 @@
 			{#if calls > 0}
 				<div class="mp-row">
 					<span class="mp-key"><Text size="xs" tone="faint">{m.drawer_details_calls()}</Text></span>
-					<span class="mp-num"><Text variant="code" size="xs" tone="muted">{calls}</Text></span>
+					<span class="mp-num"><Text numeric size="xs" tone="muted">{calls}</Text></span>
 				</div>
 			{/if}
 			{#if hooks.kind !== 'none'}
