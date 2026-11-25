@@ -63,6 +63,7 @@ afterEach(cleanup);
 beforeEach(() => {
 	goto.mockClear();
 	versionData.latest_version = null;
+	versionData.version = '0.11.0';
 	sessionsData.sessions = [];
 	notify.enabled = false;
 });
@@ -133,14 +134,32 @@ describe('notifications', () => {
 	});
 });
 
-describe('the version block shows ui and srv only', () => {
-	it('renders ui and srv only, with the update state left to the avatar dot', () => {
+describe('versions stay out of the bar', () => {
+	it('prints no ui/srv version in the header', () => {
+		render();
+		const hd = document.querySelector('header.hd') as HTMLElement;
+		expect(hd.querySelector('.vers')).toBeNull();
+		expect(hd.textContent).not.toContain('srv v');
+		expect(hd.querySelector('.reload')).toBeNull();
+	});
+
+	it('shows a reload chip only when the ui and server builds differ', () => {
+		versionData.version = '0.12.0';
+		render();
+		const chip = document.querySelector('header.hd .reload') as HTMLElement;
+		expect(chip).not.toBeNull();
+		expect(chip.title).toContain('ui v0.11.0 · srv v0.12.0');
+	});
+
+	it('keeps the version in the account menu', async () => {
+		render();
+		await openUserMenu();
+		expect(rowByText('v0.11.0')).not.toBeNull();
+	});
+
+	it('leaves an available update to the avatar dot', () => {
 		versionData.latest_version = '0.12.0';
 		render();
-		const vers = document.querySelector('.vers') as HTMLElement;
-		expect(vers.textContent).toContain('ui v');
-		expect(vers.textContent).toContain('srv v0.11.0');
-		expect(vers.textContent).not.toContain('v0.12.0');
 		expect(document.querySelector('.pill [data-tsu="Avatar"] [data-tsu="Dot"]')).not.toBeNull();
 	});
 

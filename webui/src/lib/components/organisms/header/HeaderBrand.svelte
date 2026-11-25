@@ -2,12 +2,15 @@
 	import { updated } from '$app/state';
 	import { ws } from '#lib/ws.svelte.ts';
 	import { useVersion } from '#lib/queries/index.ts';
-	import { releaseChannel } from '#lib/releaseChannel.ts';
+	import { versionLine } from '#lib/releaseChannel.ts';
 	import { Text } from '@dorsk/tsumikit';
 	import NavLink from '#lib/components/atoms/NavLink.svelte';
 	import { m } from '#lib/paraglide/messages.js';
+	import { needsReload } from './version-chip.logic.ts';
 
 	const version = useVersion();
+	const srv = $derived(version.data?.version);
+	const reload = $derived(needsReload(__CLIENT_VERSION__, srv, updated.current));
 </script>
 
 <div class="lead">
@@ -23,29 +26,16 @@
 		class:mid={ws.status === 'connecting'}
 		title={m.nav_ws_status({ status: ws.status })}
 	></span>
-	<span class="vers">
-		<Text size="xs" tone="faint" variant="code">ui v{__CLIENT_VERSION__}</Text>
-		{#if version.data}
-			<NavLink href={version.data.commit_url} target="_blank" rel="noopener">
-				<Text size="xs" tone="faint" variant="code">srv v{version.data.version}</Text>
-			</NavLink>
-			{#if releaseChannel(version.data.version) === 'beta'}
-				<span title={m.release_channel_beta_title()}>
-					<Text size="xs" tone="accent" variant="code" weight="bold">{m.release_channel_beta()}</Text>
-				</span>
-			{/if}
-		{/if}
-		{#if updated.current}
-			<button
-				type="button"
-				class="reload"
-				title={m.reload_new_ui_title()}
-				onclick={() => location.reload()}
-			>
-				<Text size="xs" tone="accent" variant="code" weight="bold">{m.reload_new_ui_hint()}</Text>
-			</button>
-		{/if}
-	</span>
+	{#if reload}
+		<button
+			type="button"
+			class="reload"
+			title={`${versionLine(__CLIENT_VERSION__, srv)} · ${m.reload_new_ui_title()}`}
+			onclick={() => location.reload()}
+		>
+			<Text size="xs" tone="accent" weight="semibold" nowrap>{m.version_chip_reload()}</Text>
+		</button>
+	{/if}
 </div>
 
 <style>
@@ -75,27 +65,19 @@
 	.conn.mid {
 		background: var(--warn);
 	}
-	/* Two stacked lines cost no more width than one; below the nav breakpoint
-	   the block cannot fit, so it goes and the account menu carries it. */
-	.vers {
-		display: none;
-		flex-direction: column;
-		align-items: flex-start;
-		flex: none;
-		line-height: 1;
-		white-space: nowrap;
-	}
-	@media (min-width: 48rem) {
-		.vers {
-			display: flex;
-		}
-	}
 	.reload {
 		border: 0;
-		padding: 0;
-		background: none;
+		flex: none;
+		height: 24px;
+		padding: 0 var(--sp-2);
+		border-radius: var(--r-pill);
+		background: var(--bg-elevated-2);
 		cursor: pointer;
 		font: inherit;
-		text-decoration: underline;
+	}
+	@media (pointer: coarse) {
+		.reload {
+			min-height: 44px;
+		}
 	}
 </style>

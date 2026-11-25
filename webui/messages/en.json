@@ -1422,6 +1422,7 @@
 	"redacted_tag_pill_tooltip": "hidden by you",
 	"redacted_tag_unclosed": "Unclosed <redacted> tag: close it with </redacted>, or this text is sent and stored as written.",
 	"reload_new_ui_title": "A newer web UI has been deployed — reload to pick it up",
+	"version_chip_reload": "New version · reload",
 	"release_channel_beta": "beta",
 	"release_channel_beta_title": "Beta release channel: a pre-release build",
 	"resource_gauge_aria": "{machine}: CPU {cpu}, memory {mem}, disk {disk}",
@@ -3320,6 +3321,5 @@
 	"list_auto_approve": "auto-approve",
 	"events_filter_family_aria": "Event family",
 	"events_filter_severity_aria": "Severity",
-	"reload_new_ui_hint": "reload",
 	"spawn_optional_settings": "Optional settings"
 }

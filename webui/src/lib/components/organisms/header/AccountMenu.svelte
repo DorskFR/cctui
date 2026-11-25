@@ -1,5 +1,4 @@
 <script lang="ts">
-	import { MediaQuery } from 'svelte/reactivity';
 	import { useMe, useVersion } from '#lib/queries/index.ts';
 	import { releaseChannel, versionLine } from '#lib/releaseChannel.ts';
 	import { auth } from '#lib/auth.svelte.ts';
@@ -41,23 +40,17 @@
 		settings.notifyEnabled ? m.nav_notify_on_label() : m.nav_notify_off_label()
 	);
 
-	// Below the nav breakpoint `.vers` is hidden, so the menu carries the version.
-	const narrow = new MediaQuery('(max-width: 47.999rem)');
 	const srvVersion = $derived(version.data?.version);
 	const items = $derived<MenuItem[]>([
-		...(narrow.current
-			? [
-					{
-						label: versionLine(__CLIENT_VERSION__, srvVersion),
-						icon: 'git-commit' as const,
-						disabled: true,
-						tag:
-							releaseChannel(srvVersion ?? __CLIENT_VERSION__) === 'beta'
-								? m.release_channel_beta()
-								: undefined
-					}
-				]
-			: []),
+		{
+			label: versionLine(__CLIENT_VERSION__, srvVersion),
+			icon: 'git-commit' as const,
+			disabled: true,
+			tag:
+				releaseChannel(srvVersion ?? __CLIENT_VERSION__) === 'beta'
+					? m.release_channel_beta()
+					: undefined
+		},
 		...(latest
 			? [
 					{

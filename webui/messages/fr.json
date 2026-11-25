@@ -1422,6 +1422,7 @@
 	"redacted_tag_pill_tooltip": "masqué par vous",
 	"redacted_tag_unclosed": "Balise <redacted> non fermée : fermez-la avec </redacted>, sinon ce texte est envoyé et stocké tel quel.",
 	"reload_new_ui_title": "Une nouvelle interface web a été déployée — rechargez pour l'obtenir",
+	"version_chip_reload": "Nouvelle version · recharger",
 	"release_channel_beta": "bêta",
 	"release_channel_beta_title": "Canal bêta : une pré-version",
 	"resource_gauge_aria": "{machine} : CPU {cpu}, mémoire {mem}, disque {disk}",
@@ -3320,6 +3321,5 @@
 	"list_auto_approve": "approbation auto",
 	"events_filter_family_aria": "Famille d'événements",
 	"events_filter_severity_aria": "Gravité",
-	"reload_new_ui_hint": "recharger",
 	"spawn_optional_settings": "Paramètres optionnels"
 }

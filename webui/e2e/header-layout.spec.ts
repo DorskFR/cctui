@@ -41,26 +41,14 @@ async function openSessions(page: Page, viewport: { width: number; height: numbe
 		.toBe(true);
 }
 
-test('desktop: the version block clears every control in the tail', async ({ page }, testInfo) => {
+test('desktop: the bar carries no version block', async ({ page }, testInfo) => {
 	await openSessions(page, DESKTOP);
+	await expect(page.locator('header.hd .vers')).toHaveCount(0);
+	await expect(page.locator('header.hd')).not.toContainText(/srv v\d/);
 
-	const vers = page.locator('header.hd .vers');
-	await expect(vers).toBeVisible();
-	const versBox = (await vers.boundingBox()) as Box;
-
-	const neighbours = [
-		...(await boxes(page.locator('header.hd .tail > *'))),
-		...(await boxes(page.locator('header.hd .tail button, header.hd .tail a'))),
-		...(await boxes(page.locator('header.hd .conn'))),
-		...(await boxes(page.locator('header.hd .tabs a')))
-	];
-	expect(neighbours.length).toBeGreaterThan(0);
-
-	console.log('vers', JSON.stringify(versBox));
-	for (const n of neighbours) console.log('tail', n.label, JSON.stringify(n.box));
-
-	const hits = neighbours.filter((n) => intersects(versBox, n.box));
-	expect(hits.map((h) => h.label)).toEqual([]);
+	const tail = await boxes(page.locator('header.hd .tail > *'));
+	const tabs = await boxes(page.locator('header.hd .tabs a'));
+	for (const t of tail) for (const n of tabs) expect(intersects(t.box, n.box)).toBe(false);
 
 	await page.screenshot({
 		path: testInfo.outputPath('desktop-1280.png'),
@@ -68,16 +56,11 @@ test('desktop: the version block clears every control in the tail', async ({ pag
 	});
 });
 
-test('mobile: the version block yields instead of overlapping', async ({ page }, testInfo) => {
+test('mobile: the account menu carries the version', async ({ page }, testInfo) => {
 	await openSessions(page, MOBILE);
-
-	const vers = page.locator('header.hd .vers');
-	await expect(vers).toBeHidden();
-
-	const all = await boxes(page.locator('header.hd .vers'));
-	const neighbours = await boxes(page.locator('header.hd .tail > *'));
-	expect(neighbours.length).toBeGreaterThan(0);
-	for (const v of all) for (const n of neighbours) expect(intersects(v.box, n.box)).toBe(false);
+	await expect(page.locator('header.hd .vers')).toHaveCount(0);
+	await page.locator('header.hd .pill').click();
+	await expect(page.getByRole('menuitem', { name: /v(dev|\d+\.\d+\.\d+)/ })).toBeVisible();
 
 	await page.screenshot({
 		path: testInfo.outputPath('mobile-390.png'),
