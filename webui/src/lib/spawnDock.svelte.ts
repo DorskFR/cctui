@@ -11,11 +11,15 @@ export { SPAWN_DOCK_WIDTH, STATS_DOCK_WIDTH } from './dock';
 const wide = new MediaQuery('(min-width: 64rem)');
 const veryWide = new MediaQuery('(min-width: 96rem)');
 
+/** Set by the Sessions screen while a conversation is open: the spawn panel
+ *  folds back into the "New session" button so one primary action shows. */
+export const spawnDockHold = $state({ collapsed: false });
+
 /** Where the spawn form, the stats panel and the conversation are docked right now, and the
  *  width the Sessions screen must keep clear on each edge. */
 export function dockLayout(): DockLayout {
 	return resolveDocks({
-		spawn: settings.spawnDock,
+		spawn: spawnDockHold.collapsed ? { ...settings.spawnDock, enabled: false } : settings.spawnDock,
 		stats: settings.statsDock,
 		conversation: settings.conversationDock,
 		wide: wide.current,
@@ -26,7 +30,7 @@ export function dockLayout(): DockLayout {
 
 /** Which edge the spawn panel is docked to right now, or `null` when the
  *  Sessions screen should show the "+ New" button and modal instead (setting
- *  off, tiles mode, or the viewport is too narrow for a side panel). */
+ *  off, a conversation open, tiles mode, or the viewport is too narrow). */
 export function spawnDockSide(): SpawnDockSide | null {
 	return dockLayout().spawn;
 }

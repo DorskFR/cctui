@@ -18,7 +18,7 @@
 	import ConversationDrawer from '#lib/components/organisms/ConversationDrawer.svelte';
 	import ConversationDock from '#lib/components/organisms/ConversationDock.svelte';
 	import SpawnModal from '#lib/components/organisms/SpawnModal.svelte';
-	import { dockLayout } from '#lib/spawnDock.svelte.ts';
+	import { dockLayout, spawnDockHold } from '#lib/spawnDock.svelte.ts';
 	import StatsDock from '#lib/components/organisms/statsdock/StatsDock.svelte';
 	import SessionControls from '#lib/components/organisms/SessionControls.svelte';
 	import { Callout, ConfirmModal } from '@dorsk/tsumikit';
@@ -266,6 +266,17 @@
 		drafts.clear(LAST_DOCKED_SESSION);
 		sp.openSession = null;
 	};
+
+	$effect(() => {
+		const open = !!sp.liveOpen;
+		untrack(() => {
+			if (!open && spawnDockHold.collapsed) sp.showSpawn = false;
+			spawnDockHold.collapsed = open;
+		});
+	});
+	$effect(() => () => {
+		spawnDockHold.collapsed = false;
+	});
 
 	// live status changes from the websocket → refetch the list
 	$effect(() => {
