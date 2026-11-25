@@ -87,6 +87,24 @@ describe('popover triggers match their sibling toggles', () => {
 	});
 });
 
+describe('quick filter pills', () => {
+	it('share one neutral selected style with a check, whatever the role', async () => {
+		expect(toolbarSource).not.toContain('QUICK_TINT');
+		expect(toolbarSource).not.toContain('--role-');
+		const bar = await render({
+			view: { ...view(), msgFilter: { ...allFilter(true), user: false } }
+		});
+		const quick = [...bar.querySelectorAll<HTMLElement>('[data-journey="quick"]')];
+		expect(quick.length).toBe(3);
+		for (const q of quick) {
+			expect(q.classList.contains('tone-neutral'), q.textContent ?? '').toBe(true);
+			const on = q.getAttribute('aria-pressed') === 'true';
+			expect(!!q.querySelector('svg[data-tsu="Icon"]'), q.textContent ?? '').toBe(on);
+		}
+		expect(quick.some((q) => q.getAttribute('aria-pressed') === 'false')).toBe(true);
+	});
+});
+
 describe('pin glyph', () => {
 	it('uses the kit pin icon, not a star, in the toolbar', async () => {
 		const bar = await render();
@@ -110,7 +128,7 @@ describe('pin glyph', () => {
 
 	it('uses the same icon for the per-message action', () => {
 		expect(lineSource).not.toContain("pinned ? '★' : '☆'");
-		expect(lineSource).toContain('<Icon name="pin" size={16} filled={pinned} />');
+		expect(lineSource).toContain("icon: 'pin' as const,\n\t\t\t\t\t\tpressed: pinned,");
 	});
 });
 

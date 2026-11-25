@@ -56,12 +56,6 @@
 	// One pinned height for every control, so glyph fonts can't size them.
 	const CTL = 'height:var(--bar-ctl-h);box-sizing:border-box;padding-block:0;line-height:1';
 
-	const QUICK_TINT: Record<QuickFilterId, string> = {
-		assistant: 'var(--role-assistant)',
-		user: 'var(--role-user)',
-		tools: 'var(--role-tool)'
-	};
-
 	const offCount = $derived(MSG_CATEGORIES.filter((c) => !view.msgFilter[c]).length);
 
 	function quickTitle(id: QuickFilterId): string {
@@ -84,9 +78,8 @@
 </script>
 
 <div class="toolbar">
-	<!-- Quick category toggles + the full per-category picker. A quick chip is
-	     "on" only when every category it covers is on; a partly-on group gets a
-	     dashed border instead. -->
+	<!-- A quick chip is on only when every category it covers is on; a partly-on
+	     group gets a dashed border. -->
 	<div class="tagbar row" data-journey="filters" role="group" aria-label={m.conversation_msg_filter_aria()}>
 		{#each QUICK_FILTERS as q (q.id)}
 			<Toggle
@@ -94,10 +87,12 @@
 				data-journey="quick"
 				data-journey-key={q.id}
 				pressed={quickOn(view.msgFilter, q.id)}
-				style={`${CTL};--accent: ${QUICK_TINT[q.id]}${quickPartial(view.msgFilter, q.id) ? ';border-style:dashed' : ''}`}
+				tone="neutral"
+				style={`${CTL}${quickPartial(view.msgFilter, q.id) ? ';border-style:dashed' : ''}`}
 				title={quickTitle(q.id)}
 				onclick={() => toggleQuick(q.id)}
 			>
+				{#if quickOn(view.msgFilter, q.id)}<Icon name="check" size={12} />{/if}
 				{quickFilterLabel(q.id)}
 			</Toggle>
 		{/each}
