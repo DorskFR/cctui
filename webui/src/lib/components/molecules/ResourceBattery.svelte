@@ -1,10 +1,5 @@
 <script lang="ts">
 	import { now as clockNow } from '#lib/clock.svelte.ts';
-	// Header resource strip: one cell per machine ticked in Settings › Resource
-	// monitoring, three battery-style bars (CPU, memory, disk) toned green /
-	// orange / red at a glance. On a narrow screen each machine collapses to a
-	// single dot in its worst tone. A machine whose daemon never reported (too
-	// old, non-Linux) shows hatched bars and "?", never a misleading 0 %.
 	import { useQueryClient } from '@tanstack/svelte-query';
 	import { Popover, Text } from '@dorsk/tsumikit';
 	import { qk, useMachineResources } from '#lib/queries/index.ts';
@@ -28,8 +23,6 @@
 	const q = useMachineResources(() => pinned.length > 0);
 	const rows = $derived(pinnedRows(q.data, pinned));
 
-	// Live: every daemon heartbeat lands here; patch the cache in place so the
-	// bars move without waiting for the 30s poll.
 	const qc = useQueryClient();
 	$effect(() =>
 		ws.onMachineResources((ev) => {
@@ -106,15 +99,15 @@
 					{:else}
 						<div class="grid">
 							<Text size="sm" tone="faint">{m.resource_gauge_cpu()}</Text>
-							<Text size="sm" variant="code">{pctText(res.cpu_pct)}</Text>
+							<Text size="sm" numeric>{pctText(res.cpu_pct)}</Text>
 							<Text size="sm" tone="faint">{m.resource_gauge_mem()}</Text>
-							<Text size="sm" variant="code"
+							<Text size="sm" numeric
 								>{pctText(res.mem_pct)} · {fmtBytes(res.mem_used_bytes)} / {fmtBytes(
 									res.mem_total_bytes
 								)}</Text
 							>
 							<Text size="sm" tone="faint">{m.resource_gauge_disk()}</Text>
-							<Text size="sm" variant="code"
+							<Text size="sm" numeric
 								>{pctText(res.disk_pct)} · {fmtBytes(res.disk_used_bytes)} / {fmtBytes(
 									res.disk_total_bytes
 								)}</Text
@@ -143,7 +136,7 @@
 		height: 24px;
 		padding: 0 4px;
 		border-radius: 4px;
-		border: 1px solid var(--border);
+		background: var(--bg-elevated-2);
 	}
 	.name {
 		font-size: 10px;
