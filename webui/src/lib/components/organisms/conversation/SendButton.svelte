@@ -61,7 +61,7 @@
 						? m.composer_cache_imminent()
 						: undefined
 	);
-	const variant: 'primary' | 'default' = $derived(armed ? 'primary' : 'default');
+	const variant: 'primary' | 'ghost' = $derived(armed ? 'primary' : 'ghost');
 	const verb = $derived(followup ? m.composer_followup_send() : m.composer_send());
 </script>
 

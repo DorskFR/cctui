@@ -95,10 +95,34 @@ describe('SendButton emphasis', () => {
 	it('stays quiet until the composer is armed', () => {
 		const { main } = render({ cacheCold: false, armed: false });
 		expect(main.className).not.toContain('btn-primary');
+		expect(main.className).toContain('btn-ghost');
 	});
 
 	it('fills as the primary once armed', () => {
 		const { main } = render({ cacheCold: false, armed: true });
 		expect(main.className).toContain('btn-primary');
+	});
+});
+
+describe('SendButton without a menu', () => {
+	it('is a ghost button until armed', () => {
+		comp = mount(SendButton, {
+			target: document.body,
+			props: {
+				items: [],
+				disabled: false,
+				uploading: false,
+				cacheCold: false,
+				coldImminent: false,
+				coldCountdownSecs: null,
+				burstTokens: null,
+				menu: false,
+				armed: false,
+				onclick: vi.fn()
+			}
+		});
+		flushSync();
+		expect(document.querySelector('[data-tsu="SplitButton"]')).toBeNull();
+		expect(document.querySelector('button')?.className).toContain('btn-ghost');
 	});
 });
