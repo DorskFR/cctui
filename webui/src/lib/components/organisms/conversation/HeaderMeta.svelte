@@ -234,8 +234,8 @@
 					as="button"
 					title={m.drawer_change_model_title()}
 					onclick={openModelEditor}
-					style="min-width:0;max-width:100%"
-					>{@render modelText(session.model ?? m.drawer_default_model())} ✎</Badge
+					style="display:inline-flex;align-items:center;gap:0.25em;min-width:0;max-width:100%"
+					>{@render modelText(session.model ?? m.drawer_default_model())}<Icon name="edit" size={12} /></Badge
 				>
 			</span>
 		{/if}
@@ -249,8 +249,8 @@
 				as="button"
 				title={m.drawer_no_inplace_model_title()}
 				onclick={onfork}
-				style="min-width:0;max-width:100%"
-				>{@render modelText(session.model ?? '')} ⑂</Badge
+				style="display:inline-flex;align-items:center;gap:0.25em;min-width:0;max-width:100%"
+				>{@render modelText(session.model ?? '')}<Icon name="fork" size={12} /></Badge
 			>
 		</span>
 	{/if}
@@ -274,7 +274,7 @@
 	{#if branch}
 		<span class="branch">
 			<Badge mono title={m.sessions_branch_title({ branch })} style="display:inline-flex;align-items:center;gap:0.25em;min-width:0;max-width:100%">
-				<Icon name="fork" size={12} label={m.sessions_branch_label()} />
+				<Icon name="git-branch" size={12} label={m.sessions_branch_label()} />
 				<span class="ellipsis">{branch}</span>
 			</Badge>
 		</span>
@@ -351,7 +351,7 @@
 					<span class="mp-key"><Text size="xs" tone="faint">{m.drawer_details_bust()}</Text></span>
 					<span class="mp-val"
 						><Text size="xs" tone="danger"
-							>💥 {m.sessions_token_bust_hint({
+							>{m.sessions_token_bust_hint({
 								tokens: compact(Number(bust.lost_tokens)),
 								cost: usd(Number(bust.lost_usd)),
 								reason: bustReason

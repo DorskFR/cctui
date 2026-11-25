@@ -64,6 +64,14 @@ describe('drawer header meta row', () => {
 		expect(popover).toContain('<Text numeric size="xs" tone="muted">{row.v}</Text>');
 	});
 
+	it('marks the model chip and branch with icons, not ✎ ⑂ 💥 glyphs', () => {
+		for (const g of ['✎', '⑂', '💥']) expect(markup, g).not.toContain(g);
+		const snippet = markup.slice(markup.indexOf('{#snippet modelMeta'), markup.indexOf('{/snippet}', markup.indexOf('{#snippet modelMeta')));
+		expect(snippet).toContain('<Icon name="edit" size={12} />');
+		expect(snippet).toContain('<Icon name="fork" size={12} />');
+		expect(markup).toContain('<Icon name="git-branch" size={12} label={m.sessions_branch_label()} />');
+	});
+
 	it('declares the model-edit base rule before the query that hides it', () => {
 		expect(css.indexOf('.model-edit {')).toBeLessThan(css.indexOf('@container drawer-head (max-width: 26rem)'));
 	});
