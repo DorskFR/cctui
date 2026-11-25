@@ -2119,52 +2119,69 @@ async fn count_rest(
 pub enum SearchPath {
     Index,
     Scan,
-    Fallback,
 }
 
-/// One page of matches: [`index_matches`] when every term is rare enough for
-/// the chunk index, else [`window_matches`].
+/// One page of matches from [`search_matches`].
 pub async fn scan_matches(
     pool: &sqlx::PgPool,
     root: &cctui_query::Node,
     live_ids: Option<&[String]>,
     page: &SearchPage,
 ) -> Result<FoundPage, AppError> {
-    Ok(search_matches(pool, root, live_ids, page, COMMON_TERM_CHUNKS).await?.0)
+    Ok(search_matches(pool, root, live_ids, page).await?.0)
 }
 
+/// Races the chunk index against [`window_matches`], keeping the first complete page.
 pub async fn search_matches(
     pool: &sqlx::PgPool,
     root: &cctui_query::Node,
     live_ids: Option<&[String]>,
     page: &SearchPage,
-    common_at: i64,
 ) -> Result<(FoundPage, SearchPath), AppError> {
-    let deadline = std::time::Instant::now() + SEARCH_BUDGET;
+    let started = std::time::Instant::now();
+    let mut scan = Box::pin(window_matches(pool, root, live_ids, page, started + SEARCH_BUDGET));
     let query = IndexQuery::compile(root);
-    if query.indexable() && !query.common(pool, common_at).await? {
-        let left = deadline.saturating_duration_since(std::time::Instant::now());
-        if let Some(found) =
-            query.run(pool, live_ids, page, left.saturating_sub(SCAN_RESERVE)).await?
-        {
-            return Ok((found, SearchPath::Index));
+    let found = if query.indexable() {
+        let mut index = Box::pin(query.run(pool, live_ids, page, SEARCH_BUDGET));
+        tokio::select! {
+            indexed = &mut index => match indexed {
+                Ok(Some(found)) => (found, SearchPath::Index),
+                Ok(None) => (scan.await?, SearchPath::Scan),
+                Err(e) => {
+                    tracing::warn!(error = %e, "search: chunk index failed, keeping the scan");
+                    (scan.await?, SearchPath::Scan)
+                }
+            },
+            scanned = &mut scan => {
+                let scanned = scanned?;
+                if scanned.partial {
+                    match index.await {
+                        Ok(Some(found)) => (found, SearchPath::Index),
+                        Ok(None) => (scanned, SearchPath::Scan),
+                        Err(e) => {
+                            tracing::warn!(error = %e, "search: chunk index failed, keeping the scan");
+                            (scanned, SearchPath::Scan)
+                        }
+                    }
+                } else {
+                    (scanned, SearchPath::Scan)
+                }
+            }
         }
-        let found = window_matches(pool, root, live_ids, page, deadline).await?;
-        return Ok((found, SearchPath::Fallback));
-    }
-    let found = window_matches(pool, root, live_ids, page, deadline).await?;
-    Ok((found, SearchPath::Scan))
+    } else {
+        (scan.await?, SearchPath::Scan)
+    };
+    tracing::debug!(
+        path = ?found.1,
+        partial = found.0.partial,
+        elapsed_ms = started.elapsed().as_millis(),
+        "search page"
+    );
+    Ok(found)
 }
 
 /// A term shorter than this has no trigram to narrow the chunk index by.
 const MIN_TRIGRAM_CHARS: usize = 3;
-/// A term matching this many chunks goes to the window scan: the index
-/// statement rechecks every matching chunk, the scan stops at a full page.
-pub const COMMON_TERM_CHUNKS: i64 = 2_000;
-/// A probe slower than this counts its terms as common.
-const PROBE_STATEMENT_TIMEOUT: &str = "SET LOCAL statement_timeout = '150ms'";
-/// What a timed-out index statement leaves the window scan of [`SEARCH_BUDGET`].
-const SCAN_RESERVE: std::time::Duration = std::time::Duration::from_millis(1_500);
 
 /// The query compiled for the chunk index, each free-text leaf hoisted.
 struct IndexQuery {
@@ -2182,30 +2199,6 @@ impl IndexQuery {
 
     fn indexable(&self) -> bool {
         self.terms.iter().all(|t| t.word_run >= MIN_TRIGRAM_CHARS)
-    }
-
-    /// Whether any term's ILIKE matches `cap` chunks, or the count outlives
-    /// [`PROBE_STATEMENT_TIMEOUT`].
-    async fn common(&self, pool: &sqlx::PgPool, cap: i64) -> Result<bool, sqlx::Error> {
-        if self.terms.is_empty() {
-            return Ok(false);
-        }
-        let mut tx = pool.begin().await?;
-        sqlx::query(PROBE_STATEMENT_TIMEOUT).execute(&mut *tx).await?;
-        let mut q = sqlx::query_scalar::<_, bool>(sqlx::AssertSqlSafe(probe_sql(self.terms.len())));
-        for t in &self.terms {
-            q = match &self.params[t.like - 1] {
-                SqlParam::Text(s) => q.bind(s.clone()),
-                SqlParam::Bool(b) => q.bind(*b),
-            };
-        }
-        let common = match q.bind(cap).fetch_one(&mut *tx).await {
-            Ok(common) => common,
-            Err(e) if is_statement_timeout(&e) => return Ok(true),
-            Err(e) => return Err(e),
-        };
-        tx.commit().await?;
-        Ok(common)
     }
 
     /// `None` when the statement outlives `timeout`.
@@ -2254,24 +2247,8 @@ impl IndexQuery {
     }
 }
 
-/// Whether any of the `n` terms bound at `$1…$n` matches `$n+1` chunks, by
-/// ILIKE alone: a word-start match only narrows it.
-fn probe_sql(n: usize) -> String {
-    let cap = n + 1;
-    let counts: Vec<String> = (1..=n)
-        .map(|k| {
-            format!(
-                "(SELECT count(*) FROM (SELECT 1 FROM search_chunks c \
-                 WHERE c.body ILIKE ${k} LIMIT ${cap}) p)"
-            )
-        })
-        .collect();
-    format!("SELECT GREATEST({}) >= ${cap}", counts.join(", "))
-}
-
-/// The chunk-index page however common the terms are; `None` when a term is
-/// too short for the trigram index or the statement outlives its share of
-/// [`SEARCH_BUDGET`].
+/// The chunk-index page alone; `None` when a term is too short for the
+/// trigram index or the statement outlives [`SEARCH_BUDGET`].
 pub async fn index_matches(
     pool: &sqlx::PgPool,
     root: &cctui_query::Node,
@@ -2282,7 +2259,7 @@ pub async fn index_matches(
     if !query.indexable() {
         return Ok(None);
     }
-    query.run(pool, live_ids, page, SEARCH_BUDGET.saturating_sub(SCAN_RESERVE)).await
+    query.run(pool, live_ids, page, SEARCH_BUDGET).await
 }
 
 /// `$1…$n` are the compiled query's binds, then owner, cursor position, row

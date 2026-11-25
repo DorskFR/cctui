@@ -294,14 +294,18 @@ impl Fixture {
         self.request_as(path, token, Family::Anthropic, "/gateway/anthropic").await
     }
     async fn send_body(&self, body: &'static str, encoding: Option<&'static str>) -> Response {
+        let mut headers = vec![("content-type", "application/json")];
+        headers.extend(encoding.map(|e| ("content-encoding", e)));
+        self.send("/v1/messages", Bytes::from_static(body.as_bytes()), &headers).await
+    }
+    async fn send(&self, path: &str, body: Bytes, headers: &[(&str, &str)]) -> Response {
         let mut request = Request::builder()
             .method("POST")
-            .uri("/gateway/anthropic/v1/messages")
+            .uri(format!("/gateway/anthropic{path}"))
             .header("authorization", format!("Bearer {}", self.token))
-            .header("content-type", "application/json")
             .header("x-api-key", "worker-placeholder");
-        if let Some(encoding) = encoding {
-            request = request.header("content-encoding", encoding);
+        for (name, value) in headers {
+            request = request.header(*name, *value);
         }
         let request = request.body(Body::from(body)).unwrap();
         tokio::time::timeout(
@@ -440,7 +444,7 @@ async fn outbound_scrub_masks_readable_bodies_and_refuses_unreadable_ones() {
     assert!(!body.contains(SCRUB_SECRET), "{body}");
     assert!(body.contains("[REDACTED:github_token"), "{body}");
 
-    let reply = f.send_body("{\"messages\":[]}", Some("gzip")).await;
+    let reply = f.send_body("{\"messages\":[]}", Some("br")).await;
     assert_eq!(reply.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
     let text = axum::body::to_bytes(reply.into_body(), 4096).await.unwrap();
     assert!(String::from_utf8_lossy(&text).contains("outbound secret scrub"), "{text:?}");
@@ -448,6 +452,73 @@ async fn outbound_scrub_masks_readable_bodies_and_refuses_unreadable_ones() {
     let reply = f.send_body("{\"messages\":[", None).await;
     assert_eq!(reply.status(), StatusCode::UNPROCESSABLE_ENTITY);
     assert_eq!(f.calls.load(Ordering::SeqCst), 1);
+}
+
+fn gzip(raw: &[u8]) -> Bytes {
+    use std::io::Write;
+    let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    enc.write_all(raw).unwrap();
+    Bytes::from(enc.finish().unwrap())
+}
+
+#[tokio::test]
+async fn outbound_scrub_decodes_gzip_and_zstd_model_calls() {
+    let Some(mut f) = Fixture::new(StatusCode::OK, "{\"content\": []}", false).await else {
+        return;
+    };
+    f.host.0.scrub.store(true, Ordering::SeqCst);
+    let raw = format!(
+        r#"{{"model":"fixture","messages":[{{"role":"user","content":"GH={SCRUB_SECRET}"}}]}}"#
+    );
+    let zstd_body = Bytes::from(zstd::encode_all(raw.as_bytes(), 3).unwrap());
+    for (encoding, body) in [("gzip", gzip(raw.as_bytes())), ("zstd", zstd_body)] {
+        let headers = [("content-type", "application/json"), ("content-encoding", encoding)];
+        let reply = f.send("/v1/messages", body, &headers).await;
+        assert_eq!(reply.status(), StatusCode::OK, "{encoding}");
+        let (headers, body) = f.received.recv().await.unwrap();
+        let text = String::from_utf8(body.to_vec()).unwrap();
+        assert!(!text.contains(SCRUB_SECRET), "{text}");
+        assert!(text.contains("[REDACTED:github_token"), "{text}");
+        assert!(!headers.contains_key("content-encoding"), "{encoding}: {headers:?}");
+        assert_eq!(headers["content-length"], body.len().to_string());
+    }
+    assert_eq!(f.calls.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
+async fn outbound_scrub_refuses_a_body_that_decodes_past_the_cap() {
+    let Some(f) = Fixture::new(StatusCode::OK, "{}", false).await else { return };
+    f.host.0.scrub.store(true, Ordering::SeqCst);
+    let bomb = gzip(&vec![b' '; 33 * 1024 * 1024]);
+    let headers = [("content-type", "application/json"), ("content-encoding", "gzip")];
+    let reply = f.send("/v1/messages", bomb, &headers).await;
+    assert_eq!(reply.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    assert_eq!(f.calls.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn outbound_scrub_forwards_non_model_paths_untouched() {
+    let Some(mut f) = Fixture::new(StatusCode::OK, "{}", false).await else { return };
+    f.host.0.scrub.store(true, Ordering::SeqCst);
+    let multipart = format!(
+        "--b\r\nContent-Disposition: form-data; name=\"file\"; filename=\"a.txt\"\r\n\r\nGH={SCRUB_SECRET}\r\n--b--\r\n"
+    );
+    let content_type = "multipart/form-data; boundary=b";
+    let reply = f
+        .send("/v1/complete", Bytes::from(multipart.clone()), &[("content-type", content_type)])
+        .await;
+    assert_eq!(reply.status(), StatusCode::OK);
+    let (headers, body) = f.received.recv().await.unwrap();
+    assert_eq!(body, multipart.as_bytes());
+    assert_eq!(headers["content-type"], content_type);
+
+    let packed = gzip(br#"{"prompt":"hello"}"#);
+    let sent = [("content-type", "application/json"), ("content-encoding", "gzip")];
+    assert_eq!(f.send("/v1/complete", packed.clone(), &sent).await.status(), StatusCode::OK);
+    let (headers, body) = f.received.recv().await.unwrap();
+    assert_eq!(body, packed);
+    assert_eq!(headers["content-encoding"], "gzip");
+    assert_eq!(headers["content-type"], "application/json");
 }
 
 #[tokio::test]

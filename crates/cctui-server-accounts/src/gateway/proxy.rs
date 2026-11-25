@@ -678,6 +678,8 @@ struct RequestInfo {
     request_shape: Option<Arc<std::sync::OnceLock<RequestShape>>>,
     request_model: Option<String>,
     voice: Option<Box<dyn ResponseTee>>,
+    /// The scrubber decoded the body, so it goes upstream without its `Content-Encoding`.
+    body_decoded: bool,
 }
 
 impl RequestInfo {
@@ -688,6 +690,7 @@ impl RequestInfo {
             request_shape: None,
             request_model,
             voice: None,
+            body_decoded: false,
         }
     }
 
@@ -1049,11 +1052,11 @@ async fn prepare_body(
         }
         return Ok((reqwest::Body::wrap_stream(body_stream), RequestInfo::streamed(path_model)));
     }
-    let encoded = super::outbound_scrub::encoded(req.headers());
+    let encoding = super::outbound_scrub::request_encoding(req.headers());
     let bytes = axum::body::to_bytes(req.into_body(), MAX_BUFFERED_BODY)
         .await
         .map_err(|_| Err(StatusCode::PAYLOAD_TOO_LARGE))?;
-    let bytes = outbound_scrubbed(state, auth, obs, encoded, bytes).await?;
+    let (bytes, body_decoded) = outbound_scrubbed(state, auth, obs, encoding, bytes).await?;
     let summary = (trace == RequestTrace::Shape)
         .then(|| request_shape(&bytes))
         .flatten()
@@ -1107,24 +1110,30 @@ async fn prepare_body(
             request_shape: None,
             request_model,
             voice,
+            body_decoded,
         },
     ))
 }
 
-/// With the opt-in on, a body the scrubber cannot read is refused, never forwarded as is.
+/// With the opt-in on, a model call the scrubber cannot read is refused, never
+/// forwarded as is. A gzip or zstd body is decoded and forwarded decoded.
 async fn outbound_scrubbed(
     state: &impl ProxyContext,
     auth: &Authenticated,
     obs: &Observers,
-    encoded: bool,
+    encoding: Result<super::outbound_scrub::Encoding, super::outbound_scrub::Unreadable>,
     bytes: Bytes,
-) -> Result<Bytes, Reply> {
-    use super::outbound_scrub::{Unreadable, scrub_request_body};
-    let Some(patterns) = obs.outbound_scrub.as_deref() else { return Ok(bytes) };
-    let scrubbed =
-        if encoded { Err(Unreadable::Encoded) } else { scrub_request_body(bytes, Some(patterns)) };
+) -> Result<(Bytes, bool), Reply> {
+    use super::outbound_scrub::{Encoding, decode_body, scrub_request_body};
+    let Some(patterns) = obs.outbound_scrub.as_deref().filter(|p| !p.is_empty()) else {
+        return Ok((bytes, false));
+    };
+    let scrubbed = encoding.and_then(|encoding| {
+        let decoded = decode_body(bytes, encoding, MAX_BUFFERED_BODY)?;
+        Ok((scrub_request_body(decoded, Some(patterns))?, encoding != Encoding::Identity))
+    });
     let unreadable = match scrubbed {
-        Ok(bytes) => return Ok(bytes),
+        Ok(scrubbed) => return Ok(scrubbed),
         Err(unreadable) => unreadable,
     };
     let session = session_id_for_token(state, &auth.session_token).await;
@@ -1507,9 +1516,14 @@ pub async fn passthrough(
         Err(reply) => return reply,
     };
     let mut headers = forward_headers(req.headers(), &auth.acct, &target.access_token)?;
-    let voice_candidate =
-        teeable_request(&req_method, uri.path().strip_prefix(prefix).unwrap_or_else(|| uri.path()));
-    let obs = observers(&state, &auth, &mut headers, voice_candidate).await?;
+    let tail = uri.path().strip_prefix(prefix).unwrap_or_else(|| uri.path());
+    let voice_candidate = teeable_request(&req_method, tail);
+    let mut obs = observers(&state, &auth, &mut headers, voice_candidate).await?;
+    if obs.outbound_scrub.is_some() && !super::outbound_scrub::model_call(family, &req_method, tail)
+    {
+        tracing::info!(account = %auth.acct.id, %tail, method = %req_method, "outbound secret scrub skipped: not a model call");
+        obs.outbound_scrub = None;
+    }
     let path_model = (family == Family::Google)
         .then(|| uri.path().strip_prefix(prefix).and_then(google_path_model))
         .flatten();
@@ -1518,6 +1532,9 @@ pub async fn passthrough(
             Ok(prepared) => prepared,
             Err(reply) => return reply,
         };
+    if info.body_decoded {
+        headers.remove(reqwest::header::CONTENT_ENCODING);
+    }
     let UpstreamTarget { client, url, method, .. } = target;
     let request = client.request(method, &url).headers(headers).body(body);
     let (upstream, status) =

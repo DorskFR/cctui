@@ -10,6 +10,8 @@ use axum::body::Bytes;
 use cctui_crypto::redact::{self, CompiledPatterns};
 use serde_json::Value;
 
+use super::config::Family;
+
 const MAX_DEPTH: usize = 128;
 const SETTINGS_TTL: Duration = Duration::from_secs(30);
 const CACHE_SWEEP_AT: usize = 4096;
@@ -107,6 +109,8 @@ fn compiled(user: UserPatterns) -> Arc<CompiledPatterns> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Unreadable {
     Encoded,
+    BadEncoding,
+    TooLarge,
     NotUtf8,
     NotJson,
     TooDeep,
@@ -116,7 +120,9 @@ impl Unreadable {
     #[must_use]
     pub const fn reason(self) -> &'static str {
         match self {
-            Self::Encoded => "content-encoded body",
+            Self::Encoded => "unsupported content encoding",
+            Self::BadEncoding => "body does not decode",
+            Self::TooLarge => "decoded body is too large",
             Self::NotUtf8 => "body is not UTF-8",
             Self::NotJson => "body is not JSON",
             Self::TooDeep => "body nests too deep",
@@ -127,22 +133,94 @@ impl Unreadable {
     pub const fn status(self) -> axum::http::StatusCode {
         match self {
             Self::Encoded => axum::http::StatusCode::UNSUPPORTED_MEDIA_TYPE,
-            Self::NotUtf8 | Self::NotJson | Self::TooDeep => {
+            Self::TooLarge => axum::http::StatusCode::PAYLOAD_TOO_LARGE,
+            Self::BadEncoding | Self::NotUtf8 | Self::NotJson | Self::TooDeep => {
                 axum::http::StatusCode::UNPROCESSABLE_ENTITY
             }
         }
     }
 }
 
+/// The JSON model calls whose prompts the scrubber reads; every other path is
+/// forwarded as is.
 #[must_use]
-pub fn encoded(headers: &axum::http::HeaderMap) -> bool {
-    headers.get_all(axum::http::header::CONTENT_ENCODING).iter().any(|v| {
-        v.to_str().map_or(true, |v| {
-            v.split(',')
-                .map(str::trim)
-                .any(|e| !e.is_empty() && !e.eq_ignore_ascii_case("identity"))
-        })
-    })
+pub fn model_call(family: Family, method: &axum::http::Method, tail: &str) -> bool {
+    if *method != axum::http::Method::POST {
+        return false;
+    }
+    let decoded = super::config::percent_decode(tail);
+    let path = decoded.strip_suffix('/').unwrap_or(&decoded);
+    match family {
+        Family::Anthropic => matches!(path, "/v1/messages" | "/v1/messages/count_tokens"),
+        Family::Openai => matches!(path, "/responses" | "/responses/compact" | "/chat/completions"),
+        Family::Fireworks => path == "/chat/completions",
+        Family::Google => ["/v1beta/models/", "/v1/models/"]
+            .iter()
+            .filter_map(|p| path.strip_prefix(*p))
+            .filter_map(|rest| rest.rsplit_once(':'))
+            .any(|(model, rpc)| {
+                !model.is_empty()
+                    && !model.contains('/')
+                    && matches!(rpc, "generateContent" | "streamGenerateContent")
+            }),
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Encoding {
+    Identity,
+    Gzip,
+    Zstd,
+}
+
+/// # Errors
+///
+/// An encoding the scrubber cannot undo, including a stack of several.
+pub fn request_encoding(headers: &axum::http::HeaderMap) -> Result<Encoding, Unreadable> {
+    let mut found = Encoding::Identity;
+    for value in headers.get_all(axum::http::header::CONTENT_ENCODING) {
+        let value = value.to_str().map_err(|_| Unreadable::Encoded)?;
+        for coding in value
+            .split(',')
+            .map(str::trim)
+            .filter(|c| !c.is_empty() && !c.eq_ignore_ascii_case("identity"))
+        {
+            let next =
+                if coding.eq_ignore_ascii_case("gzip") || coding.eq_ignore_ascii_case("x-gzip") {
+                    Encoding::Gzip
+                } else if coding.eq_ignore_ascii_case("zstd") {
+                    Encoding::Zstd
+                } else {
+                    return Err(Unreadable::Encoded);
+                };
+            if found != Encoding::Identity {
+                return Err(Unreadable::Encoded);
+            }
+            found = next;
+        }
+    }
+    Ok(found)
+}
+
+/// # Errors
+///
+/// A body that does not decode, or decodes past `limit` bytes.
+pub fn decode_body(body: Bytes, encoding: Encoding, limit: usize) -> Result<Bytes, Unreadable> {
+    use std::io::Read;
+    let reader: Box<dyn Read + '_> = match encoding {
+        Encoding::Identity => return Ok(body),
+        Encoding::Gzip => Box::new(flate2::read::MultiGzDecoder::new(&body[..])),
+        Encoding::Zstd => Box::new(
+            zstd::stream::read::Decoder::new(&body[..]).map_err(|_| Unreadable::BadEncoding)?,
+        ),
+    };
+    let cap = u64::try_from(limit).unwrap_or(u64::MAX).saturating_add(1);
+    let mut out = Vec::new();
+    reader.take(cap).read_to_end(&mut out).map_err(|_| Unreadable::BadEncoding)?;
+    if out.len() > limit {
+        return Err(Unreadable::TooLarge);
+    }
+    Ok(Bytes::from(out))
 }
 
 /// # Errors
@@ -516,7 +594,9 @@ mod tests {
         let deep = format!("{}{}", "[".repeat(MAX_DEPTH + 2), "]".repeat(MAX_DEPTH + 2));
         assert_eq!(refused(Bytes::from(deep)), Unreadable::TooDeep);
         assert_eq!(Unreadable::Encoded.status(), axum::http::StatusCode::UNSUPPORTED_MEDIA_TYPE);
+        assert_eq!(Unreadable::TooLarge.status(), axum::http::StatusCode::PAYLOAD_TOO_LARGE);
         assert_eq!(Unreadable::NotJson.status(), axum::http::StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(Unreadable::BadEncoding.status(), axum::http::StatusCode::UNPROCESSABLE_ENTITY);
     }
 
     #[test]
@@ -532,19 +612,90 @@ mod tests {
         assert_eq!(scrub(body.clone(), Some(&patterns())), body);
     }
 
+    fn with_encoding(v: &'static str) -> axum::http::HeaderMap {
+        let mut h = axum::http::HeaderMap::new();
+        h.insert(axum::http::header::CONTENT_ENCODING, axum::http::HeaderValue::from_static(v));
+        h
+    }
+
     #[test]
-    fn content_encoding_other_than_identity_is_unreadable() {
-        let with = |v: &'static str| {
-            let mut h = axum::http::HeaderMap::new();
-            h.insert(axum::http::header::CONTENT_ENCODING, axum::http::HeaderValue::from_static(v));
-            h
-        };
-        assert!(!encoded(&axum::http::HeaderMap::new()));
-        assert!(!encoded(&with("identity")));
-        assert!(!encoded(&with("Identity")));
-        assert!(encoded(&with("gzip")));
-        assert!(encoded(&with("zstd")));
-        assert!(encoded(&with("identity, br")));
+    fn only_identity_gzip_and_zstd_are_readable_encodings() {
+        let of = |v| request_encoding(&with_encoding(v));
+        assert_eq!(request_encoding(&axum::http::HeaderMap::new()), Ok(Encoding::Identity));
+        assert_eq!(of("identity"), Ok(Encoding::Identity));
+        assert_eq!(of("Identity"), Ok(Encoding::Identity));
+        assert_eq!(of("gzip"), Ok(Encoding::Gzip));
+        assert_eq!(of("x-gzip"), Ok(Encoding::Gzip));
+        assert_eq!(of("ZSTD"), Ok(Encoding::Zstd));
+        assert_eq!(of("identity, zstd"), Ok(Encoding::Zstd));
+        assert_eq!(of("br"), Err(Unreadable::Encoded));
+        assert_eq!(of("deflate"), Err(Unreadable::Encoded));
+        assert_eq!(of("identity, br"), Err(Unreadable::Encoded));
+        assert_eq!(of("gzip, zstd"), Err(Unreadable::Encoded));
+        let mut stacked = with_encoding("gzip");
+        stacked.append(axum::http::header::CONTENT_ENCODING, "gzip".parse().unwrap());
+        assert_eq!(request_encoding(&stacked), Err(Unreadable::Encoded));
+    }
+
+    fn gzip(raw: &[u8]) -> Bytes {
+        use std::io::Write;
+        let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        enc.write_all(raw).unwrap();
+        Bytes::from(enc.finish().unwrap())
+    }
+
+    #[test]
+    fn gzip_and_zstd_bodies_decode_then_scrub() {
+        let raw = anthropic_with_tool_result(TOKEN);
+        let zstd_body = Bytes::from(zstd::encode_all(raw.as_bytes(), 3).unwrap());
+        for (body, encoding) in
+            [(gzip(raw.as_bytes()), Encoding::Gzip), (zstd_body, Encoding::Zstd)]
+        {
+            let decoded = decode_body(body, encoding, 1 << 20).unwrap();
+            assert_eq!(decoded, raw.as_bytes());
+            let out = scrub(decoded, Some(&patterns()));
+            assert!(!std::str::from_utf8(&out).unwrap().contains(TOKEN));
+        }
+        let plain = Bytes::from(raw);
+        let same = decode_body(plain.clone(), Encoding::Identity, 1).unwrap();
+        assert_eq!(same.as_ptr(), plain.as_ptr());
+    }
+
+    #[test]
+    fn decoding_is_capped_and_garbage_is_refused() {
+        let bomb = vec![b' '; 4096];
+        assert_eq!(decode_body(gzip(&bomb), Encoding::Gzip, 4096).unwrap().len(), 4096);
+        assert_eq!(decode_body(gzip(&bomb), Encoding::Gzip, 4095), Err(Unreadable::TooLarge));
+        let zstd_bomb = Bytes::from(zstd::encode_all(&bomb[..], 19).unwrap());
+        assert_eq!(decode_body(zstd_bomb, Encoding::Zstd, 100), Err(Unreadable::TooLarge));
+        let junk = Bytes::from_static(b"{\"messages\":[]}");
+        assert_eq!(decode_body(junk.clone(), Encoding::Gzip, 4096), Err(Unreadable::BadEncoding));
+        assert_eq!(decode_body(junk, Encoding::Zstd, 4096), Err(Unreadable::BadEncoding));
+    }
+
+    #[test]
+    fn only_json_model_calls_are_scrubbed() {
+        let post = axum::http::Method::POST;
+        let yes = |family, tail| model_call(family, &post, tail);
+        assert!(yes(Family::Anthropic, "/v1/messages"));
+        assert!(yes(Family::Anthropic, "/v1/messages/"));
+        assert!(yes(Family::Anthropic, "/v1/%6Dessages"));
+        assert!(yes(Family::Anthropic, "/v1/messages/count_tokens"));
+        assert!(!yes(Family::Anthropic, "/v1/complete"));
+        assert!(!yes(Family::Anthropic, "/v1/files"));
+        assert!(yes(Family::Openai, "/responses"));
+        assert!(yes(Family::Openai, "/responses/compact"));
+        assert!(yes(Family::Openai, "/chat/completions"));
+        assert!(!yes(Family::Openai, "/responses/resp_1/cancel"));
+        assert!(yes(Family::Fireworks, "/chat/completions"));
+        assert!(!yes(Family::Fireworks, "/embeddings"));
+        assert!(yes(Family::Google, "/v1beta/models/gemini-2.5-pro:generateContent"));
+        assert!(yes(Family::Google, "/v1/models/gemini-2.5-pro:streamGenerateContent"));
+        assert!(yes(Family::Google, "/v1beta/models/gemini-2.5-pro%3AgenerateContent"));
+        assert!(!yes(Family::Google, "/v1beta/models/gemini-2.5-pro:countTokens"));
+        assert!(!yes(Family::Google, "/v1beta/models/:generateContent"));
+        assert!(!yes(Family::Google, "/v1beta/models/a/b:generateContent"));
+        assert!(!model_call(Family::Anthropic, &axum::http::Method::GET, "/v1/messages"));
     }
 
     fn gemini_body(secret: &str) -> String {
