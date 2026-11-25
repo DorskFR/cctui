@@ -4,6 +4,11 @@
 //! so, so the posture has to be set on the agent at launch. Each agent row
 //! carries a table from the four cctui modes to whatever the agent can
 //! express; a mode with no entry is refused before the process is spawned.
+//!
+//! A guarded session is the exception: the guard only sees what the agent
+//! asks about, so the agent runs in its asking mode and cctui applies the
+//! posture itself once the guard allows. Tools the agent never asks about,
+//! reads and searches in every vocabulary here, stay unguarded.
 
 use cctui_proto::adapter::PermissionMode;
 
@@ -99,6 +104,13 @@ impl ModeTable {
     }
 }
 
+/// What cctui's Auto lets through without a human, as the agents' own auto
+/// modes do: edits.
+#[must_use]
+pub fn auto_approves(tool_kind: &str) -> bool {
+    matches!(tool_kind, "edit" | "delete" | "move")
+}
+
 /// The table for agents speaking legacy `modes` with the gemini vocabulary.
 ///
 /// `default` / `autoEdit` / `yolo`; whip has no agent-side equivalent, being
@@ -178,6 +190,16 @@ mod tests {
         assert_eq!(err, Inexpressible { mode: PermissionMode::Whip, agent: "gemini" });
         assert!(err.to_string().contains("`whip`"), "{err}");
         assert!(err.to_string().contains("refusing to spawn"), "{err}");
+    }
+
+    #[test]
+    fn cctui_auto_approves_edits_and_leaves_the_rest_to_a_human() {
+        for kind in ["edit", "delete", "move"] {
+            assert!(auto_approves(kind), "{kind}");
+        }
+        for kind in ["execute", "fetch", "read", "other", "switch_mode", ""] {
+            assert!(!auto_approves(kind), "{kind}");
+        }
     }
 
     #[test]

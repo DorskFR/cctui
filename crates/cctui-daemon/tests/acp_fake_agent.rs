@@ -577,16 +577,23 @@ mod fake_agent {
                 }),
             )
             .await;
+            if turn == "permission" && self.current_mode.as_deref() == Some("yolo") {
+                self.finish_turn(id, session_id, false).await;
+                return;
+            }
             if turn == "permission" {
                 let request_id = self.next_id;
                 self.next_id += 1;
+                let tool_call = self.script.get("permissionToolCall").cloned().unwrap_or_else(|| {
+                    json!({ "toolCallId": "call-1", "title": "List files", "kind": "read", "rawInput": { "path": "." } })
+                });
                 self.send(json!({
                     "jsonrpc": "2.0",
                     "id": request_id,
                     "method": "session/request_permission",
                     "params": {
                         "sessionId": session_id,
-                        "toolCall": { "toolCallId": "call-1", "title": "List files", "kind": "read", "rawInput": { "path": "." } },
+                        "toolCall": tool_call,
                         "options": [
                             { "optionId": "allow-always", "name": "Always", "kind": "allow_always" },
                             { "optionId": "allow-once", "name": "Once", "kind": "allow_once" },
@@ -1108,6 +1115,9 @@ mod scenarios {
         scenario!(a_guard_deny_reaches_the_agent_as_reject_once_with_the_reason),
         scenario!(a_guard_allow_leaves_the_permission_flow_unchanged),
         scenario!(an_unreachable_guard_fails_closed),
+        scenario!(a_guarded_yolo_session_puts_the_agent_in_its_asking_mode_and_the_guard_rejects_a_disallowed_command),
+        scenario!(an_unguarded_yolo_session_keeps_the_agents_yolo_mode),
+        scenario!(a_guarded_auto_session_auto_allows_edits_and_asks_a_human_for_the_rest),
     ];
 
     /// The dispatch path: the core session in one-shot mode runs the one
@@ -1452,10 +1462,17 @@ mod scenarios {
     /// A Yolo turn whose one permission request the guard answers: no card,
     /// and what the agent was sent.
     async fn guarded_yolo_turn(guard_url: &str) -> anyhow::Result<(Vec<AdapterEvent>, Value)> {
-        let mut h = start(&FAKE_ROW, &exe());
         let mut script = full_script();
         script["turn"] = json!("permission");
-        h.spawn_guarded(&script, Some(PermissionMode::Yolo), "do it", guard_url).await;
+        guarded_yolo_turn_with(guard_url, &script).await
+    }
+
+    async fn guarded_yolo_turn_with(
+        guard_url: &str,
+        script: &Value,
+    ) -> anyhow::Result<(Vec<AdapterEvent>, Value)> {
+        let mut h = start(&FAKE_ROW, &exe());
+        h.spawn_guarded(script, Some(PermissionMode::Yolo), "do it", guard_url).await;
         let events = h.until(is_idle, Duration::from_secs(30)).await?;
         anyhow::ensure!(
             !events.iter().any(|e| matches!(e, AdapterEvent::PermissionRequest { .. })),
@@ -1575,6 +1592,147 @@ mod scenarios {
             "the reason names the guard and the policy: {reason}"
         );
         anyhow::ensure!(guard_note(&events, "failing closed"), "{events:#?}");
+        Ok(())
+    }
+
+    /// Every `(agent mode, reported posture)` the session announced.
+    fn modes(events: &[AdapterEvent]) -> Vec<(String, Option<PermissionMode>)> {
+        events
+            .iter()
+            .filter_map(|e| match e {
+                AdapterEvent::Status { detail: Some(d), permission_mode, .. } => {
+                    d.strip_prefix("mode: ").map(|m| (m.to_owned(), *permission_mode))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The shape gemini-cli sends for its shell tool: no `rawInput`, the
+    /// command as the title.
+    fn gemini_shell(command: &str) -> Value {
+        json!({
+            "toolCallId": "call-1", "status": "pending", "title": command,
+            "content": [], "locations": [], "kind": "execute",
+        })
+    }
+
+    pub async fn a_guarded_yolo_session_puts_the_agent_in_its_asking_mode_and_the_guard_rejects_a_disallowed_command()
+    -> anyhow::Result<()> {
+        let reason = "[Step 2] Bash(git push) is disallowed in this step";
+        let guard = super::fake_guard::serve(json!({
+            "outcome": { "outcome": "selected", "optionId": "reject_once" },
+            "_meta": { "reason": reason },
+        }))
+        .await?;
+        let mut script = full_script();
+        script["turn"] = json!("permission");
+        script["permissionToolCall"] = gemini_shell("git push origin main");
+        let (events, answer) = guarded_yolo_turn_with(&guard.url, &script).await?;
+        let modes = modes(&events);
+        anyhow::ensure!(
+            !modes.is_empty()
+                && modes.iter().all(|m| *m == ("default".to_owned(), Some(PermissionMode::Yolo))),
+            "the agent runs in its asking mode while the session shows yolo: {modes:?}"
+        );
+        let seen = guard.seen();
+        anyhow::ensure!(
+            seen.len() == 1
+                && seen[0].1
+                    == json!({ "tool_name": "Bash", "tool_input": { "command": "git push origin main" } }),
+            "the guard sees the command as Bash: {seen:#?}"
+        );
+        anyhow::ensure!(
+            answer
+                == json!({
+                    "outcome": { "outcome": "selected", "optionId": "reject-once" },
+                    "_meta": { "reason": reason },
+                }),
+            "the guard's reject reaches the agent: {answer}"
+        );
+        anyhow::ensure!(
+            tool_uses(&events, "tool_result").iter().any(|r| r["is_error"] == true),
+            "the command fails: {events:#?}"
+        );
+        Ok(())
+    }
+
+    pub async fn an_unguarded_yolo_session_keeps_the_agents_yolo_mode() -> anyhow::Result<()> {
+        let mut h = start(&FAKE_ROW, &exe());
+        let mut script = full_script();
+        script["turn"] = json!("permission");
+        h.spawn(&script, Some(PermissionMode::Yolo), "do it").await;
+        let events = h.until(is_idle, Duration::from_secs(30)).await?;
+        let modes = modes(&events);
+        anyhow::ensure!(
+            modes.last() == Some(&("yolo".to_owned(), Some(PermissionMode::Yolo))),
+            "the agent is put in its own yolo mode: {modes:?}"
+        );
+        anyhow::ensure!(
+            answered(&events).is_none()
+                && !events.iter().any(|e| matches!(e, AdapterEvent::PermissionRequest { .. })),
+            "a yolo agent asks nothing: {events:#?}"
+        );
+        anyhow::ensure!(
+            tool_uses(&events, "tool_result").iter().any(|r| r["is_error"] == false),
+            "the tool runs: {events:#?}"
+        );
+        let local_id = started(&events).unwrap().to_owned();
+        h.send(AdapterCommand::Kill { local_id, signal: None }).await;
+        h.until(|e| matches!(e, AdapterEvent::SessionEnded { .. }), Duration::from_secs(15))
+            .await?;
+        h.finish().await;
+        Ok(())
+    }
+
+    pub async fn a_guarded_auto_session_auto_allows_edits_and_asks_a_human_for_the_rest()
+    -> anyhow::Result<()> {
+        let guard = super::fake_guard::serve(json!({
+            "outcome": { "outcome": "selected", "optionId": "allow_once" },
+        }))
+        .await?;
+        let mut h = start(&FAKE_ROW, &exe());
+        let mut script = full_script();
+        script["turn"] = json!("permission");
+        script["permissionToolCall"] = json!({
+            "toolCallId": "call-1", "title": "Edit a.rs", "kind": "edit",
+            "rawInput": { "file_path": "/w/a.rs" },
+        });
+        h.spawn_guarded(&script, Some(PermissionMode::Auto), "edit", &guard.url).await;
+        let events = h.until(is_idle, Duration::from_secs(30)).await?;
+        let modes = modes(&events);
+        anyhow::ensure!(
+            !modes.is_empty()
+                && modes.iter().all(|m| *m == ("default".to_owned(), Some(PermissionMode::Auto))),
+            "{modes:?}"
+        );
+        anyhow::ensure!(
+            !events.iter().any(|e| matches!(e, AdapterEvent::PermissionRequest { .. })),
+            "a guard-allowed edit needs no human in auto: {events:#?}"
+        );
+        anyhow::ensure!(
+            answered(&events)
+                == Some(json!({ "outcome": { "outcome": "selected", "optionId": "allow-once" } })),
+            "{events:#?}"
+        );
+        let local_id = started(&events).unwrap().to_owned();
+        h.send(AdapterCommand::Kill { local_id, signal: None }).await;
+        h.until(|e| matches!(e, AdapterEvent::SessionEnded { .. }), Duration::from_secs(15))
+            .await?;
+        h.finish().await;
+
+        let mut h = start(&FAKE_ROW, &exe());
+        script["permissionToolCall"] = gemini_shell("cargo build");
+        h.spawn_guarded(&script, Some(PermissionMode::Auto), "build", &guard.url).await;
+        let events = h
+            .until(|e| matches!(e, AdapterEvent::PermissionRequest { .. }), Duration::from_secs(30))
+            .await?;
+        anyhow::ensure!(guard.seen().len() == 2, "both were checked: {:#?}", guard.seen());
+        let local_id = started(&events).unwrap().to_owned();
+        h.send(AdapterCommand::Kill { local_id, signal: None }).await;
+        h.until(|e| matches!(e, AdapterEvent::SessionEnded { .. }), Duration::from_secs(15))
+            .await?;
+        h.finish().await;
         Ok(())
     }
 
