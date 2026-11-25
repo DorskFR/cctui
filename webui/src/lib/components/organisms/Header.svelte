@@ -1,6 +1,5 @@
 <script lang="ts">
 	import { settings } from '#lib/settings.svelte.ts';
-	import { ThemePicker, FontScalePicker } from '@dorsk/tsumikit';
 	import MainNav from '#lib/components/organisms/MainNav.svelte';
 	import UsageBattery from '#lib/components/molecules/UsageBattery.svelte';
 	import ResourceBattery from '#lib/components/molecules/ResourceBattery.svelte';
@@ -9,7 +8,6 @@
 	import HeaderBrand from './header/HeaderBrand.svelte';
 	import AccountMenu from './header/AccountMenu.svelte';
 	import { installShellWatchers } from './header/shellWatchers.svelte.ts';
-	import { m } from '#lib/paraglide/messages.js';
 
 	installShellWatchers();
 </script>
@@ -25,18 +23,6 @@
 		<div class="tail">
 			<span class="batt"><ProviderStatusDot /><ResourceBattery /><UsageBattery /></span>
 			<span class="divider" aria-hidden="true"></span>
-			<span class="prefs">
-				<ThemePicker
-					auto
-					autoLabel={m.theme_auto_label()}
-					autoHelp={m.theme_auto_help()}
-					lightLabel={m.theme_group_light()}
-					darkLabel={m.theme_group_dark()}
-					box="md"
-					placement="bottom-end"
-				/>
-				<FontScalePicker />
-			</span>
 			<NotificationBell />
 			<AccountMenu />
 		</div>
@@ -107,12 +93,6 @@
 		.hd-inner {
 			grid-template-columns: auto minmax(0, 1fr);
 		}
-	}
-	.prefs {
-		display: inline-flex;
-		align-items: center;
-		gap: var(--sp-1);
-		flex: none;
 	}
 	.batt {
 		display: inline-flex;

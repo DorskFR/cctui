@@ -124,6 +124,22 @@ describe('the system bar carries no ? button', () => {
 	});
 });
 
+describe('appearance', () => {
+	it('keeps the theme and text size pickers out of the bar', () => {
+		render();
+		const hd = document.querySelector('header.hd') as HTMLElement;
+		expect(hd.querySelector('[data-tsu="ThemePicker"], [data-tsu="FontScalePicker"]')).toBeNull();
+		expect(hd.querySelector('.prefs')).toBeNull();
+	});
+
+	it('opens Settings › Interface › Theme from the account menu', async () => {
+		render();
+		await openUserMenu();
+		rowByText('Appearance…')?.click();
+		expect(goto).toHaveBeenCalledWith('/settings/interface#theme');
+	});
+});
+
 describe('notifications', () => {
 	it('keep no indicator on the pill; the toggle lives in the user menu', async () => {
 		notify.enabled = false;

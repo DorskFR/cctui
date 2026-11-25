@@ -1,7 +1,9 @@
 <script lang="ts">
 	import { useMe, useVersion } from '#lib/queries/index.ts';
 	import { releaseChannel, versionLine } from '#lib/releaseChannel.ts';
+	import { goto } from '$app/navigation';
 	import { auth } from '#lib/auth.svelte.ts';
+	import { settingsHref } from '#lib/components/organisms/settings/settings.logic.ts';
 	import { hasFeature } from '#lib/features.svelte.ts';
 	import { notify } from '#lib/notify.svelte.ts';
 	import { settings } from '#lib/settings.svelte.ts';
@@ -62,6 +64,11 @@
 					}
 				]
 			: []),
+		{
+			label: m.nav_appearance(),
+			icon: 'palette' as const,
+			onselect: () => void goto(settingsHref('interface', 'theme'))
+		},
 		{
 			label: notifyLabel,
 			icon: 'bell' as const,
