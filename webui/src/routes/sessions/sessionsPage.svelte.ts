@@ -113,7 +113,6 @@ export interface SessionsPageDeps {
   invalidateSessions: () => void;
   refetchLive: () => Promise<unknown>;
   dockLayout: () => DockLayout;
-  clearUrlSession: () => void;
   spawnSlot: {
     currentKey: () => string;
     read: (key: string) => SpawnSlotPayload | null;

@@ -81,7 +81,6 @@
 		invalidateSessions,
 		refetchLive: () => qc.invalidateQueries({ queryKey: qk.sessions(false) }),
 		dockLayout,
-		clearUrlSession: () => replaceUrlSession(null),
 		spawnSlot: {
 			currentKey: currentSpawnSlot,
 			read: readSpawnSlot,
@@ -177,11 +176,6 @@
 		lastUrlId = sessionIdFromUrl();
 		mounted = true;
 	});
-
-	function replaceUrlSession(id: string | null) {
-		const href = sessionHrefFor(location.href, id);
-		if (href !== null) goto(href, { shallow: true, replace: true });
-	}
 
 	function syncUrlSession(id: string | null, quiet: boolean) {
 		const urlId = sessionIdFromLocation(location.pathname, new URLSearchParams(location.search));
