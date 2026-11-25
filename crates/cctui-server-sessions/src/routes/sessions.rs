@@ -2139,11 +2139,10 @@ pub async fn search_matches(
     page: &SearchPage,
 ) -> Result<(FoundPage, SearchPath), AppError> {
     let started = std::time::Instant::now();
-    let scan = window_matches(pool, root, live_ids, page, started + SEARCH_BUDGET);
+    let mut scan = Box::pin(window_matches(pool, root, live_ids, page, started + SEARCH_BUDGET));
     let query = IndexQuery::compile(root);
     let found = if query.indexable() {
-        let index = query.run(pool, live_ids, page, SEARCH_BUDGET);
-        tokio::pin!(scan, index);
+        let mut index = Box::pin(query.run(pool, live_ids, page, SEARCH_BUDGET));
         tokio::select! {
             indexed = &mut index => match indexed {
                 Ok(Some(found)) => (found, SearchPath::Index),
