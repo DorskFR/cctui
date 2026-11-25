@@ -752,6 +752,8 @@
 	"events_load_more": "Load older",
 	"events_loading_more": "Loading…",
 	"events_filters_aria": "Event filters",
+	"events_filter_kind": "Kind",
+	"events_filter_severity": "Severity",
 	"events_filter_machine_aria": "Machine",
 	"events_filter_all": "All",
 	"events_filter_all_machines": "All machines",
@@ -3342,7 +3344,5 @@
 	"settings_sound_off_hint": "Off. Nothing is loaded until you turn it on.",
 	"dispatch_failed_dispatched_at": "Dispatched {at}",
 	"dispatch_failed_prompt_file": "Prompt file: {file}",
-	"events_filter_family_aria": "Event family",
-	"events_filter_severity_aria": "Severity",
 	"spawn_optional_settings": "Optional settings"
 }

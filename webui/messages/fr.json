@@ -752,6 +752,8 @@
 	"events_load_more": "Charger les plus anciens",
 	"events_loading_more": "Chargement…",
 	"events_filters_aria": "Filtres des événements",
+	"events_filter_kind": "Type",
+	"events_filter_severity": "Gravité",
 	"events_filter_machine_aria": "Machine",
 	"events_filter_all": "Tous",
 	"events_filter_all_machines": "Toutes les machines",
@@ -3342,7 +3344,5 @@
 	"settings_sound_off_hint": "Désactivé. Rien n'est chargé tant que vous ne l'activez pas.",
 	"dispatch_failed_dispatched_at": "Dispatché {at}",
 	"dispatch_failed_prompt_file": "Fichier de prompt : {file}",
-	"events_filter_family_aria": "Famille d'événements",
-	"events_filter_severity_aria": "Gravité",
 	"spawn_optional_settings": "Paramètres optionnels"
 }
