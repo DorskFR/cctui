@@ -162,9 +162,8 @@
 		flex-direction: column;
 		gap: var(--sp-2);
 		padding: var(--sp-3);
-		border: 1px solid var(--border);
 		border-radius: var(--radius-md);
-		background: var(--surface);
+		background: var(--bg-elevated);
 	}
 	header {
 		display: flex;
