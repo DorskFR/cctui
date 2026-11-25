@@ -1,6 +1,22 @@
 // @vitest-environment happy-dom
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { flushSync } from 'svelte';
+
+const media = vi.hoisted(() => {
+	const state = { short: false, queries: [] as string[] };
+	window.matchMedia = ((query: string) => {
+		state.queries.push(query);
+		return {
+			media: query,
+			get matches() {
+				return state.short;
+			},
+			addEventListener() {},
+			removeEventListener() {}
+		};
+	}) as unknown as typeof window.matchMedia;
+	return state;
+});
 import { ComposerFocus } from './composerFocus.svelte';
 import header from './DrawerHeader.svelte?raw';
 import toolbar from './DrawerToolbar.svelte?raw';
@@ -46,8 +62,17 @@ describe('ComposerFocus', () => {
 		stop();
 	});
 
-	it('only collapses on a short viewport', () => {
-		expect(new ComposerFocus().collapse).toBe(false);
+	it('collapses only while focused on a short, narrow viewport', () => {
+		expect(media.queries).toContain('(max-width: 959px) and (max-height: 640px)');
+		const f = new ComposerFocus();
+		f.focused = true;
+		media.short = false;
+		expect(f.collapse).toBe(false);
+		media.short = true;
+		expect(f.collapse).toBe(true);
+		f.focused = false;
+		expect(f.collapse).toBe(false);
+		media.short = false;
 	});
 });
 
