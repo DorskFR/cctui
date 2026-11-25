@@ -252,7 +252,7 @@ fn extra_paths() -> &'static [(String, String)] {
 
 /// Percent-decode a path for validation only. Invalid escapes are left as the
 /// literal bytes they are, which is also how every upstream reads them.
-fn percent_decode(tail: &str) -> String {
+pub(crate) fn percent_decode(tail: &str) -> String {
     let bytes = tail.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;

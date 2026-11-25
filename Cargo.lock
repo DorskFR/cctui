@@ -1138,6 +1138,7 @@ dependencies = [
  "cctui-telemetry",
  "chrono",
  "dashmap",
+ "flate2",
  "futures-util",
  "hex",
  "http",
@@ -1154,6 +1155,7 @@ dependencies = [
  "uuid",
  "webauthn-rs",
  "webauthn-rs-proto",
+ "zstd",
 ]
 
 [[package]]
