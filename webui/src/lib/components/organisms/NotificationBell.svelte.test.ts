@@ -17,7 +17,7 @@ import NotificationBell from './NotificationBell.svelte';
 import { m } from '#lib/paraglide/messages.js';
 
 const dialogButton = (label: string) =>
-	[...document.querySelectorAll<HTMLButtonElement>('dialog button')].find(
+	[...document.querySelectorAll<HTMLButtonElement>('dialog[open] button')].find(
 		(b) => b.textContent?.trim() === label
 	);
 
@@ -230,7 +230,7 @@ describe('NotificationBell', () => {
 		await vi.waitFor(() => expect(store.items.map((n) => n.id)).not.toContain('a'));
 		expect(dismiss).toHaveBeenCalledTimes(1);
 		expect(dismiss).toHaveBeenCalledWith('a', false);
-		expect(document.querySelector('dialog [data-tsu="ConfirmModal"]')).toBeNull();
+		expect(document.querySelector('dialog[open] [data-tsu="ConfirmModal"]')).toBeNull();
 		expect(toasts.error).not.toHaveBeenCalled();
 	});
 
