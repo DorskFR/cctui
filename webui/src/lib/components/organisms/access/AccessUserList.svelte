@@ -50,8 +50,9 @@
 			<Avatar name={u.name} hue={hashHue(u.name)} size={26} decorative />
 			<span class="id">
 				<span class="nm">{u.name}</span>
-				<span class="mt">{meta(u)}{#if !revoked && hasFeature('machine_spawn') && presence(u)}
-						· {presence(u)}{/if}</span>
+				<span class="mt"
+					>{meta(u)}{#if !revoked && hasFeature('machine_spawn') && presence(u)}{` · ${presence(u)}`}{/if}</span
+				>
 			</span>
 			{#if hidden(u)}
 				<Badge tone="muted" size="xs" style="flex:none" data-journey="hidden-chip">{m.hidden_owners_chip()}</Badge>
