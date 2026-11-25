@@ -441,6 +441,7 @@ pub async fn put_settings<S: SessionsContext>(
     .fetch_optional(state.pool())
     .await?
     .ok_or_else(stale_copy)?;
+    cctui_server_kernel::execution_settings::note_scrub_settings_written(ctx.user_id);
 
     // Live-push a fresh Reconcile to every machine the user owns the instant the
     // harness mode changes, so connected daemons pick up the new mode without a

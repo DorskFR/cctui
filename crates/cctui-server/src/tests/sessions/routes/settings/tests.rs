@@ -169,6 +169,27 @@ fn secret_scrub_opt_ins_are_off_unless_chosen() {
 }
 
 #[test]
+fn secret_scrub_opt_ins_need_the_base_switch() {
+    use cctui_server_kernel::execution_settings::secret_scrub_outbound_of;
+    let off = json!({
+        "secretScrubEnabled": false,
+        "secretScrubOutbound": true,
+        "secretScrubLocalTranscripts": true,
+    });
+    let cfg = secret_scrub_of(&off);
+    assert!(!cfg.enabled);
+    assert!(!cfg.local_transcripts);
+    assert!(!secret_scrub_outbound_of(&off));
+    let on = json!({
+        "secretScrubEnabled": true,
+        "secretScrubOutbound": true,
+        "secretScrubLocalTranscripts": true,
+    });
+    assert!(secret_scrub_of(&on).local_transcripts);
+    assert!(secret_scrub_outbound_of(&on));
+}
+
+#[test]
 fn clamp_secret_scrub_drops_empty_patterns_key() {
     let mut data = json!({ "secretScrubPatterns": [{ "regex": "  " }] });
     assert!(clamp_secret_scrub(&mut data).is_ok());

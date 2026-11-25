@@ -908,6 +908,70 @@ async fn a_rare_phrase_across_many_sessions_comes_back_whole() {
 }
 
 #[tokio::test]
+async fn search_takes_the_scan_for_a_common_term_and_the_index_for_a_rare_one() {
+    use super::SearchPath;
+    let Some((pool, uid)) = search_owner("search_path_by_term_commonness").await else {
+        return;
+    };
+    let own = add_machine(&pool, uid, "persistent").await;
+    let token = uuid::Uuid::new_v4().simple().to_string();
+    add_sessions(&pool, uid, own, &token, 12).await;
+    for g in [0, 2, 3, 5, 8, 11] {
+        say_indexed(&pool, &format!("{token}-{g}"), &format!("common{token} words")).await;
+    }
+    say_indexed(&pool, &format!("{token}-7"), &format!("rare{token} common{token}")).await;
+    let common_at = 4;
+
+    for limit in [2, 100] {
+        let page = search_page(limit, Some(uid));
+        let common = cctui_query::parse(&format!("common{token}"));
+        let (scanned, path) =
+            super::search_matches(&pool, &common, None, &page, common_at).await.unwrap();
+        assert_eq!(path, SearchPath::Scan, "a common term never tries the index");
+        let indexed = super::index_matches(&pool, &common, None, &page).await.unwrap().unwrap();
+        assert_eq!(page_ids(&scanned), page_ids(&indexed), "same rows either way");
+        assert_eq!(scanned.total, indexed.total, "same total either way");
+        assert_eq!(scanned.next_cursor, indexed.next_cursor, "same cursor either way");
+        assert!(!scanned.partial && !indexed.partial);
+
+        let rare = cctui_query::parse(&format!("rare{token}"));
+        let (found, path) =
+            super::search_matches(&pool, &rare, None, &page, common_at).await.unwrap();
+        assert_eq!(path, SearchPath::Index, "a rare term takes the chunk index");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_mins(2);
+        let walked = super::window_matches(&pool, &rare, None, &page, deadline).await.unwrap();
+        assert_eq!(page_ids(&found), vec![format!("{token}-7")]);
+        assert_eq!(page_ids(&found), page_ids(&walked), "same rows either way");
+        assert_eq!(found.total, walked.total, "same total either way");
+
+        let both = cctui_query::parse(&format!("rare{token} OR common{token}"));
+        let (_, path) = super::search_matches(&pool, &both, None, &page, common_at).await.unwrap();
+        assert_eq!(path, SearchPath::Scan, "one common term sends the query to the scan");
+    }
+
+    let common = cctui_query::parse(&format!("common{token}"));
+    let mut walked = Vec::new();
+    let mut indexed = Vec::new();
+    for (pages, by_index) in [(&mut walked, false), (&mut indexed, true)] {
+        let mut page = search_page(2, Some(uid));
+        loop {
+            let found = if by_index {
+                super::index_matches(&pool, &common, None, &page).await.unwrap().unwrap()
+            } else {
+                super::search_matches(&pool, &common, None, &page, common_at).await.unwrap().0
+            };
+            pages.push(page_ids(&found));
+            let Some(next) = found.next_cursor else { break };
+            page.cursor = super::parse_search_cursor(&next);
+        }
+    }
+    assert_eq!(walked, indexed, "every page matches between the paths");
+    assert_eq!(walked.concat().len(), 7, "{walked:?}");
+
+    drop_owner(&pool, uid).await;
+}
+
+#[tokio::test]
 async fn chunk_index_search_keeps_owner_archive_and_dispatched_scope() {
     let Some((pool, uid)) = search_owner("search_index_scope").await else {
         return;

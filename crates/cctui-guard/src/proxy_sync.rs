@@ -40,10 +40,15 @@ pub enum Probe {
     Unsupported,
 }
 
+/// The worker reaches the guard pod over IPv4 (`curl -4`); a dual-stack name
+/// must not send the probe to an address nothing listens on.
+fn pick_addr(addrs: impl IntoIterator<Item = SocketAddr>) -> Option<SocketAddr> {
+    let addrs: Vec<SocketAddr> = addrs.into_iter().collect();
+    addrs.iter().find(|a| a.is_ipv4()).or_else(|| addrs.first()).copied()
+}
+
 pub fn probe(addr: &str) -> io::Result<Probe> {
-    let target: SocketAddr = addr
-        .to_socket_addrs()?
-        .next()
+    let target = pick_addr(addr.to_socket_addrs()?)
         .ok_or_else(|| io::Error::other(format!("{addr} resolves to nothing")))?;
     let mut stream = TcpStream::connect_timeout(&target, IO_TIMEOUT)?;
     stream.set_read_timeout(Some(IO_TIMEOUT))?;
@@ -72,6 +77,7 @@ pub enum Handshake {
     Unreachable(String),
 }
 
+/// A newer generation counts: a later transition may have overtaken this one.
 /// A proxy that cannot take part (unreachable before any answer, or too old)
 /// ends the wait at once.
 #[must_use]
@@ -80,7 +86,7 @@ pub fn await_generation(addr: &str, generation: u64, timeout: Duration) -> Hands
     let mut last_seen = None;
     loop {
         match probe(addr) {
-            Ok(Probe::Generation(Some(seen))) if seen == generation => {
+            Ok(Probe::Generation(Some(seen))) if seen >= generation => {
                 return Handshake::Confirmed;
             }
             Ok(Probe::Generation(seen)) => last_seen = seen,
@@ -99,6 +105,60 @@ pub fn await_generation(addr: &str, generation: u64, timeout: Duration) -> Hands
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn fake_proxy(generations: Vec<(Duration, u64)>) -> String {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+        let start = Instant::now();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { return };
+                let mut buf = [0u8; 512];
+                let _ = stream.read(&mut buf);
+                let elapsed = start.elapsed();
+                let generation =
+                    generations.iter().rev().find(|(after, _)| elapsed >= *after).map(|(_, g)| *g);
+                let body = serde_json::json!({ "ready": true, "generation": generation });
+                let resp = format!("HTTP/1.0 200 OK\r\nConnection: close\r\n\r\n{body}");
+                let _ = stream.write_all(resp.as_bytes());
+            }
+        });
+        addr
+    }
+
+    #[test]
+    fn a_newer_generation_already_loaded_confirms_at_once() {
+        let addr = fake_proxy(vec![(Duration::ZERO, 6)]);
+        let started = Instant::now();
+        let outcome = await_generation(&addr, 5, Duration::from_secs(2));
+        assert_eq!(outcome, Handshake::Confirmed);
+        assert!(started.elapsed() < Duration::from_millis(500), "{:?}", started.elapsed());
+    }
+
+    #[test]
+    fn a_generation_pushed_later_is_awaited_then_confirmed() {
+        let addr = fake_proxy(vec![(Duration::ZERO, 4), (Duration::from_millis(300), 5)]);
+        let started = Instant::now();
+        let outcome = await_generation(&addr, 5, Duration::from_secs(2));
+        assert_eq!(outcome, Handshake::Confirmed);
+        assert!(started.elapsed() >= Duration::from_millis(300));
+    }
+
+    #[test]
+    fn an_older_generation_times_out_with_what_was_seen() {
+        let addr = fake_proxy(vec![(Duration::ZERO, 4)]);
+        let outcome = await_generation(&addr, 5, Duration::from_millis(200));
+        assert_eq!(outcome, Handshake::TimedOut { last_seen: Some(4) });
+    }
+
+    #[test]
+    fn the_probe_prefers_ipv4_on_a_dual_stack_name() {
+        let v6: SocketAddr = "[::1]:15002".parse().unwrap();
+        let v4: SocketAddr = "10.0.0.7:15002".parse().unwrap();
+        assert_eq!(pick_addr([v6, v4]), Some(v4));
+        assert_eq!(pick_addr([v6]), Some(v6));
+        assert_eq!(pick_addr([]), None);
+    }
 
     #[test]
     fn ready_body_parsing_distinguishes_old_and_new_proxies() {

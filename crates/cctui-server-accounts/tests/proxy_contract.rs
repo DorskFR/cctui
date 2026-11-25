@@ -41,6 +41,7 @@ struct Resources {
     notices: AtomicUsize,
     refuse_upstream: bool,
     tracer: std::sync::Mutex<Option<Arc<dyn TraceSink>>>,
+    scrub: std::sync::atomic::AtomicBool,
 }
 impl CredentialContext for Host {
     fn pool(&self) -> &PgPool {
@@ -148,6 +149,16 @@ impl ProxyContext for Host {
     async fn deliver_usage_notice(&self, _: &Account, _: &str) {
         self.0.notices.fetch_add(1, Ordering::SeqCst);
     }
+    async fn outbound_scrub(
+        &self,
+        _: &str,
+    ) -> Result<Option<Arc<cctui_crypto::redact::CompiledPatterns>>, sqlx::Error> {
+        Ok(self
+            .0
+            .scrub
+            .load(Ordering::SeqCst)
+            .then(|| Arc::new(cctui_crypto::redact::compile(true, &[], b"contract-key"))))
+    }
 }
 struct Fixture {
     host: Host,
@@ -254,6 +265,7 @@ impl Fixture {
             notices: AtomicUsize::new(0),
             refuse_upstream,
             tracer: std::sync::Mutex::new(None),
+            scrub: std::sync::atomic::AtomicBool::new(false),
         }));
         let provider = Uuid::new_v4();
         let account = Uuid::new_v4();
@@ -280,6 +292,31 @@ impl Fixture {
     }
     async fn request(&self, path: &str, token: &str) -> Response {
         self.request_as(path, token, Family::Anthropic, "/gateway/anthropic").await
+    }
+    async fn send_body(&self, body: &'static str, encoding: Option<&'static str>) -> Response {
+        let mut request = Request::builder()
+            .method("POST")
+            .uri("/gateway/anthropic/v1/messages")
+            .header("authorization", format!("Bearer {}", self.token))
+            .header("content-type", "application/json")
+            .header("x-api-key", "worker-placeholder");
+        if let Some(encoding) = encoding {
+            request = request.header("content-encoding", encoding);
+        }
+        let request = request.body(Body::from(body)).unwrap();
+        tokio::time::timeout(
+            Duration::from_secs(4),
+            passthrough(
+                self.host.clone(),
+                request,
+                Family::Anthropic,
+                "/gateway/anthropic",
+                "https://unused.invalid",
+            ),
+        )
+        .await
+        .expect("bounded proxy")
+        .unwrap_or_else(|status| Response::builder().status(status).body(Body::empty()).unwrap())
     }
     async fn request_as(&self, path: &str, token: &str, family: Family, prefix: &str) -> Response {
         let request = Request::builder()
@@ -381,6 +418,45 @@ async fn headless_proxy_distinguishes_orphan_provider_and_policy_failures() {
         StatusCode::SERVICE_UNAVAILABLE
     );
     assert_eq!(f.calls.load(Ordering::SeqCst), 0);
+}
+
+const SCRUB_SECRET: &str = "ghp_abcdefghijklmnopqrstuvwxyz0123456789";
+
+#[tokio::test]
+async fn outbound_scrub_masks_readable_bodies_and_refuses_unreadable_ones() {
+    let Some(mut f) = Fixture::new(StatusCode::OK, "{\"content\": []}", false).await else {
+        return;
+    };
+    f.host.0.scrub.store(true, Ordering::SeqCst);
+    let reply = f
+        .send_body(
+            r#"{"model":"fixture","messages":[{"role":"user","content":"GH=ghp_abcdefghijklmnopqrstuvwxyz0123456789"}]}"#,
+            None,
+        )
+        .await;
+    assert_eq!(reply.status(), StatusCode::OK);
+    let (_, body) = f.received.recv().await.unwrap();
+    let body = String::from_utf8(body.to_vec()).unwrap();
+    assert!(!body.contains(SCRUB_SECRET), "{body}");
+    assert!(body.contains("[REDACTED:github_token"), "{body}");
+
+    let reply = f.send_body("{\"messages\":[]}", Some("gzip")).await;
+    assert_eq!(reply.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
+    let text = axum::body::to_bytes(reply.into_body(), 4096).await.unwrap();
+    assert!(String::from_utf8_lossy(&text).contains("outbound secret scrub"), "{text:?}");
+
+    let reply = f.send_body("{\"messages\":[", None).await;
+    assert_eq!(reply.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(f.calls.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn outbound_scrub_off_forwards_unreadable_bodies_unchanged() {
+    let Some(mut f) = Fixture::new(StatusCode::OK, "{}", false).await else { return };
+    assert_eq!(f.send_body("{\"messages\":[", Some("gzip")).await.status(), StatusCode::OK);
+    let (headers, body) = f.received.recv().await.unwrap();
+    assert_eq!(body, "{\"messages\":[");
+    assert_eq!(headers["content-encoding"], "gzip");
 }
 
 // Keep Axum's Send requirement part of the shared-host contract.

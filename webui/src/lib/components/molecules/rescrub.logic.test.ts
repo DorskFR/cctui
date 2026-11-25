@@ -15,6 +15,7 @@ import type { LocalTranscriptsScan } from "@bindings/LocalTranscriptsScan";
 import type { MachineTranscriptScan } from "@bindings/MachineTranscriptScan";
 import type { PrivacyScanJob } from "@bindings/PrivacyScanJob";
 import type { ScanCategory } from "@bindings/ScanCategory";
+import type { TranscriptAuditReport } from "@bindings/TranscriptAuditReport";
 
 const NOW = new Date("2026-09-08T12:00:00.000Z");
 
@@ -166,28 +167,62 @@ describe("local transcripts", () => {
     expect(rescrubLocal(withLocal)?.substitutions).toBe(2);
   });
 
+  const report = (over: Partial<TranscriptAuditReport> = {}): TranscriptAuditReport => ({
+    dry_run: false,
+    files_scanned: 40,
+    files_changed: 3,
+    files_read_only: 0,
+    files_live: 1,
+    files_busy: 0,
+    files_failed: 0,
+    lines_changed: 5,
+    lines_unfit: 0,
+    substitutions: 6,
+    values_left: 0,
+    open_files_unknown: false,
+    by_category: { github_token: 6 },
+    samples: {},
+    ...over,
+  });
+
   it("reports a scanned machine's totals", () => {
-    const report = {
-      dry_run: false,
-      files_scanned: 40,
-      files_changed: 3,
-      files_read_only: 0,
-      files_live: 1,
-      files_busy: 0,
-      files_failed: 0,
-      lines_changed: 5,
-      substitutions: 6,
-      by_category: { github_token: 6 },
-      samples: {},
-    };
-    expect(rescrubMachineLine(machine({ state: "scanned", report }))).toEqual({
+    expect(rescrubMachineLine(machine({ state: "scanned", report: report() }))).toEqual({
       kind: "scanned",
       files: 40,
       values: 6,
       changed: 3,
-      live: 1,
       dryRun: false,
+      notes: [{ kind: "live", count: 1 }],
     });
+  });
+
+  it("counts only masked values and lists what stays on disk", () => {
+    const left = report({
+      files_changed: 0,
+      substitutions: 0,
+      values_left: 4,
+      lines_unfit: 1,
+      files_read_only: 2,
+      files_live: 0,
+      files_busy: 1,
+    });
+    const line = rescrubMachineLine(machine({ state: "scanned", report: left }));
+    expect(line.kind === "scanned" && line.values).toBe(0);
+    expect(line.kind === "scanned" && line.notes).toEqual([
+      { kind: "left", count: 4 },
+      { kind: "unfit", count: 1 },
+      { kind: "read_only", count: 2 },
+      { kind: "busy", count: 1 },
+    ]);
+  });
+
+  it("says when a machine cannot tell which files are open", () => {
+    const unknown = report({ open_files_unknown: true, files_live: 40, files_changed: 0 });
+    const line = rescrubMachineLine(machine({ state: "scanned", report: unknown }));
+    expect(line.kind === "scanned" && line.notes).toEqual([
+      { kind: "open_unknown" },
+      { kind: "live", count: 40 },
+    ]);
   });
 
   it("never shows an unscanned machine as clean", () => {

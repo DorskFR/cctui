@@ -27,6 +27,7 @@
 		rescrubScopeSince,
 		rescrubSettleNotice,
 		type RescrubMachineLine,
+		type RescrubMachineNote,
 		type RescrubScope
 	} from './rescrub.logic';
 
@@ -66,6 +67,23 @@
 				return m.settings_rescrub_local_cancelled();
 			case 'failed':
 				return m.settings_rescrub_local_failed({ error: line.detail ?? '' });
+		}
+	}
+
+	function noteText(note: RescrubMachineNote): string {
+		switch (note.kind) {
+			case 'open_unknown':
+				return m.settings_rescrub_local_open_unknown();
+			case 'left':
+				return m.settings_rescrub_local_left({ count: note.count });
+			case 'unfit':
+				return m.settings_rescrub_local_unfit({ count: note.count });
+			case 'read_only':
+				return m.settings_rescrub_local_read_only({ count: note.count });
+			case 'live':
+				return m.settings_rescrub_local_live({ count: note.count });
+			case 'busy':
+				return m.settings_rescrub_local_busy({ count: note.count });
 		}
 	}
 
@@ -248,10 +266,10 @@
 							<Text size="sm" tone={line.kind === 'not_scanned' ? 'warn' : 'muted'} as="span">
 								{machineText(line)}
 							</Text>
-							{#if line.kind === 'scanned' && line.live > 0}
-								<Text size="xs" tone="faint" as="span">
-									{m.settings_rescrub_local_live({ count: line.live })}
-								</Text>
+							{#if line.kind === 'scanned'}
+								{#each line.notes as note (note.kind)}
+									<Text size="xs" tone="faint" as="span">{noteText(note)}</Text>
+								{/each}
 							{/if}
 						</li>
 					{/each}

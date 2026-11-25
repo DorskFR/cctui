@@ -2115,68 +2115,174 @@ async fn count_rest(
     }
 }
 
-/// One page of matches: [`index_matches`] when the chunk index answers in
-/// time, else [`window_matches`] for what is left of [`SEARCH_BUDGET`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SearchPath {
+    Index,
+    Scan,
+    Fallback,
+}
+
+/// One page of matches: [`index_matches`] when every term is rare enough for
+/// the chunk index, else [`window_matches`].
 pub async fn scan_matches(
     pool: &sqlx::PgPool,
     root: &cctui_query::Node,
     live_ids: Option<&[String]>,
     page: &SearchPage,
 ) -> Result<FoundPage, AppError> {
+    Ok(search_matches(pool, root, live_ids, page, COMMON_TERM_CHUNKS).await?.0)
+}
+
+pub async fn search_matches(
+    pool: &sqlx::PgPool,
+    root: &cctui_query::Node,
+    live_ids: Option<&[String]>,
+    page: &SearchPage,
+    common_at: i64,
+) -> Result<(FoundPage, SearchPath), AppError> {
     let deadline = std::time::Instant::now() + SEARCH_BUDGET;
-    if let Some(found) = index_matches(pool, root, live_ids, page).await? {
-        return Ok(found);
+    let query = IndexQuery::compile(root);
+    if query.indexable() && !query.common(pool, common_at).await? {
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        if let Some(found) =
+            query.run(pool, live_ids, page, left.saturating_sub(SCAN_RESERVE)).await?
+        {
+            return Ok((found, SearchPath::Index));
+        }
+        let found = window_matches(pool, root, live_ids, page, deadline).await?;
+        return Ok((found, SearchPath::Fallback));
     }
-    window_matches(pool, root, live_ids, page, deadline).await
+    let found = window_matches(pool, root, live_ids, page, deadline).await?;
+    Ok((found, SearchPath::Scan))
 }
 
 /// A term shorter than this has no trigram to narrow the chunk index by.
 const MIN_TRIGRAM_CHARS: usize = 3;
-/// Past this the chunk-index statement gives way to the per-session scan.
-const INDEX_STATEMENT_TIMEOUT: &str = "SET LOCAL statement_timeout = '2s'";
+/// A term matching this many chunks goes to the window scan: the index
+/// statement rechecks every matching chunk, the scan stops at a full page.
+pub const COMMON_TERM_CHUNKS: i64 = 2_000;
+/// A probe slower than this counts its terms as common.
+const PROBE_STATEMENT_TIMEOUT: &str = "SET LOCAL statement_timeout = '150ms'";
+/// What a timed-out index statement leaves the window scan of [`SEARCH_BUDGET`].
+const SCAN_RESERVE: std::time::Duration = std::time::Duration::from_millis(1_500);
 
-/// `None` when a term is too short for the trigram index or the statement
-/// outlives [`INDEX_STATEMENT_TIMEOUT`]; the per-session scan fills such pages
-/// sooner.
+/// The query compiled for the chunk index, each free-text leaf hoisted.
+struct IndexQuery {
+    where_sql: String,
+    params: Vec<SqlParam>,
+    terms: Vec<TermBinds>,
+}
+
+impl IndexQuery {
+    fn compile(root: &cctui_query::Node) -> Self {
+        let mut c = Compiler { params: Vec::new(), hoisted: Some(Vec::new()) };
+        let where_sql = compile_node_at(root, &mut c, 0);
+        Self { where_sql, params: c.params, terms: c.hoisted.unwrap_or_default() }
+    }
+
+    fn indexable(&self) -> bool {
+        self.terms.iter().all(|t| t.word_run >= MIN_TRIGRAM_CHARS)
+    }
+
+    /// Whether any term's ILIKE matches `cap` chunks, or the count outlives
+    /// [`PROBE_STATEMENT_TIMEOUT`].
+    async fn common(&self, pool: &sqlx::PgPool, cap: i64) -> Result<bool, sqlx::Error> {
+        if self.terms.is_empty() {
+            return Ok(false);
+        }
+        let mut tx = pool.begin().await?;
+        sqlx::query(PROBE_STATEMENT_TIMEOUT).execute(&mut *tx).await?;
+        let mut q = sqlx::query_scalar::<_, bool>(sqlx::AssertSqlSafe(probe_sql(self.terms.len())));
+        for t in &self.terms {
+            q = match &self.params[t.like - 1] {
+                SqlParam::Text(s) => q.bind(s.clone()),
+                SqlParam::Bool(b) => q.bind(*b),
+            };
+        }
+        let common = match q.bind(cap).fetch_one(&mut *tx).await {
+            Ok(common) => common,
+            Err(e) if is_statement_timeout(&e) => return Ok(true),
+            Err(e) => return Err(e),
+        };
+        tx.commit().await?;
+        Ok(common)
+    }
+
+    /// `None` when the statement outlives `timeout`.
+    async fn run(
+        &self,
+        pool: &sqlx::PgPool,
+        live_ids: Option<&[String]>,
+        page: &SearchPage,
+        timeout: std::time::Duration,
+    ) -> Result<Option<FoundPage>, AppError> {
+        let sql = index_sql(
+            &hoisted_ctes(&self.terms),
+            &self.where_sql,
+            self.params.len(),
+            live_ids.is_some(),
+            page,
+        );
+        let mut q = sqlx::query(sqlx::AssertSqlSafe(sql));
+        for p in &self.params {
+            q = match p {
+                SqlParam::Text(s) => q.bind(s.clone()),
+                SqlParam::Bool(b) => q.bind(*b),
+            };
+        }
+        q = q
+            .bind(page.uid)
+            .bind(page.cursor.as_ref().map(|c| c.0))
+            .bind(page.cursor.as_ref().map(|c| c.1.clone()))
+            .bind(page.limit.saturating_add(1))
+            .bind(if page.cursor.is_some() { 0 } else { page.offset });
+        if let Some(live) = live_ids {
+            q = q.bind(live);
+        }
+        let mut tx = pool.begin().await?;
+        sqlx::query("SELECT set_config('statement_timeout', $1, true)")
+            .bind(format!("{}ms", timeout.as_millis().max(1)))
+            .execute(&mut *tx)
+            .await?;
+        let rows = match q.fetch_all(&mut *tx).await {
+            Ok(rows) => rows,
+            Err(e) if is_statement_timeout(&e) => return Ok(None),
+            Err(e) => return Err(e.into()),
+        };
+        tx.commit().await?;
+        index_page(&rows, page).map(Some).map_err(Into::into)
+    }
+}
+
+/// Whether any of the `n` terms bound at `$1…$n` matches `$n+1` chunks, by
+/// ILIKE alone: a word-start match only narrows it.
+fn probe_sql(n: usize) -> String {
+    let cap = n + 1;
+    let counts: Vec<String> = (1..=n)
+        .map(|k| {
+            format!(
+                "(SELECT count(*) FROM (SELECT 1 FROM search_chunks c \
+                 WHERE c.body ILIKE ${k} LIMIT ${cap}) p)"
+            )
+        })
+        .collect();
+    format!("SELECT GREATEST({}) >= ${cap}", counts.join(", "))
+}
+
+/// The chunk-index page however common the terms are; `None` when a term is
+/// too short for the trigram index or the statement outlives its share of
+/// [`SEARCH_BUDGET`].
 pub async fn index_matches(
     pool: &sqlx::PgPool,
     root: &cctui_query::Node,
     live_ids: Option<&[String]>,
     page: &SearchPage,
 ) -> Result<Option<FoundPage>, AppError> {
-    let mut c = Compiler { params: Vec::new(), hoisted: Some(Vec::new()) };
-    let where_sql = compile_node_at(root, &mut c, 0);
-    let hoisted = c.hoisted.unwrap_or_default();
-    if hoisted.iter().any(|t| t.word_run < MIN_TRIGRAM_CHARS) {
+    let query = IndexQuery::compile(root);
+    if !query.indexable() {
         return Ok(None);
     }
-    let sql =
-        index_sql(&hoisted_ctes(&hoisted), &where_sql, c.params.len(), live_ids.is_some(), page);
-    let mut q = sqlx::query(sqlx::AssertSqlSafe(sql));
-    for p in &c.params {
-        q = match p {
-            SqlParam::Text(s) => q.bind(s.clone()),
-            SqlParam::Bool(b) => q.bind(*b),
-        };
-    }
-    q = q
-        .bind(page.uid)
-        .bind(page.cursor.as_ref().map(|c| c.0))
-        .bind(page.cursor.as_ref().map(|c| c.1.clone()))
-        .bind(page.limit.saturating_add(1))
-        .bind(if page.cursor.is_some() { 0 } else { page.offset });
-    if let Some(live) = live_ids {
-        q = q.bind(live);
-    }
-    let mut tx = pool.begin().await?;
-    sqlx::query(INDEX_STATEMENT_TIMEOUT).execute(&mut *tx).await?;
-    let rows = match q.fetch_all(&mut *tx).await {
-        Ok(rows) => rows,
-        Err(e) if is_statement_timeout(&e) => return Ok(None),
-        Err(e) => return Err(e.into()),
-    };
-    tx.commit().await?;
-    index_page(&rows, page).map(Some).map_err(Into::into)
+    query.run(pool, live_ids, page, SEARCH_BUDGET.saturating_sub(SCAN_RESERVE)).await
 }
 
 /// `$1…$n` are the compiled query's binds, then owner, cursor position, row

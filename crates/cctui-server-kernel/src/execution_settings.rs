@@ -177,13 +177,35 @@ pub fn secret_scrub_of(data: &Value) -> cctui_proto::ws::SecretScrubConfig {
             })
         })
         .collect();
-    let local_transcripts =
-        data.get("secretScrubLocalTranscripts").and_then(Value::as_bool).unwrap_or(false);
+    let local_transcripts = enabled
+        && data.get("secretScrubLocalTranscripts").and_then(Value::as_bool).unwrap_or(false);
     cctui_proto::ws::SecretScrubConfig { enabled, patterns, local_transcripts }
 }
 
 /// Whether the gateway scrubs secrets out of this user's outbound API requests.
 #[must_use]
 pub fn secret_scrub_outbound_of(data: &Value) -> bool {
-    data.get("secretScrubOutbound").and_then(Value::as_bool).unwrap_or(false)
+    data.get("secretScrubEnabled").and_then(Value::as_bool).unwrap_or(true)
+        && data.get("secretScrubOutbound").and_then(Value::as_bool).unwrap_or(false)
+}
+
+static SCRUB_CLOCK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static SCRUB_WRITES: std::sync::LazyLock<dashmap::DashMap<uuid::Uuid, u64>> =
+    std::sync::LazyLock::new(dashmap::DashMap::new);
+
+/// Read before loading a user's settings; pass it to [`scrub_settings_written_since`].
+#[must_use]
+pub fn scrub_settings_clock() -> u64 {
+    SCRUB_CLOCK.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+/// Call after a user's settings are committed, so this replica's caches reload them.
+pub fn note_scrub_settings_written(user: uuid::Uuid) {
+    let at = SCRUB_CLOCK.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+    SCRUB_WRITES.insert(user, at);
+}
+
+#[must_use]
+pub fn scrub_settings_written_since(user: uuid::Uuid, clock: u64) -> bool {
+    SCRUB_WRITES.get(&user).is_some_and(|at| *at > clock)
 }

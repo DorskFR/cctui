@@ -15,8 +15,24 @@ const SETTINGS_TTL: Duration = Duration::from_secs(30);
 const CACHE_SWEEP_AT: usize = 4096;
 
 type UserPatterns = Vec<(String, String)>;
-type SettingsCache = dashmap::DashMap<String, (Instant, Option<UserPatterns>)>;
+type SettingsCache = dashmap::DashMap<String, CachedSettings>;
 type CompiledCache = dashmap::DashMap<UserPatterns, Arc<CompiledPatterns>>;
+
+#[derive(Clone)]
+struct CachedSettings {
+    at: Instant,
+    clock: u64,
+    user: Option<uuid::Uuid>,
+    patterns: Option<UserPatterns>,
+}
+
+impl CachedSettings {
+    fn fresh(&self, now: Instant) -> bool {
+        use cctui_server_kernel::execution_settings::scrub_settings_written_since;
+        now.duration_since(self.at) < SETTINGS_TTL
+            && !self.user.is_some_and(|u| scrub_settings_written_since(u, self.clock))
+    }
+}
 
 static SETTINGS_CACHE: LazyLock<SettingsCache> = LazyLock::new(SettingsCache::new);
 static COMPILED_CACHE: LazyLock<CompiledCache> = LazyLock::new(CompiledCache::new);
@@ -31,10 +47,8 @@ pub async fn outbound_patterns(
 ) -> Result<Option<Arc<CompiledPatterns>>, sqlx::Error> {
     let hash = cctui_server_kernel::auth::sha256_hex(session_token);
     let now = Instant::now();
-    let cached = SETTINGS_CACHE
-        .get(&hash)
-        .filter(|hit| now.duration_since(hit.0) < SETTINGS_TTL)
-        .map(|hit| hit.1.clone());
+    let cached =
+        SETTINGS_CACHE.get(&hash).filter(|hit| hit.fresh(now)).map(|hit| hit.patterns.clone());
     let user = if let Some(user) = cached { user } else { refresh(pool, hash, now).await? };
     Ok(user.map(compiled))
 }
@@ -44,29 +58,32 @@ async fn refresh(
     hash: String,
     now: Instant,
 ) -> Result<Option<UserPatterns>, sqlx::Error> {
-    let user = load_user_patterns(pool, &hash).await?;
+    let clock = cctui_server_kernel::execution_settings::scrub_settings_clock();
+    let (user, data) = load_user_settings(pool, &hash).await?;
+    let patterns = data.as_ref().and_then(user_patterns_of);
     if SETTINGS_CACHE.len() >= CACHE_SWEEP_AT {
-        SETTINGS_CACHE.retain(|_, (at, _)| now.duration_since(*at) < SETTINGS_TTL);
+        SETTINGS_CACHE.retain(|_, hit| hit.fresh(now));
     }
-    SETTINGS_CACHE.insert(hash, (now, user.clone()));
-    Ok(user)
+    SETTINGS_CACHE
+        .insert(hash, CachedSettings { at: now, clock, user, patterns: patterns.clone() });
+    Ok(patterns)
 }
 
-async fn load_user_patterns(
+async fn load_user_settings(
     pool: &sqlx::PgPool,
     token_hash: &str,
-) -> Result<Option<UserPatterns>, sqlx::Error> {
-    let data: Option<Value> = sqlx::query_scalar(
-        "SELECT us.data FROM session_tokens t \
+) -> Result<(Option<uuid::Uuid>, Option<Value>), sqlx::Error> {
+    let row: Option<(Option<uuid::Uuid>, Option<Value>)> = sqlx::query_as(
+        "SELECT COALESCE(s.user_id, m.user_id, t.user_id), us.data FROM session_tokens t \
            LEFT JOIN sessions s ON s.id = t.session_id \
            LEFT JOIN machines m ON m.id = s.machine_uuid \
-           JOIN user_settings us ON us.user_id = COALESCE(s.user_id, m.user_id, t.user_id) \
+           LEFT JOIN user_settings us ON us.user_id = COALESCE(s.user_id, m.user_id, t.user_id) \
           WHERE t.token_hash = $1 AND t.revoked_at IS NULL",
     )
     .bind(token_hash)
     .fetch_optional(pool)
     .await?;
-    Ok(data.as_ref().and_then(user_patterns_of))
+    Ok(row.unwrap_or_default())
 }
 
 fn user_patterns_of(data: &Value) -> Option<UserPatterns> {
@@ -87,11 +104,60 @@ fn compiled(user: UserPatterns) -> Arc<CompiledPatterns> {
     patterns
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Unreadable {
+    Encoded,
+    NotUtf8,
+    NotJson,
+    TooDeep,
+}
+
+impl Unreadable {
+    #[must_use]
+    pub const fn reason(self) -> &'static str {
+        match self {
+            Self::Encoded => "content-encoded body",
+            Self::NotUtf8 => "body is not UTF-8",
+            Self::NotJson => "body is not JSON",
+            Self::TooDeep => "body nests too deep",
+        }
+    }
+
+    #[must_use]
+    pub const fn status(self) -> axum::http::StatusCode {
+        match self {
+            Self::Encoded => axum::http::StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            Self::NotUtf8 | Self::NotJson | Self::TooDeep => {
+                axum::http::StatusCode::UNPROCESSABLE_ENTITY
+            }
+        }
+    }
+}
+
 #[must_use]
-pub(crate) fn scrub_request_body(body: Bytes, patterns: Option<&CompiledPatterns>) -> Bytes {
-    let Some(patterns) = patterns.filter(|p| !p.is_empty()) else { return body };
-    let Ok(src) = std::str::from_utf8(&body) else { return body };
-    let Some(root) = Parser::parse(src.as_bytes()) else { return body };
+pub fn encoded(headers: &axum::http::HeaderMap) -> bool {
+    headers.get_all(axum::http::header::CONTENT_ENCODING).iter().any(|v| {
+        v.to_str().map_or(true, |v| {
+            v.split(',')
+                .map(str::trim)
+                .any(|e| !e.is_empty() && !e.eq_ignore_ascii_case("identity"))
+        })
+    })
+}
+
+/// # Errors
+///
+/// A body the scrubber cannot read while patterns are active.
+pub fn scrub_request_body(
+    body: Bytes,
+    patterns: Option<&CompiledPatterns>,
+) -> Result<Bytes, Unreadable> {
+    let Some(patterns) = patterns.filter(|p| !p.is_empty()) else { return Ok(body) };
+    let src = std::str::from_utf8(&body).map_err(|_| Unreadable::NotUtf8)?;
+    if src.trim().is_empty() {
+        return Ok(body);
+    }
+    let root = Parser::parse(src.as_bytes())?;
     let mut targets = Vec::new();
     collect_targets(&root, src, &mut targets);
     let mut edits: Vec<(Range<usize>, String)> = targets
@@ -99,7 +165,7 @@ pub(crate) fn scrub_request_body(body: Bytes, patterns: Option<&CompiledPatterns
         .filter_map(|r| scrub_literal(src, &r, patterns).map(|lit| (r, lit)))
         .collect();
     if edits.is_empty() {
-        return body;
+        return Ok(body);
     }
     edits.sort_by_key(|(r, _)| r.start);
     let mut out = String::with_capacity(src.len());
@@ -110,7 +176,7 @@ pub(crate) fn scrub_request_body(body: Bytes, patterns: Option<&CompiledPatterns
         last = r.end;
     }
     out.push_str(&src[last..]);
-    Bytes::from(out)
+    Ok(Bytes::from(out))
 }
 
 fn scrub_literal(src: &str, lit: &Range<usize>, patterns: &CompiledPatterns) -> Option<String> {
@@ -131,14 +197,19 @@ enum Node {
 struct Parser<'a> {
     b: &'a [u8],
     i: usize,
+    too_deep: bool,
 }
 
 impl<'a> Parser<'a> {
-    fn parse(b: &'a [u8]) -> Option<Node> {
-        let mut p = Self { b, i: 0 };
-        let root = p.value(0)?;
+    fn parse(b: &'a [u8]) -> Result<Node, Unreadable> {
+        let mut p = Self { b, i: 0, too_deep: false };
+        let root = p.value(0);
         p.ws();
-        (p.i == b.len()).then_some(root)
+        match root {
+            Some(root) if p.i == b.len() => Ok(root),
+            _ if p.too_deep => Err(Unreadable::TooDeep),
+            _ => Err(Unreadable::NotJson),
+        }
     }
 
     fn ws(&mut self) {
@@ -149,6 +220,7 @@ impl<'a> Parser<'a> {
 
     fn value(&mut self, depth: usize) -> Option<Node> {
         if depth > MAX_DEPTH {
+            self.too_deep = true;
             return None;
         }
         self.ws();
@@ -289,6 +361,39 @@ fn collect_targets(root: &Node, src: &str, out: &mut Vec<Range<usize>>) {
         }
         _ => {}
     }
+    if let Some(Node::Arr(contents)) = get(top, src, "contents") {
+        gemini_targets(contents, src, out);
+    }
+}
+
+fn gemini_targets(contents: &[Node], src: &str, out: &mut Vec<Range<usize>>) {
+    for content in contents {
+        let Node::Obj(c) = content else { continue };
+        if str_at(c, src, "role").as_deref() == Some("model") {
+            continue;
+        }
+        let Some(Node::Arr(parts)) = get(c, src, "parts") else { continue };
+        for part in parts {
+            let Node::Obj(p) = part else { continue };
+            if let Some(Node::Str(r)) = get(p, src, "text") {
+                out.push(r.clone());
+            }
+            if let Some(Node::Obj(response)) = get(p, src, "functionResponse")
+                && let Some(value) = get(response, src, "response")
+            {
+                string_values(value, out);
+            }
+        }
+    }
+}
+
+fn string_values(node: &Node, out: &mut Vec<Range<usize>>) {
+    match node {
+        Node::Str(r) => out.push(r.clone()),
+        Node::Arr(items) => items.iter().for_each(|n| string_values(n, out)),
+        Node::Obj(fields) => fields.iter().for_each(|(_, n)| string_values(n, out)),
+        Node::Scalar => {}
+    }
 }
 
 fn content_targets(content: Option<&Node>, src: &str, out: &mut Vec<Range<usize>>) {
@@ -322,6 +427,10 @@ mod tests {
         redact::compile(true, &[], b"test-key")
     }
 
+    fn scrub(body: Bytes, patterns: Option<&CompiledPatterns>) -> Bytes {
+        scrub_request_body(body, patterns).unwrap()
+    }
+
     fn anthropic_with_tool_result(output: &str) -> String {
         format!(
             r#"{{"model":"claude-x","stream":true,"messages":[{{"role":"user","content":"hi"}},{{"role":"assistant","content":[{{"type":"tool_use","id":"t1","name":"Bash","input":{{"command":"cat .env"}}}}]}},{{"role":"user","content":[{{"type":"tool_result","tool_use_id":"t1","content":"{output}"}}]}}],"system":"z"}}"#
@@ -331,7 +440,7 @@ mod tests {
     #[test]
     fn masks_a_token_in_a_tool_result() {
         let body = Bytes::from(anthropic_with_tool_result(&format!("GH={TOKEN}\\nok")));
-        let out = scrub_request_body(body.clone(), Some(&patterns()));
+        let out = scrub(body.clone(), Some(&patterns()));
         let text = std::str::from_utf8(&out).unwrap();
         assert!(!text.contains(TOKEN), "{text}");
         assert!(text.contains("[REDACTED:github_token"), "{text}");
@@ -345,7 +454,7 @@ mod tests {
     #[test]
     fn leaves_a_clean_body_byte_identical() {
         let body = Bytes::from(anthropic_with_tool_result("nothing secret here"));
-        let out = scrub_request_body(body.clone(), Some(&patterns()));
+        let out = scrub(body.clone(), Some(&patterns()));
         assert_eq!(out, body);
         assert_eq!(out.as_ptr(), body.as_ptr());
     }
@@ -353,8 +462,8 @@ mod tests {
     #[test]
     fn masking_is_deterministic_across_calls() {
         let body = Bytes::from(anthropic_with_tool_result(TOKEN));
-        let a = scrub_request_body(body.clone(), Some(&patterns()));
-        let b = scrub_request_body(body, Some(&patterns()));
+        let a = scrub(body.clone(), Some(&patterns()));
+        let b = scrub(body, Some(&patterns()));
         assert_ne!(a, Bytes::from(anthropic_with_tool_result(TOKEN)));
         assert_eq!(a, b);
     }
@@ -362,9 +471,9 @@ mod tests {
     #[test]
     fn disabled_patterns_are_a_no_op() {
         let body = Bytes::from(anthropic_with_tool_result(TOKEN));
-        let out = scrub_request_body(body.clone(), Some(&CompiledPatterns::disabled()));
+        let out = scrub(body.clone(), Some(&CompiledPatterns::disabled()));
         assert_eq!(out, body);
-        let out = scrub_request_body(body.clone(), None);
+        let out = scrub(body.clone(), None);
         assert_eq!(out, body);
     }
 
@@ -373,7 +482,7 @@ mod tests {
         let body = Bytes::from(format!(
             r#"{{"messages":[{{"role":"assistant","content":[{{"type":"text","text":"{TOKEN}"}}]}}]}}"#
         ));
-        assert_eq!(scrub_request_body(body.clone(), Some(&patterns())), body);
+        assert_eq!(scrub(body.clone(), Some(&patterns())), body);
     }
 
     #[test]
@@ -381,7 +490,7 @@ mod tests {
         let body = Bytes::from(format!(
             r#"{{"messages":[{{"role":"user","content":[{{"type":"text","text":"use {TOKEN}"}}]}},{{"role":"tool","tool_call_id":"c","content":"{TOKEN}"}}]}}"#
         ));
-        let out = scrub_request_body(body, Some(&patterns()));
+        let out = scrub(body, Some(&patterns()));
         let text = std::str::from_utf8(&out).unwrap();
         assert!(!text.contains(TOKEN), "{text}");
         assert_eq!(text.matches("[REDACTED:github_token").count(), 2, "{text}");
@@ -392,16 +501,120 @@ mod tests {
         let body = Bytes::from(format!(
             r#"{{"model":"gpt-x","input":[{{"type":"message","role":"user","content":[{{"type":"input_text","text":"{TOKEN}"}}]}},{{"type":"function_call","call_id":"c","arguments":"{{}}"}},{{"type":"function_call_output","call_id":"c","output":"{TOKEN}"}}]}}"#
         ));
-        let out = scrub_request_body(body, Some(&patterns()));
+        let out = scrub(body, Some(&patterns()));
         let text = std::str::from_utf8(&out).unwrap();
         assert!(!text.contains(TOKEN), "{text}");
         assert_eq!(text.matches("[REDACTED:github_token").count(), 2, "{text}");
     }
 
     #[test]
-    fn non_json_bodies_pass_through() {
+    fn unreadable_bodies_are_refused_when_opted_in() {
+        let refused = |body: Bytes| scrub_request_body(body, Some(&patterns())).unwrap_err();
+        assert_eq!(refused(Bytes::from(format!("not json {TOKEN}"))), Unreadable::NotJson);
+        assert_eq!(refused(Bytes::from(r#"{"messages":[}"#)), Unreadable::NotJson);
+        assert_eq!(refused(Bytes::from_static(b"{\"input\":\"\xff\xfe\"}")), Unreadable::NotUtf8);
+        let deep = format!("{}{}", "[".repeat(MAX_DEPTH + 2), "]".repeat(MAX_DEPTH + 2));
+        assert_eq!(refused(Bytes::from(deep)), Unreadable::TooDeep);
+        assert_eq!(Unreadable::Encoded.status(), axum::http::StatusCode::UNSUPPORTED_MEDIA_TYPE);
+        assert_eq!(Unreadable::NotJson.status(), axum::http::StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    #[test]
+    fn unreadable_bodies_pass_through_when_not_opted_in() {
         let body = Bytes::from(format!("not json {TOKEN}"));
-        assert_eq!(scrub_request_body(body.clone(), Some(&patterns())), body);
+        assert_eq!(scrub(body.clone(), None), body);
+        assert_eq!(scrub(body.clone(), Some(&CompiledPatterns::disabled())), body);
+    }
+
+    #[test]
+    fn an_empty_body_is_forwarded() {
+        let body = Bytes::from_static(b" \n");
+        assert_eq!(scrub(body.clone(), Some(&patterns())), body);
+    }
+
+    #[test]
+    fn content_encoding_other_than_identity_is_unreadable() {
+        let with = |v: &'static str| {
+            let mut h = axum::http::HeaderMap::new();
+            h.insert(axum::http::header::CONTENT_ENCODING, axum::http::HeaderValue::from_static(v));
+            h
+        };
+        assert!(!encoded(&axum::http::HeaderMap::new()));
+        assert!(!encoded(&with("identity")));
+        assert!(!encoded(&with("Identity")));
+        assert!(encoded(&with("gzip")));
+        assert!(encoded(&with("zstd")));
+        assert!(encoded(&with("identity, br")));
+    }
+
+    fn gemini_body(secret: &str) -> String {
+        format!(
+            r#"{{"systemInstruction":{{"parts":[{{"text":"sys {secret}"}}]}},"contents":[{{"role":"user","parts":[{{"text":"use {secret}"}}]}},{{"role":"model","parts":[{{"text":"model {secret}","thoughtSignature":"c2lnbmF0dXJlLWJsb2ItZm9yLXRlc3Rz"}},{{"functionCall":{{"name":"run","args":{{"cmd":"cat .env {secret}"}}}}}}]}},{{"role":"user","parts":[{{"functionResponse":{{"name":"run","response":{{"output":"GH={secret}","nested":[{{"line":"{secret}"}}],"code":0}}}}}}]}}],"generationConfig":{{"temperature":0}}}}"#
+        )
+    }
+
+    #[test]
+    fn masks_gemini_generate_content_user_text_and_function_responses() {
+        let body = Bytes::from(gemini_body(TOKEN));
+        let out = scrub(body.clone(), Some(&patterns()));
+        let text = std::str::from_utf8(&out).unwrap();
+        let parsed: Value = serde_json::from_str(text).unwrap();
+        let original: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(text.matches("[REDACTED:github_token").count(), 3, "{text}");
+        assert!(!parsed["contents"][0]["parts"][0]["text"].as_str().unwrap().contains(TOKEN));
+        let response = &parsed["contents"][2]["parts"][0]["functionResponse"]["response"];
+        assert!(!response.to_string().contains(TOKEN), "{response}");
+        assert_eq!(response["code"], 0);
+        assert_eq!(parsed["contents"][1], original["contents"][1]);
+        assert_eq!(parsed["systemInstruction"], original["systemInstruction"]);
+        assert_eq!(parsed["generationConfig"], original["generationConfig"]);
+    }
+
+    #[test]
+    fn masks_gemini_stream_generate_content_without_a_role() {
+        let body = Bytes::from(format!(
+            r#"{{"contents":[{{"parts":[{{"text":"{TOKEN}"}}]}},{{"role":"model","parts":[{{"text":"ok","thoughtSignature":"{TOKEN}"}}]}},{{"role":"user","parts":[{{"text":"again {TOKEN}"}}]}}],"tools":[]}}"#
+        ));
+        let out = scrub(body, Some(&patterns()));
+        let parsed: Value = serde_json::from_slice(&out).unwrap();
+        assert!(!parsed["contents"][0]["parts"][0]["text"].as_str().unwrap().contains(TOKEN));
+        assert!(!parsed["contents"][2]["parts"][0]["text"].as_str().unwrap().contains(TOKEN));
+        assert_eq!(parsed["contents"][1]["parts"][0]["thoughtSignature"], TOKEN);
+    }
+
+    #[test]
+    fn a_clean_gemini_body_is_byte_identical() {
+        let body = Bytes::from(gemini_body("nothing"));
+        let out = scrub(body.clone(), Some(&patterns()));
+        assert_eq!(out.as_ptr(), body.as_ptr());
+    }
+
+    #[test]
+    fn outbound_opt_in_needs_the_base_switch() {
+        let off = serde_json::json!({ "secretScrubEnabled": false, "secretScrubOutbound": true });
+        assert!(user_patterns_of(&off).is_none());
+    }
+
+    #[test]
+    fn a_settings_write_expires_that_users_cached_entry_only() {
+        use cctui_server_kernel::execution_settings::{
+            note_scrub_settings_written, scrub_settings_clock,
+        };
+        let now = Instant::now();
+        let (writer, other) = (uuid::Uuid::new_v4(), uuid::Uuid::new_v4());
+        let entry = |user| CachedSettings {
+            at: now,
+            clock: scrub_settings_clock(),
+            user: Some(user),
+            patterns: None,
+        };
+        let (mine, theirs) = (entry(writer), entry(other));
+        assert!(mine.fresh(now) && theirs.fresh(now));
+        note_scrub_settings_written(writer);
+        assert!(!mine.fresh(now));
+        assert!(theirs.fresh(now));
+        assert!(entry(writer).fresh(now));
+        assert!(!theirs.fresh(now + SETTINGS_TTL));
     }
 
     #[test]

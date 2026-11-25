@@ -651,58 +651,88 @@ pub const fn is_unborn_proposal(item: &ContextItem) -> bool {
         && item.body.is_empty()
 }
 
-/// Promote the pending spec to live (bumping `version`) or drop it; dropping
-/// an unborn proposal deletes the item. `None` when the item is not the
-/// caller's or has nothing pending.
+/// Make `approved` live (bumping `version`), or with `None` drop the proposal.
+///
+/// Dropping an unborn proposal deletes the item. `None` when the item is not
+/// the caller's, has nothing pending, or changed since `item` was read.
 pub async fn settle_pending(
     pool: &PgPool,
     user_id: Uuid,
-    id: Uuid,
-    approve: bool,
+    item: &ContextItem,
+    approved: Option<&ContextItemSpec>,
 ) -> Result<Option<ContextItem>, sqlx::Error> {
-    let Some(item) = get_one(pool, user_id, id).await? else { return Ok(None) };
-    if !approve && is_unborn_proposal(&item) {
-        let row: Option<Row> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
-            "DELETE FROM context_items \
-             WHERE id = $1 AND user_id = $2 AND pending IS NOT NULL AND version = 1 \
-             RETURNING {COLS}"
-        )))
-        .bind(id)
-        .bind(user_id)
-        .fetch_optional(pool)
-        .await?;
-        return Ok(row.map(|r| ContextItem { pending: None, ..ContextItem::from(r) }));
+    if item.pending.is_none() {
+        return Ok(None);
     }
-    let Some(pending) = item.pending else { return Ok(None) };
-    let row: Option<Row> = if approve {
-        sqlx::query_as(sqlx::AssertSqlSafe(format!(
-            "UPDATE context_items SET title = $3, body = $4, scope = $5, scope_ref = $6, \
-                filters = $7, tags = $8, enabled = $9, pending = NULL, version = version + 1, \
-                updated_at = now() \
-             WHERE id = $1 AND user_id = $2 AND pending IS NOT NULL RETURNING {COLS}"
-        )))
-        .bind(id)
-        .bind(user_id)
-        .bind(&pending.title)
-        .bind(&pending.body)
-        .bind(&pending.scope)
-        .bind(pending.scope_ref.as_deref())
-        .bind(Jsonb(pending.match_.clone()))
-        .bind(&pending.tags)
-        .bind(pending.enabled)
-        .fetch_optional(pool)
-        .await?
-    } else {
-        sqlx::query_as(sqlx::AssertSqlSafe(format!(
-            "UPDATE context_items SET pending = NULL, updated_at = now() \
-             WHERE id = $1 AND user_id = $2 AND pending IS NOT NULL RETURNING {COLS}"
-        )))
-        .bind(id)
-        .bind(user_id)
-        .fetch_optional(pool)
-        .await?
+    let row: Option<Row> = match approved {
+        Some(spec) => {
+            sqlx::query_as(sqlx::AssertSqlSafe(format!(
+                "UPDATE context_items SET title = $3, body = $4, scope = $5, scope_ref = $6, \
+                    filters = $7, tags = $8, enabled = $9, pending = NULL, \
+                    version = version + 1, updated_at = now() \
+                 WHERE id = $1 AND user_id = $2 AND pending IS NOT NULL \
+                   AND version = $10 AND updated_at = $11 RETURNING {COLS}"
+            )))
+            .bind(item.id)
+            .bind(user_id)
+            .bind(&spec.title)
+            .bind(&spec.body)
+            .bind(&spec.scope)
+            .bind(spec.scope_ref.as_deref())
+            .bind(Jsonb(spec.match_.clone()))
+            .bind(&spec.tags)
+            .bind(spec.enabled)
+            .bind(item.version)
+            .bind(item.updated_at)
+            .fetch_optional(pool)
+            .await?
+        }
+        None if is_unborn_proposal(item) => {
+            let row: Option<Row> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+                "DELETE FROM context_items \
+                 WHERE id = $1 AND user_id = $2 AND pending IS NOT NULL AND version = 1 \
+                 RETURNING {COLS}"
+            )))
+            .bind(item.id)
+            .bind(user_id)
+            .fetch_optional(pool)
+            .await?;
+            return Ok(row.map(|r| ContextItem { pending: None, ..ContextItem::from(r) }));
+        }
+        None => {
+            sqlx::query_as(sqlx::AssertSqlSafe(format!(
+                "UPDATE context_items SET pending = NULL, updated_at = now() \
+                 WHERE id = $1 AND user_id = $2 AND pending IS NOT NULL RETURNING {COLS}"
+            )))
+            .bind(item.id)
+            .bind(user_id)
+            .fetch_optional(pool)
+            .await?
+        }
     };
     Ok(row.map(ContextItem::from))
+}
+
+/// Approve or reject `item`'s proposal. An approval passes the same reach
+/// checks as a human edit.
+pub async fn settle_item(
+    pool: &PgPool,
+    ctx: &AuthContext,
+    item: &ContextItem,
+    approve: bool,
+) -> Result<ContextItem, AppError> {
+    let Some(spec) = reach::approved_spec(item) else {
+        return Err(AppError::new(StatusCode::CONFLICT, "this item has no pending change"));
+    };
+    let approved = if approve {
+        Some(reach::resolve_owned_spec(pool, ctx, clean_spec(spec)?, &targets::kept(item)).await?)
+    } else {
+        None
+    };
+    settle_pending(pool, ctx.user_id, item, approved.as_ref())
+        .await
+        .map_err(db_err)?
+        .ok_or_else(|| AppError::new(StatusCode::CONFLICT, "the item changed; reload and retry"))
 }
 
 pub async fn delete(pool: &PgPool, user_id: Uuid, id: Uuid) -> Result<bool, sqlx::Error> {
@@ -1209,11 +1239,7 @@ async fn settle<S: SessionsContext>(
     let Some(before) = before else {
         return Err(AppError::new(StatusCode::NOT_FOUND, "context item not found"));
     };
-    let Some(item) =
-        settle_pending(state.pool(), ctx.user_id, id, approve).await.map_err(db_err)?
-    else {
-        return Err(AppError::new(StatusCode::CONFLICT, "this item has no pending change"));
-    };
+    let item = settle_item(state.pool(), ctx, &before, approve).await?;
     close_approval_card(state, &before, approve).await;
     Ok(Json(item))
 }
@@ -2051,16 +2077,144 @@ mod tests {
         assert_eq!(parked.updated_by_session.as_deref(), Some("agent-1"));
         assert_eq!(parked.pending.as_ref().map(|p| p.body.as_str()), Some("proposed"));
 
-        let approved = settle_pending(&pool, uid, r.id, true).await.expect("approve").expect("row");
+        let me = human(uid, false);
+        let approved = decide(&pool, &me, r.id, true).await.expect("approve");
         assert_eq!(approved.body, "proposed");
         assert_eq!(approved.version, r.version + 1);
         assert!(approved.pending.is_none());
-        assert!(settle_pending(&pool, uid, r.id, true).await.expect("again").is_none());
+        let again = decide(&pool, &me, r.id, true).await.expect_err("nothing pending");
+        assert_eq!(again.status(), StatusCode::CONFLICT);
 
         propose(&pool, uid, r.id, &live, "agent-1").await.expect("propose").expect("row");
-        let rejected = settle_pending(&pool, uid, r.id, false).await.expect("reject").expect("row");
+        let rejected = decide(&pool, &me, r.id, false).await.expect("reject");
         assert_eq!(rejected.body, "proposed", "a rejection leaves the live body");
         assert!(rejected.pending.is_none());
+
+        sqlx::query("DELETE FROM users WHERE id = $1").bind(uid).execute(&pool).await.ok();
+    }
+
+    fn human(user_id: Uuid, admin: bool) -> AuthContext {
+        let mut scopes = vec![crate::auth::Scope::Read, crate::auth::Scope::Dispatch];
+        if admin {
+            scopes.push(crate::auth::Scope::Admin);
+        }
+        AuthContext {
+            user_id,
+            key_id: Uuid::nil(),
+            machine_id: None,
+            scopes: scopes.into_iter().collect(),
+        }
+    }
+
+    async fn decide(
+        pool: &PgPool,
+        ctx: &AuthContext,
+        id: Uuid,
+        approve: bool,
+    ) -> Result<ContextItem, AppError> {
+        let item = get_one(pool, ctx.user_id, id).await.expect("lookup").expect("item");
+        settle_item(pool, ctx, &item, approve).await
+    }
+
+    fn note_spec(name: &str, body: &str, m: ContextMatch) -> ContextItemSpec {
+        clean_spec(ContextItemSpec {
+            kind: "memory".into(),
+            name: name.into(),
+            title: name.into(),
+            body: body.into(),
+            match_: m,
+            enabled: true,
+            ..ContextItemSpec::default()
+        })
+        .expect("valid memory")
+    }
+
+    #[tokio::test]
+    async fn approving_a_proposal_keeps_the_dispatch_toggle_set_since() {
+        let Some(pool) = test_pool("context_approve_keeps_toggle").await else { return };
+        let uid = seed_user(&pool).await;
+        let live = note_spec("note", "live", ContextMatch::default());
+        let r = insert(&pool, uid, &live, None, None).await.expect("memory");
+        let proposal = ContextItemSpec { body: "proposed".into(), ..live.clone() };
+        propose(&pool, uid, r.id, &proposal, "agent-1").await.expect("propose").expect("row");
+
+        let mut toggled = live.clone();
+        toggled.match_.dispatch = true;
+        update(&pool, uid, r.id, &toggled, None).await.expect("toggle").expect("row");
+
+        let approved = decide(&pool, &human(uid, false), r.id, true).await.expect("approve");
+        assert_eq!(approved.body, "proposed", "the proposal's content goes live");
+        assert!(approved.match_.dispatch, "the toggle set after the proposal stands");
+        assert!(approved.pending.is_none());
+
+        sqlx::query("DELETE FROM users WHERE id = $1").bind(uid).execute(&pool).await.ok();
+    }
+
+    #[tokio::test]
+    async fn approving_a_proposal_refuses_another_users_machine() {
+        let Some(pool) = test_pool("context_approve_foreign_machine").await else { return };
+        let (uid, other) = (seed_user(&pool).await, seed_user(&pool).await);
+        let theirs = Uuid::new_v4();
+        sqlx::query("INSERT INTO machines (id, user_id, name, key_hash) VALUES ($1, $2, $3, $4)")
+            .bind(theirs)
+            .bind(other)
+            .bind(format!("m-{theirs}"))
+            .bind(format!("mk-{theirs}"))
+            .execute(&pool)
+            .await
+            .expect("seed machine");
+        let live = note_spec("note", "live", ContextMatch::default());
+        let r = insert(&pool, uid, &live, None, None).await.expect("memory");
+        let foreign =
+            ContextMatch { machines: vec![theirs.to_string()], ..ContextMatch::default() };
+        let stale = note_spec("note", "proposed", foreign);
+        propose(&pool, uid, r.id, &stale, "agent-1").await.expect("propose").expect("row");
+
+        let err = decide(&pool, &human(uid, false), r.id, true).await.expect_err("foreign");
+        assert_eq!(err.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let after = get_one(&pool, uid, r.id).await.expect("lookup").expect("row");
+        assert_eq!(after.body, "live", "nothing went live");
+        assert!(after.match_.machines.is_empty());
+        assert!(after.pending.is_some(), "the proposal stays for the human to reject");
+
+        sqlx::query("DELETE FROM machines WHERE id = $1").bind(theirs).execute(&pool).await.ok();
+        sqlx::query("DELETE FROM users WHERE id = ANY($1)")
+            .bind(vec![uid, other])
+            .execute(&pool)
+            .await
+            .ok();
+    }
+
+    #[tokio::test]
+    async fn approving_an_all_users_item_needs_an_admin() {
+        let Some(pool) = test_pool("context_approve_all_users").await else { return };
+        let uid = seed_user(&pool).await;
+        let wide = ContextMatch { reach: ContextReach::AllUsers, ..ContextMatch::default() };
+        let live = note_spec("wide", "live", wide);
+        let r = insert(&pool, uid, &live, None, None).await.expect("memory");
+        let proposal = ContextItemSpec { body: "proposed".into(), ..live.clone() };
+        propose(&pool, uid, r.id, &proposal, "agent-1").await.expect("propose").expect("row");
+
+        let err = decide(&pool, &human(uid, false), r.id, true).await.expect_err("not admin");
+        assert_eq!(err.status(), StatusCode::FORBIDDEN);
+        let after = get_one(&pool, uid, r.id).await.expect("lookup").expect("row");
+        assert_eq!((after.body.as_str(), after.pending.is_some()), ("live", true));
+
+        let approved = decide(&pool, &human(uid, true), r.id, true).await.expect("admin");
+        assert_eq!(approved.body, "proposed");
+        assert_eq!(approved.match_.reach, ContextReach::AllUsers);
+
+        let narrow = note_spec("narrow", "live", ContextMatch::default());
+        let n = insert(&pool, uid, &narrow, None, None).await.expect("memory");
+        let widened = ContextItemSpec { body: "proposed".into(), ..live };
+        propose(&pool, uid, n.id, &widened, "agent-1").await.expect("propose").expect("row");
+        let approved = decide(&pool, &human(uid, false), n.id, true).await.expect("approve");
+        assert_eq!(approved.body, "proposed");
+        assert_eq!(
+            approved.match_.reach,
+            ContextReach::Owner,
+            "a stored all-users reach is dropped"
+        );
 
         sqlx::query("DELETE FROM users WHERE id = $1").bind(uid).execute(&pool).await.ok();
     }
@@ -2136,7 +2290,8 @@ mod tests {
             .await
             .expect("insert");
 
-        let gone = settle_pending(&pool, uid, r.id, false).await.expect("reject").expect("row");
+        let me = human(uid, false);
+        let gone = decide(&pool, &me, r.id, false).await.expect("reject");
         assert_eq!(gone.id, r.id);
         assert!(gone.pending.is_none());
         assert!(get_one(&pool, uid, r.id).await.expect("lookup").is_none(), "no empty husk");
@@ -2144,9 +2299,9 @@ mod tests {
         let kept = insert(&pool, uid, &placeholder, Some(&proposed), Some("agent-1"))
             .await
             .expect("insert");
-        settle_pending(&pool, uid, kept.id, true).await.expect("approve").expect("row");
+        decide(&pool, &me, kept.id, true).await.expect("approve");
         propose(&pool, uid, kept.id, &proposed, "agent-1").await.expect("propose");
-        settle_pending(&pool, uid, kept.id, false).await.expect("reject").expect("row");
+        decide(&pool, &me, kept.id, false).await.expect("reject");
         let after = get_one(&pool, uid, kept.id).await.expect("lookup").expect("still there");
         assert_eq!(after.body, "do the thing", "an approved rule survives a later rejection");
 

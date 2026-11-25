@@ -553,4 +553,40 @@ mod tests {
         let masked = json!({"role": "user", "text": "pw [REDACTED:user] ok"});
         assert_eq!(out.updates, vec![(1, masked)]);
     }
+    fn stored_machine(report: &serde_json::Value) -> serde_json::Value {
+        json!([{"machine_id": "m-1", "machine_name": "laptop", "state": "scanned",
+                "reason": null, "detail": null, "report": report}])
+    }
+
+    #[test]
+    fn a_machine_report_stored_before_the_unmasked_counts_loads_with_zeroes() {
+        let legacy = json!({"dry_run": false, "files_scanned": 4, "files_changed": 1,
+            "files_read_only": 0, "files_live": 0, "files_busy": 0, "files_failed": 0,
+            "lines_changed": 2, "substitutions": 3, "by_category": {"github_token": 3},
+            "samples": {}});
+        let local = super::local::summarize(Some(stored_machine(&legacy))).expect("parses");
+        let report = local.machines[0].report.as_ref().expect("report");
+        assert_eq!((report.lines_unfit, report.values_left), (0, 0));
+        assert!(!report.open_files_unknown);
+        assert_eq!(local.substitutions, 3);
+    }
+
+    #[test]
+    fn the_unmasked_counts_of_a_daemon_report_reach_the_job_view() {
+        let report = cctui_proto::api::privacy_scan::TranscriptAuditReport {
+            files_scanned: 4,
+            lines_unfit: 1,
+            values_left: 5,
+            open_files_unknown: true,
+            ..Default::default()
+        };
+        let stored = stored_machine(&serde_json::to_value(&report).unwrap());
+        let local = super::local::summarize(Some(stored)).expect("parses");
+        assert_eq!(local.machines[0].report.as_ref(), Some(&report));
+        let view = serde_json::to_value(&local).unwrap();
+        let wire = &view["machines"][0]["report"];
+        assert_eq!((&wire["lines_unfit"], &wire["values_left"]), (&json!(1), &json!(5)));
+        assert_eq!(wire["open_files_unknown"], json!(true));
+        assert_eq!(local.substitutions, 0, "values left are never counted as masked");
+    }
 }

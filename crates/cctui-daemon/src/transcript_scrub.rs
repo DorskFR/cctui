@@ -65,6 +65,14 @@ impl Roots {
     }
 }
 
+impl Roots {
+    /// Where a killed rewrite may have left a tmp copy.
+    #[must_use]
+    pub fn clear_stale_tmp(&self) -> usize {
+        rewrite::clear_stale_tmp(&self.claude_projects)
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct Options {
     pub mode: Mode,
@@ -85,8 +93,14 @@ pub struct Report {
     pub files_failed: usize,
     pub lines_changed: usize,
     pub lines_unfit: usize,
+    /// Values masked, or that an apply would mask.
     pub substitutions: usize,
     pub by_category: BTreeMap<String, usize>,
+    /// Values found that stay on disk: unfit lines, read-only, live and busy
+    /// files.
+    pub values_left: usize,
+    pub open_files_unknown: bool,
+    pub tmp_removed: usize,
     pub samples: BTreeMap<String, Vec<ScanSample>>,
     pub findings: Vec<Finding>,
     pub findings_truncated: bool,
@@ -105,25 +119,44 @@ impl Report {
             files_busy: n(self.files_busy),
             files_failed: n(self.files_failed),
             lines_changed: n(self.lines_changed),
+            lines_unfit: n(self.lines_unfit),
             substitutions: n(self.substitutions),
+            values_left: n(self.values_left),
+            open_files_unknown: self.open_files_unknown,
             by_category: self.by_category.iter().map(|(c, v)| (c.clone(), n(*v))).collect(),
             samples: self.samples.clone(),
         }
     }
 
-    fn absorb(&mut self, out: &FileOutcome, harness: Harness, mode: Mode) {
-        for (cat, n) in &out.stats {
-            *self.by_category.entry(cat.clone()).or_insert(0) += n;
-            self.substitutions += n;
-        }
-        self.lines_unfit += out.lines_unfit;
+    /// `rewritable`: an apply pass would rewrite this file.
+    fn absorb(&mut self, out: &FileOutcome, harness: Harness, rewritable: bool) {
+        let found = out.values_found();
         if out.busy {
             self.files_busy += 1;
-        } else if out.lines_changed > 0 && !harness.rewritable() {
-            self.files_read_only += 1;
-        } else if out.lines_changed > 0 && (out.written || mode == Mode::DryRun) {
+            self.values_left += found;
+            return;
+        }
+        if !rewritable {
+            if found > 0 && !harness.rewritable() {
+                self.files_read_only += 1;
+            }
+            self.values_left += found;
+            return;
+        }
+        self.lines_unfit += out.lines_unfit;
+        self.values_left += out.values_unfit;
+        if out.lines_changed == 0 {
+            return;
+        }
+        if out.written || self.dry_run {
             self.files_changed += 1;
             self.lines_changed += out.lines_changed;
+            for (cat, n) in &out.stats {
+                *self.by_category.entry(cat.clone()).or_insert(0) += n;
+                self.substitutions += n;
+            }
+        } else {
+            self.values_left += out.stats.values().sum::<usize>();
         }
     }
 }
@@ -180,7 +213,11 @@ pub fn run(
     stop: &CancellationToken,
     mut ledger: Option<&mut Ledger>,
 ) -> Report {
-    let mut report = Report { dry_run: opts.mode == Mode::DryRun, ..Report::default() };
+    let mut report = Report {
+        dry_run: opts.mode == Mode::DryRun,
+        open_files_unknown: !liveness.knows_open_files(),
+        ..Report::default()
+    };
     let mut audit = opts.collect.then(audit::Audit::default);
     for target in targets {
         if stop.is_cancelled() {
@@ -199,11 +236,12 @@ pub fn run(
                 continue;
             }
         }
-        let mode = if live || !target.harness.rewritable() { Mode::DryRun } else { opts.mode };
+        let rewritable = !live && target.harness.rewritable();
+        let mode = if rewritable { opts.mode } else { Mode::DryRun };
         report.files_scanned += 1;
         match process_file(target, patterns, mode, audit.as_mut()) {
             Ok(out) => {
-                report.absorb(&out, target.harness, opts.mode);
+                report.absorb(&out, target.harness, rewritable);
                 if let Some(ledger) = ledger.as_deref_mut()
                     && !out.busy
                     && !live

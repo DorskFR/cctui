@@ -15,9 +15,10 @@ FNS=$(awk '
     /^external_guard_failed\(\)/,/^}/; /^guard_curl\(\)/,/^}/; /^external_guard_wait\(\)/,/^}/;
     /^dispatch_identity_failed\(\)/,/^}/; /^phase_dispatch_env\(\)/,/^}/;
     /^guard_put\(\)/,/^}/; /^guard_policy_sync\(\)/,/^}/; /^phase_external_guard\(\)/,/^}/;
+    /^guard_proxy_ready_addr\(\)/,/^}/;
     /^egress_breaches\(\)/,/^}/; /^egress_recheck\(\)/,/^}/
 ' "$ENTRY")
-for fn in phase_external_guard guard_policy_sync egress_recheck; do
+for fn in phase_external_guard guard_policy_sync guard_proxy_ready_addr egress_recheck; do
     case "$FNS" in *"$fn()"*) ;; *) echo "$fn not found in $ENTRY"; exit 1 ;; esac
 done
 
@@ -220,5 +221,18 @@ has "await_dispatch_done calls egress_recheck" "egress_recheck" \
     "$(awk '/^await_dispatch_done\(\)/,/^}/' "$ENTRY")"
 has "preflight hands its mode to the re-check" 'PREFLIGHT_RECHECK_MODE=$_mode' \
     "$(awk '/^phase_preflight\(\)/,/^}/' "$ENTRY")"
+
+echo "== 11. cctui-guard confirms each generation against the guard pod =="
+reset
+out=$(GUARD_PROXY_HOST=cctui-worker-abc-guard run 'NET_MODE=external-pod; guard_proxy_ready_addr'); rc=$?
+check "rc 0" 0 "$rc"
+check "external-pod: the guard pod's /ready" "cctui-worker-abc-guard:15002" "$out"
+out=$(GUARD_PROXY_HOST=g run 'NET_MODE=transparent-external; guard_proxy_ready_addr'); rc=$?
+check "sidecar: rc 0" 0 "$rc"
+check "sidecar: loopback default kept" "" "$out"
+has "phase_guard passes it to cctui-guard" '--proxy-ready "$_gr_addr"' \
+    "$(awk '/^phase_guard\(\)/,/^}/' "$ENTRY")"
+has "the sync loop pushes within the handshake wait" 'WORKER_GUARD_SYNC_SECS:-0.2' \
+    "$(awk '/^guard_policy_sync\(\)/,/^}/' "$ENTRY")"
 
 [ "$fail" = 0 ] && echo "PASS" || { echo "FAILED"; exit 1; }
