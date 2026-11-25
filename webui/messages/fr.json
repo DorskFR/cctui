@@ -2389,6 +2389,23 @@
 	"dispatch_failed_rerun_prompt": "Impossible de redispatcher d'ici : seul le début du prompt est enregistré. Renvoyez-le depuis l'appelant d'origine.",
 	"dispatch_failed_rerun_redacted": "Impossible de redispatcher d'ici : les passages <redacted> du prompt ne sont enregistrés que masqués. Renvoyez-le depuis l'appelant d'origine.",
 	"dispatch_failed_rerun_payload": "Impossible de redispatcher d'ici : le payload était trop volumineux pour être enregistré. Renvoyez-le depuis l'appelant d'origine.",
+	"dispatch_failed_details": "Détails",
+	"dispatch_failed_group_resolved": "Résolus : un envoi ultérieur du même travail a abouti.",
+	"dispatch_failed_group_count": [
+		{
+			"declarations": [
+				"input count",
+				"local countPlural = count: plural"
+			],
+			"selectors": [
+				"countPlural"
+			],
+			"match": {
+				"countPlural=one": "1 envoi",
+				"countPlural=other": "{count} envois"
+			}
+		}
+	],
 	"dispatch_failed_dismiss": "Masquer",
 	"dispatch_failed_dismiss_all": "Tout masquer",
 	"dispatch_failed_resolved": "résolu",
@@ -3356,7 +3373,5 @@
 		}
 	],
 	"list_auto_approve": "approbation auto",
-	"dispatch_failed_dispatched_at": "Dispatché {at}",
-	"dispatch_failed_prompt_file": "Fichier de prompt : {file}",
 	"spawn_optional_settings": "Paramètres optionnels"
 }

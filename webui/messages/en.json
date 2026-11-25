@@ -2389,6 +2389,23 @@
 	"dispatch_failed_rerun_prompt": "Can't be re-dispatched from here: only the start of the prompt is stored. Re-send it from its original caller.",
 	"dispatch_failed_rerun_redacted": "Can't be re-dispatched from here: the prompt's <redacted> parts are stored only masked. Re-send it from its original caller.",
 	"dispatch_failed_rerun_payload": "Can't be re-dispatched from here: the payload was too large to store. Re-send it from its original caller.",
+	"dispatch_failed_details": "Details",
+	"dispatch_failed_group_resolved": "Resolved: a later dispatch of the same work ran.",
+	"dispatch_failed_group_count": [
+		{
+			"declarations": [
+				"input count",
+				"local countPlural = count: plural"
+			],
+			"selectors": [
+				"countPlural"
+			],
+			"match": {
+				"countPlural=one": "1 dispatch",
+				"countPlural=other": "{count} dispatches"
+			}
+		}
+	],
 	"dispatch_failed_dismiss": "Dismiss",
 	"dispatch_failed_dismiss_all": "Dismiss all",
 	"dispatch_failed_resolved": "resolved",
@@ -3356,7 +3373,5 @@
 		}
 	],
 	"list_auto_approve": "auto-approve",
-	"dispatch_failed_dispatched_at": "Dispatched {at}",
-	"dispatch_failed_prompt_file": "Prompt file: {file}",
 	"spawn_optional_settings": "Optional settings"
 }
