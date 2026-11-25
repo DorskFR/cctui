@@ -137,7 +137,7 @@
 							</td>
 							<td>
 								<span class="width">
-									<Text size="sm" variant="code" tone="faint">
+									<Text size="sm" numeric tone="faint">
 										{p.dock.width ? `${p.dock.width}px` : m.settings_panels_width_default()}
 									</Text>
 									{#if p.dock.width}

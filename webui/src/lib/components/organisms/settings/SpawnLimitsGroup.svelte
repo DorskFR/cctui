@@ -75,7 +75,7 @@
 							placeholder={fallback(f.key)}
 							aria-label={f.label()}
 						/>
-						<Text size="xs" tone="faint" variant="code">{effective(f.key)}</Text>
+						<Text size="xs" tone="faint" numeric>{effective(f.key)}</Text>
 						{#if info?.sources[f.key] === 'settings'}
 							<Button
 								size="sm"

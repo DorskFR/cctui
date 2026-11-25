@@ -140,7 +140,7 @@
 	>
 		<div class="actions">
 			{#if shown}
-				<Text size="sm" variant="code" data-testid="storage-preview">
+				<Text size="sm" numeric data-testid="storage-preview">
 					{m.settings_server_storage_preview_result({
 						bytes: fmtBytes(shown.bytes_freed),
 						trimmed: n(shown.rows_trimmed),
@@ -180,7 +180,7 @@
 					<Badge size="sm" tone="info">{m.settings_server_storage_last_run_running()}</Badge>
 				{/if}
 				<Timestamp value={run.finished_at ?? run.started_at} mode="relative" size="xs" tone="faint" />
-				<Text size="sm" variant="code">{fmtBytes(run.bytes_freed)}</Text>
+				<Text size="sm" numeric>{fmtBytes(run.bytes_freed)}</Text>
 			</div>
 		{/if}
 	</SettingRow>
@@ -189,7 +189,7 @@
 		help={m.settings_server_storage_freed_help()}
 		selfLabelled
 	>
-		<Text size="sm" variant="code" data-testid="storage-freed">{fmtBytes(info.bytes_freed_total)}</Text>
+		<Text size="sm" numeric data-testid="storage-freed">{fmtBytes(info.bytes_freed_total)}</Text>
 	</SettingRow>
 </SettingGroup>
 {#if run?.error}

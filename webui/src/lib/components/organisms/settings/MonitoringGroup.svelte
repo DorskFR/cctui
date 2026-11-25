@@ -50,7 +50,7 @@
 								)}
 						/>
 						<span class="meta">
-							<Text size="xs" tone="faint" variant="code">{r.name}</Text>
+							<Text size="xs" tone="faint">{r.name}</Text>
 							<Text size="xs" tone={r.liveness === 'online' ? 'faint' : 'danger'}
 								>{r.liveness}</Text
 							>

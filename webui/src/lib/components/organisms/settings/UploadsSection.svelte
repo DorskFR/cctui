@@ -77,7 +77,7 @@
 		{#if isAdmin}
 			<Input type="number" min="1" step="1" bind:value={files} aria-label={m.settings_uploads_max_files_label()} />
 		{:else}
-			<Text size="sm" variant="code">{effective.max_files}</Text>
+			<Text size="sm" numeric>{effective.max_files}</Text>
 		{/if}
 	</SettingRow>
 	<SettingRow
@@ -87,7 +87,7 @@
 		{#if isAdmin}
 			<Input type="number" min="1" step="1" bind:value={fileMb} aria-label={m.settings_uploads_max_file_label()} />
 		{:else}
-			<Text size="sm" variant="code">{fmtSize(effective.max_file_bytes)}</Text>
+			<Text size="sm" numeric>{fmtSize(effective.max_file_bytes)}</Text>
 		{/if}
 	</SettingRow>
 	<SettingRow
@@ -97,7 +97,7 @@
 		{#if isAdmin}
 			<Input type="number" min="1" step="1" bind:value={totalMb} aria-label={m.settings_uploads_max_total_label()} />
 		{:else}
-			<Text size="sm" variant="code">{fmtSize(effective.max_total_bytes)}</Text>
+			<Text size="sm" numeric>{fmtSize(effective.max_total_bytes)}</Text>
 		{/if}
 	</SettingRow>
 	{#if isAdmin}
@@ -127,7 +127,7 @@
 			: m.settings_uploads_ceiling_help_generic()}
 		selfLabelled
 	>
-		<Text size="sm" variant="code" tone="faint">
+		<Text size="sm" numeric tone="faint">
 			{info ? fmtSize(info.body_limit_bytes) : '—'}
 		</Text>
 	</SettingRow>

@@ -160,7 +160,7 @@
 							<option value="off">{m.settings_harness_update_off()}</option>
 						</Select>
 						{#if row.report}
-							<Text size="xs" tone="faint" variant="code">
+							<Text size="xs" tone="faint" numeric>
 								{versionLines(row.report.versions)}
 							</Text>
 							{#if row.report.managed_by_image}
