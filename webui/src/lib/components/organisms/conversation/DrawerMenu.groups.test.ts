@@ -36,6 +36,12 @@ describe('drawer ⋯ menu groups', () => {
 		expect([...order].sort((a, b) => a - b)).toEqual(order);
 	});
 
+	it('keeps Stop in ⋯ whenever the session is live, whatever stream.working says', () => {
+		const stop = items.lastIndexOf('...(', at('m.drawer_interrupt_label()'));
+		expect(items.slice(stop)).toMatch(/^\.\.\.\(!archived\s*\?/);
+		expect(menu).not.toMatch(/\bworking\b/);
+	});
+
 	it('heads a group with a non-focusable row and drops an empty group', () => {
 		expect(menu).toContain('label, control: groupHeading }, ...items] : [];');
 		expect(menu).toContain('return items.length ?');

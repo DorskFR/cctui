@@ -205,10 +205,8 @@
 		<DrawerMenu
 			{session}
 			{archived}
-			{compact}
 			{collapsed}
 			{box}
-			{working}
 			onrename={startRename}
 			{onsearch}
 			{oninterrupt}

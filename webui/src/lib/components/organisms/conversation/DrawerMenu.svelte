@@ -14,10 +14,8 @@
 	let {
 		session,
 		archived,
-		compact,
 		collapsed,
 		box,
-		working = false,
 		onrename,
 		onsearch,
 		oninterrupt,
@@ -34,11 +32,8 @@
 	}: {
 		session: SessionListItem;
 		archived: boolean;
-		compact: boolean;
 		collapsed: boolean;
 		box: 'sm' | 'md';
-		/** A turn is running: the tile, which has no inline Stop, offers it here. */
-		working?: boolean;
 		onrename: () => void;
 		onsearch?: () => void;
 		oninterrupt: () => void;
@@ -149,7 +144,7 @@
 						}
 					]
 				: []),
-			...(compact && working && !archived
+			...(!archived
 				? [
 						{
 							label: m.drawer_interrupt_label(),

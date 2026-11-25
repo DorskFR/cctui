@@ -24,7 +24,7 @@ describe('a tile wears one row of header chrome', () => {
 		expect(header).toContain('const canStop = $derived(working && !archived && !compact)');
 		const start = menu.indexOf('const overflowItems');
 		const items = menu.slice(start, menu.indexOf(']);', start));
-		expect(items).toContain('...(compact && working && !archived');
+		expect(items).toContain("...(!archived\n\t\t\t\t? [\n\t\t\t\t\t\t{\n\t\t\t\t\t\t\tlabel: m.drawer_interrupt_label()");
 		expect(items).toContain("icon: 'stop' as const");
 		expect(items).toContain("icon: 'archive' as const");
 	});
