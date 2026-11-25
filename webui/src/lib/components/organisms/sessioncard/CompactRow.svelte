@@ -459,6 +459,11 @@
 			min-width: min-content;
 		}
 	}
+	@container sess-row (max-width: 40rem) {
+		.labels {
+			flex: none;
+		}
+	}
 	@container sess-row (max-width: 28em) {
 		.one .tokens {
 			display: none;
