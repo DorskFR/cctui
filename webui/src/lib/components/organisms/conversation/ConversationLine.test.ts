@@ -284,7 +284,8 @@ describe('dictated message', () => {
 		const el = await render(line({ dictated: true, html: '<p>fix the bug</p>', text: 'fix the bug' }));
 		expect(el.querySelector('[data-testid="voice-message"]')).toBeNull();
 		const mic = el.querySelector('.lmeta .dictated');
-		expect(mic?.textContent).toBe('🎙');
+		expect(mic?.querySelector('svg[data-tsu="Icon"]')).not.toBeNull();
+		expect(mic?.textContent).not.toContain('🎙');
 		expect(mic?.getAttribute('aria-label')).toContain('Dictated');
 		expect(el.querySelector('.bubble')?.textContent).toContain('fix the bug');
 	});
@@ -300,7 +301,7 @@ describe('voice message', () => {
 		const el = await render(line({ voice: true, html: '<p>what time is it</p>', text: 'what time is it' }));
 		const msg = el.querySelector('[data-testid="voice-message"]');
 		expect(msg).not.toBeNull();
-		expect(msg?.querySelector('[role="img"]')?.textContent).toBe('🎙');
+		expect(msg?.querySelector('[role="img"] svg[data-tsu="Icon"]')).not.toBeNull();
 		expect(msg?.querySelector('.bubble.user')?.textContent).toBe('what time is it');
 		const meta = el.querySelector('.lmeta')?.textContent?.toLowerCase() ?? '';
 		expect(meta).toContain('voice');
@@ -312,7 +313,7 @@ describe('voice message', () => {
 		const el = await render(line());
 		expect(el.querySelector('[data-testid="voice-message"]')).toBeNull();
 		expect(el.querySelector('.bubble.user')?.textContent).toBe('hello');
-		expect(el.textContent).not.toContain('🎙');
+		expect(el.querySelector('.dictated, .voice-message')).toBeNull();
 	});
 });
 

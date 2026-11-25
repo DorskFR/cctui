@@ -140,7 +140,7 @@
 
 <span class="voice-controls" data-journey="voice-controls">
 	<IconButton
-		emoji="🎙"
+		icon="mic"
 		box="sm"
 		variant="ghost"
 		pressed={recording}

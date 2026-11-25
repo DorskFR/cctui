@@ -177,7 +177,7 @@
 				class="dictated"
 				role="img"
 				aria-label={m.voice_user_dictated()}
-				title={m.voice_user_dictated()}>🎙</span
+				title={m.voice_user_dictated()}><Icon name="mic" size={12} /></span
 			>
 		{/if}
 		{#if ln.context?.session}
@@ -366,8 +366,7 @@
 		align-items: center;
 	}
 	.dictated {
-		font-size: var(--fs-xs);
-		line-height: 1;
+		display: inline-flex;
 		opacity: 0.75;
 	}
 	.role {
