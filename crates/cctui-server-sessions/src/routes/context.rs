@@ -1474,6 +1474,16 @@ mod tests {
         items.iter().map(|i| i.name.as_str()).collect()
     }
 
+    /// Admins' all-users rules from tests running beside this one on the same
+    /// database reach every launch; an assertion counts only its own users'.
+    fn only(items: Vec<ContextItem>, users: &[Uuid]) -> Vec<ContextItem> {
+        items.into_iter().filter(|i| users.contains(&i.user_id)).collect()
+    }
+
+    fn own_refs(refs: Vec<AttachedContextRef>, ids: &[Uuid]) -> Vec<AttachedContextRef> {
+        refs.into_iter().filter(|r| ids.iter().any(|id| id.to_string() == r.id)).collect()
+    }
+
     fn at(adapter: &str, dir: &str) -> SpawnScope {
         SpawnScope {
             machine_id: Some("m-1".into()),
@@ -1975,7 +1985,7 @@ mod tests {
             StoredScope { user_id: uid, coords: owned_at(uid, "codex", "/w"), dispatched: false };
         remember_intent(&pool, &key, &[r.clone(), m.clone()], &stored).await;
 
-        let first = for_launch(&pool, &key, true).await;
+        let first = only(for_launch(&pool, &key, true).await, &[uid]);
         assert_eq!(names(&first), ["house", "note"]);
         assert_eq!(first[0].body, "v1 body");
 
@@ -1985,7 +1995,7 @@ mod tests {
 
         let session = format!("ctx-session-{}", Uuid::new_v4());
         claim_intent(&pool, &session, Some(&key)).await;
-        let resumed = for_launch(&pool, &session, true).await;
+        let resumed = only(for_launch(&pool, &session, true).await, &[uid]);
         assert_eq!(names(&resumed), ["house", "note"], "the resume keeps the kit");
         assert_eq!(resumed[0].body, "v2 body", "the edit reaches the next launch");
 
@@ -1993,22 +2003,29 @@ mod tests {
         else {
             panic!("the re-keyed row exists");
         };
+        let rules = own_refs(rules, &[r.id]);
         assert_eq!(rules.len(), 1);
         assert_eq!(memories.len(), 1);
         assert_eq!((memories[0].name.as_str(), memories[0].version), ("note", 1));
         assert_eq!((rules[0].name.as_str(), rules[0].version), ("house", 2));
 
-        let legacy = for_launch(&pool, &session, false).await;
+        let legacy = only(for_launch(&pool, &session, false).await, &[uid]);
         assert_eq!(names(&legacy), ["note"], "a daemon that predates rules is not sent them");
         let Some(Intent { rules, .. }) = intent_of(&pool, &session).await.expect("row") else {
             panic!("the re-keyed row exists");
         };
-        assert!(rules.is_empty(), "rules a daemon cannot deliver are not recorded as delivered");
+        assert!(
+            own_refs(rules, &[r.id]).is_empty(),
+            "rules a daemon cannot deliver are not recorded as delivered"
+        );
 
         let claude = StoredScope { coords: owned_at(uid, "claude-code", "/w"), ..stored };
         let other = format!("ctx-key-{}", Uuid::new_v4());
         remember_intent(&pool, &other, &[], &claude).await;
-        assert!(for_launch(&pool, &other, true).await.is_empty(), "a codex rule skips claude");
+        assert!(
+            only(for_launch(&pool, &other, true).await, &[uid]).is_empty(),
+            "a codex rule skips claude"
+        );
 
         sqlx::query("DELETE FROM session_context WHERE spawn_key = ANY($1)")
             .bind(vec![key, session, other])
@@ -2192,11 +2209,12 @@ mod tests {
             adapters: vec!["codex".into()],
             ..ContextMatch::default()
         };
-        insert(&pool, uid, &rule_spec("here", "b", here), None, None).await.expect("rule");
+        let here =
+            insert(&pool, uid, &rule_spec("here", "b", here), None, None).await.expect("rule");
         let claude = ContextMatch { adapters: vec!["claude-code".into()], ..Default::default() };
         insert(&pool, uid, &rule_spec("claude", "b", claude), None, None).await.expect("rule");
 
-        assert_eq!(names(&for_launch(&pool, &sid, true).await), ["here"]);
+        assert_eq!(names(&only(for_launch(&pool, &sid, true).await, &[uid])), ["here"]);
         let stored = ownership::launch_scope(&pool, &sid).await.expect("adopted");
         assert_eq!(stored.user_id, uid);
         assert_eq!(stored.coords.working_dir.as_deref(), Some("/w/repo"));
@@ -2205,11 +2223,14 @@ mod tests {
         let Some(Intent { rules, .. }) = intent_of(&pool, &sid).await.expect("row") else {
             panic!("the adopted row exists");
         };
-        assert_eq!(rules.len(), 1, "the delivery is recorded for the card");
+        assert_eq!(own_refs(rules, &[here.id]).len(), 1, "the delivery is recorded for the card");
 
         let granted = format!("ctx-granted-{}", Uuid::new_v4());
         grant(&pool, &granted, &[]).await.expect("grant-only row");
-        assert!(for_launch(&pool, &granted, true).await.is_empty(), "no session row, no scope");
+        assert!(
+            only(for_launch(&pool, &granted, true).await, &[uid]).is_empty(),
+            "no session row, no scope"
+        );
 
         let elsewhere = StoredScope {
             user_id: uid,
@@ -2222,7 +2243,11 @@ mod tests {
             .execute(&pool)
             .await
             .expect("store a scope");
-        assert_eq!(names(&for_launch(&pool, &sid, true).await), ["claude"], "a stored scope wins");
+        assert_eq!(
+            names(&only(for_launch(&pool, &sid, true).await, &[uid])),
+            ["claude"],
+            "a stored scope wins"
+        );
 
         sqlx::query("DELETE FROM session_context WHERE spawn_key = ANY($1)")
             .bind(vec![sid.clone(), granted])
@@ -2254,7 +2279,7 @@ mod tests {
         assert!(intent_of(&pool, &thread).await.expect("lookup").is_none(), "not theirs");
 
         claim_fork_intent(&pool, &thread, &command_id, uid).await;
-        assert_eq!(names(&for_launch(&pool, &thread, true).await), ["house"]);
+        assert_eq!(names(&only(for_launch(&pool, &thread, true).await, &[uid])), ["house"]);
 
         let note = clean_spec(ContextItemSpec {
             kind: "memory".into(),
@@ -2591,8 +2616,8 @@ mod tests {
         let (home, away) =
             (seed_session_on(&pool, a, ma).await, seed_session_on(&pool, a, mb).await);
 
-        assert_eq!(names(&for_launch(&pool, &home, true).await), ["house"]);
-        assert!(for_launch(&pool, &away, true).await.is_empty(), "B's machine");
+        assert_eq!(names(&only(for_launch(&pool, &home, true).await, &[a, b])), ["house"]);
+        assert!(only(for_launch(&pool, &away, true).await, &[a, b]).is_empty(), "B's machine");
         let adopted = ownership::launch_scope(&pool, &away).await.expect("adopted");
         assert_eq!((adopted.user_id, adopted.coords.machine_owner), (a, Some(b)));
 
@@ -2621,8 +2646,8 @@ mod tests {
         remember_intent(&pool, &mine, &[], &at_machine(ma)).await;
         remember_intent(&pool, &theirs, &[], &at_machine(mb)).await;
 
-        assert_eq!(names(&for_launch(&pool, &mine, true).await), ["house"]);
-        assert!(for_launch(&pool, &theirs, true).await.is_empty());
+        assert_eq!(names(&only(for_launch(&pool, &mine, true).await, &[a, b])), ["house"]);
+        assert!(only(for_launch(&pool, &theirs, true).await, &[a, b]).is_empty());
 
         drop_reach_seed(&pool, &[a, b], &[mine, theirs]).await;
     }
@@ -2653,7 +2678,10 @@ mod tests {
         let scope =
             StoredScope { user_id: a, coords: dispatch(a, "kube", Some("rev")), dispatched: true };
         remember_intent(&pool, &worker, &[], &scope).await;
-        assert_eq!(names(&for_launch(&pool, &worker, true).await), ["kube", "opted", "rev"]);
+        assert_eq!(
+            names(&only(for_launch(&pool, &worker, true).await, &[a, b])),
+            ["kube", "opted", "rev"]
+        );
 
         let legacy = format!("ctx-dispatch-legacy-{}", Uuid::new_v4());
         let old = StoredScope {
@@ -2662,7 +2690,11 @@ mod tests {
             dispatched: true,
         };
         remember_intent(&pool, &legacy, &[], &old).await;
-        assert_eq!(names(&for_launch(&pool, &legacy, true).await), ["opted"], "unnarrowed only");
+        assert_eq!(
+            names(&only(for_launch(&pool, &legacy, true).await, &[a, b])),
+            ["opted"],
+            "unnarrowed only"
+        );
 
         drop_reach_seed(&pool, &[a, b], &[worker, legacy]).await;
     }
@@ -2684,13 +2716,16 @@ mod tests {
             .expect("rule");
         let sid = seed_session_on(&pool, b, mb).await;
 
-        assert_eq!(names(&for_launch(&pool, &sid, true).await), ["everyone"]);
+        assert_eq!(names(&only(for_launch(&pool, &sid, true).await, &[admin, b])), ["everyone"]);
         sqlx::query("DELETE FROM user_acls WHERE user_id = $1 AND scope = 'admin'")
             .bind(admin)
             .execute(&pool)
             .await
             .expect("demote");
-        assert!(for_launch(&pool, &sid, true).await.is_empty(), "no longer an admin's decision");
+        assert!(
+            only(for_launch(&pool, &sid, true).await, &[admin, b]).is_empty(),
+            "no longer an admin's decision"
+        );
 
         drop_reach_seed(&pool, &[admin, b], &[sid]).await;
     }

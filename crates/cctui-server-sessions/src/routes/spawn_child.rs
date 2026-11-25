@@ -389,7 +389,6 @@ mod tests {
 
     #[tokio::test]
     async fn a_child_on_another_users_machine_gets_none_of_its_parents_default_rules() {
-        use crate::routes::context::test_items::names;
         use crate::routes::context::{
             DispatchCoords, SpawnScope, StoredScope, ownership, resolve_for_child,
         };
@@ -412,11 +411,17 @@ mod tests {
 
         let (home, away) = (parent(ma), parent(mb));
         let at_home = child_scope(&pool, &home, "codex", Some("/w")).await;
-        let got = resolve_for_child(&pool, a, None, &at_home.coords).await;
-        assert_eq!(names(&got), ["house"]);
+        let own = |items: Vec<crate::routes::context::ContextItem>| -> Vec<String> {
+            items.into_iter().filter(|i| i.user_id == a).map(|i| i.name).collect()
+        };
+        let got = own(resolve_for_child(&pool, a, None, &at_home.coords).await);
+        assert_eq!(got, ["house"]);
         let at_b = child_scope(&pool, &away, "codex", Some("/w")).await;
         assert_eq!(at_b.coords.machine_owner, Some(b));
-        assert!(resolve_for_child(&pool, a, None, &at_b.coords).await.is_empty(), "B's machine");
+        assert!(
+            own(resolve_for_child(&pool, a, None, &at_b.coords).await).is_empty(),
+            "B's machine"
+        );
 
         let worker = parent(ma);
         let coords = SpawnScope {
