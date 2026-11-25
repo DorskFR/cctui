@@ -46,7 +46,7 @@ fn excess_over(limit: &str) -> String {
 }
 
 /// Caps the heap pages a sampled query reads.
-const SAMPLE_PAGES: f64 = 2000.0;
+const SAMPLE_PAGES: f64 = 500.0;
 
 /// Every query of one page load samples the same blocks.
 const SAMPLE_SEED: &str = "REPEATABLE (7)";

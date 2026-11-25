@@ -11,7 +11,7 @@ pub use crate::dispatch::payload_adapter;
 use crate::dispatch::{
     DefaultBinding, binding_family, colliding_family, default_binding, dispatch_ceiling,
     forward_within_policy, merge_server_env, resolve_dispatch_account, resolve_dispatch_session_id,
-    rewrite_model_if_aliased, shown_queued,
+    rewrite_model_if_aliased,
 };
 use crate::dispatch::{DispatchContext, DispatchResult, Forwarded};
 use crate::hooks::DispatchNotify;
@@ -479,26 +479,6 @@ mod tests {
                 exposure: None,
             }),
         ))
-    }
-
-    fn shown(status: &str, queue_position: Option<u32>) -> (String, Option<u32>) {
-        let (_, axum::Json(mut r)) = forwarded(status).unwrap();
-        r.queue_position = queue_position;
-        let (_, axum::Json(r)) =
-            super::shown_queued((axum::http::StatusCode::ACCEPTED, axum::Json(r)));
-        (r.status, r.queue_position)
-    }
-
-    #[test]
-    fn a_resend_onto_a_queued_run_answers_queued_with_its_position() {
-        assert_eq!(shown("deduplicated", Some(2)), ("queued".into(), Some(2)));
-        assert_eq!(shown("queued", Some(1)), ("queued".into(), Some(1)));
-        assert_eq!(
-            shown("deduplicated", None),
-            ("deduplicated".into(), None),
-            "joined a running run"
-        );
-        assert_eq!(shown("dispatched", None), ("dispatched".into(), None));
     }
 
     async fn uses(pool: &sqlx::PgPool, uid: uuid::Uuid) -> i64 {

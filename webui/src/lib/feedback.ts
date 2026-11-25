@@ -43,5 +43,8 @@ export const feedbackLabels = (): Labels => ({
 	blocked: m.feedback_blocked(),
 	shotFailed: m.feedback_shot_failed(),
 	full: m.feedback_full(),
+	upload: m.feedback_upload(),
+	rejected: m.feedback_rejected(),
+	uploadFailed: m.feedback_upload_failed(),
 	done: m.feedback_done()
 });

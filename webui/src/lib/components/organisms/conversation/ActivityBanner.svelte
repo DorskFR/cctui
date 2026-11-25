@@ -4,7 +4,17 @@
 	import { formatElapsed } from './activity';
 	import { m } from '#lib/paraglide/messages.js';
 
-	let { stream, archived = false }: { stream: ConversationStream; archived?: boolean } = $props();
+	let {
+		stream,
+		archived = false,
+		needsInput = false,
+		waitingSince = null
+	}: {
+		stream: ConversationStream;
+		archived?: boolean;
+		needsInput?: boolean;
+		waitingSince?: number | null;
+	} = $props();
 
 	// The agent is blocked on the user while an ask/plan/permission is pending —
 	// same gating the inline spinner this replaces used.
@@ -12,8 +22,24 @@
 		stream.working && !archived && !stream.ask && !stream.plan && stream.perms.length === 0
 	);
 
-	// Ticks only while a turn is live, so an idle drawer costs no timer.
-	const now = $derived(active ? clockNow(1_000) : Date.now());
+	const waiting = $derived(!active && needsInput);
+
+	// Ticks only while something is counting, so an idle drawer costs no timer.
+	const now = $derived(
+		active ? clockNow(1_000) : waiting && waitingSince !== null ? clockNow(60_000) : Date.now()
+	);
+	const idleLabel = $derived(
+		!waiting
+			? m.conversation_activity_idle()
+			: waitingSince === null
+				? m.conversation_activity_waiting()
+				: m.conversation_activity_waiting_age({ age: waitAge(now - waitingSince) })
+	);
+
+	function waitAge(ms: number): string {
+		const mins = Math.max(0, Math.floor(ms / 60_000));
+		return mins < 1 ? '<1m' : mins < 60 ? `${mins}m` : `${Math.floor(mins / 60)}h ${mins % 60}m`;
+	}
 
 	const tool = $derived(active ? stream.currentTool : null);
 	const progress = $derived(stream.todoProgress);
@@ -30,16 +56,17 @@
 {#if !archived}
 	<div
 		class="activity"
-		class:idle={!active}
+		class:idle={!active && !waiting}
+		class:waiting
 		role="status"
 		aria-live="polite"
 		data-journey="activity"
-		data-journey-key={active ? 'live' : 'idle'}
+		data-journey-key={active ? 'live' : waiting ? 'waiting' : 'idle'}
 	>
 		<div class="row">
 			<span class="dot" class:spin={active} aria-hidden="true"></span>
 			<span class="status" title={active ? status : undefined}>
-				{active ? status : m.conversation_activity_idle()}
+				{active ? status : idleLabel}
 			</span>
 			{#if active}
 				<span class="meta">
@@ -75,6 +102,12 @@
 	}
 	.activity.idle {
 		color: var(--text-faint);
+	}
+	.activity.waiting {
+		color: var(--warn);
+	}
+	.waiting .dot {
+		background: var(--warn);
 	}
 	.row {
 		display: flex;

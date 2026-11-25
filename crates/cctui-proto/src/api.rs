@@ -972,6 +972,7 @@ pub struct ConversationSearchResponse {
 pub struct SessionStats {
     /// Includes archived.
     pub total: i64,
+    /// In the session list's Working bucket.
     pub live: i64,
     pub needs_input: i64,
     pub archived: i64,
@@ -1389,7 +1390,7 @@ pub struct DispatchResponse {
     pub namespace: Option<String>,
     /// `dispatched`, `deduplicated`, `redispatched` or `queued`.
     pub status: String,
-    /// 1-based place among the profile's queued workers while `queued`.
+    /// 1-based place among the profile's queued workers, on `queued` and on a `deduplicated` re-send that joined a still-queued run.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub queue_position: Option<u32>,
     /// `None` when the dispatcher reports no exposure for the run's profile.

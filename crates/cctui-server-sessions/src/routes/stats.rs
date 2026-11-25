@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use axum::extract::{Query, State};
 use axum::{Extension, Json};
@@ -9,17 +9,48 @@ use cctui_proto::api::{
     HeatmapCell, ModelUsage, SessionStats, TokenUsageWindows, UsageAnalytics, UsageBucket,
     WindowTokenUsage,
 };
-use cctui_proto::models::SessionStatus;
+use cctui_proto::classifier::{Bucket, ClassifyInput, PrStatus, classify};
 
 use crate::auth::AuthContext;
 use crate::context::SessionsContext;
 use crate::error::AppError;
 use crate::live_sessions::live_sessions_predicate;
-use crate::routes::sessions::{attention_from_bucket, bucket_from_signals, derive_status};
+use crate::store::sessions::SessionRowStatus;
 
-/// One row of the per-session classification signals
-/// (`tempo`, `agent_state`, `activity`, `soft_limit_reason`).
-type SignalRow = (Option<String>, Option<String>, Option<String>, Option<String>);
+/// `status`, `ended`, `tempo`, `agent_state`, `activity`, `soft_limit_reason`.
+type SignalRow = (String, bool, Option<String>, Option<String>, Option<String>, Option<String>);
+
+/// The bucket the session list files a row under, without PR attention:
+/// that only turns a non-working row Blocked, so it never moves the Working count.
+fn listed_bucket(row: &SignalRow) -> Bucket {
+    let (status, ended, tempo, agent_state, activity, soft_limit_reason) = row;
+    classify(
+        &ClassifyInput {
+            tempo: tempo.as_deref(),
+            state: agent_state.as_deref(),
+            activity: activity.as_deref(),
+            children: &[],
+            q: None,
+            soft_limit_blocked: soft_limit_reason.as_deref(),
+            ended: *ended || matches!(status.as_str(), "ended" | "failed"),
+        },
+        &HashMap::<String, PrStatus<'_>>::new(),
+    )
+}
+
+/// `(working, needs_input)` over non-draft rows, matching the list's
+/// Working and Needs input buckets.
+fn bucket_counts(rows: &[SignalRow]) -> (i64, i64) {
+    let (mut working, mut blocked) = (0_i64, 0_i64);
+    for row in rows.iter().filter(|r| r.0 != SessionRowStatus::Draft.as_str()) {
+        match listed_bucket(row) {
+            Bucket::Working => working += 1,
+            Bucket::Blocked => blocked += 1,
+            Bucket::Done => {}
+        }
+    }
+    (working, blocked)
+}
 
 /// Query params for `GET /sessions/recent-dirs` — the last working dirs used
 /// on a given machine, for the spawn working-directory picker.
@@ -111,9 +142,8 @@ const SESSION_COUNTS_SQL: &str = "
 ///
 /// The session list is capped (`LIMIT 25`), so counting client-side over it
 /// undercounts once there are more than 25 sessions. This computes the totals
-/// straight from SQL aggregates (`total`, `archived`) and the live registry
-/// (`live`), and counts `needs_input` by running the classifier over every
-/// non-archived session's persisted signals.
+/// straight from SQL aggregates (`total`, `archived`), and `live` /
+/// `needs_input` by bucketing every non-archived session the way the list does.
 pub async fn session_stats<S: SessionsContext>(
     State(state): State<S>,
     Extension(ctx): Extension<AuthContext>,
@@ -131,66 +161,18 @@ pub async fn session_stats<S: SessionsContext>(
             .fetch_one(state.pool())
             .await?;
 
-    // Live = sessions currently in the registry whose derived status is
-    // active/new (matches how the list surfaces "live"). Scope to the caller's
-    // owned live ids for non-admins (resolved from the DB, like list_sessions).
-    let owned_live_ids: Option<HashSet<String>> = if ctx.is_admin() {
-        None
-    } else {
-        let live_ids: Vec<String> = {
-            let registry = state.registry().read().await;
-            registry.list().into_iter().map(|h| h.session.id.clone()).collect()
-        };
-        let owned =
-            crate::store::sessions::visible_session_ids(state.pool(), &live_ids, ctx.user_id)
-                .await?;
-        Some(owned.into_iter().collect())
-    };
-    let live: i64 = {
-        let registry = state.registry().read().await;
-        registry
-            .list()
-            .into_iter()
-            .filter(|h| owned_live_ids.as_ref().is_none_or(|owned| owned.contains(&h.session.id)))
-            .filter(|h| {
-                matches!(
-                    derive_status(h.session.registered_at, h.session.last_heartbeat),
-                    SessionStatus::Active | SessionStatus::New
-                )
-            })
-            .count()
-            .try_into()
-            .unwrap_or(i64::MAX)
-    };
-
-    // needs_input: classify every non-archived session from its persisted
-    // signals and count the Blocked bucket — scoped to the caller.
     let signal_rows: Vec<SignalRow> = sqlx::query_as(concat!(
-        "SELECT s.tempo, s.agent_state, s.activity, s.soft_limit_reason \
-                 FROM sessions s LEFT JOIN machines m ON m.id = s.machine_uuid \
-                 WHERE ",
+        "SELECT s.status, s.ended_at IS NOT NULL, s.tempo, s.agent_state, s.activity, \
+                s.soft_limit_reason \
+         FROM sessions s LEFT JOIN machines m ON m.id = s.machine_uuid \
+         WHERE ",
         live_sessions_predicate!("s"),
         " AND ($1::uuid IS NULL OR m.user_id = $1)"
     ))
     .bind(uid)
     .fetch_all(state.pool())
     .await?;
-    let needs_input: i64 = signal_rows
-        .into_iter()
-        .filter(|(tempo, agent_state, activity, soft_limit_reason)| {
-            attention_from_bucket(bucket_from_signals(
-                tempo.as_deref(),
-                agent_state.as_deref(),
-                activity.as_deref(),
-                soft_limit_reason.as_deref(),
-                &[],
-                &std::collections::HashMap::new(),
-            ))
-            .is_some()
-        })
-        .count()
-        .try_into()
-        .unwrap_or(i64::MAX);
+    let (live, needs_input) = bucket_counts(&signal_rows);
 
     Ok(Json(SessionStats { total, live, needs_input, archived, today, yesterday, week, month }))
 }
@@ -517,7 +499,9 @@ pub async fn session_usage_analytics<S: SessionsContext>(
 
 #[cfg(test)]
 mod tests {
-    use super::{cost_by_bucket, day_start_for_offset, granularity_for_days};
+    use super::{
+        SignalRow, bucket_counts, cost_by_bucket, day_start_for_offset, granularity_for_days,
+    };
     use chrono::{DateTime, Duration, TimeZone, Utc};
     use serde_json::json;
 
@@ -551,6 +535,32 @@ mod tests {
         assert_eq!(by.len(), 2);
         assert!((by[&day] - (3.0 + 1.5 + 0.3)).abs() < 1e-9, "{by:?}");
         assert!((by[&other] - 15.0).abs() < 1e-9, "{by:?}");
+    }
+
+    fn row(status: &str, ended: bool, tempo: Option<&str>, state: Option<&str>) -> SignalRow {
+        (status.into(), ended, tempo.map(Into::into), state.map(Into::into), None, None)
+    }
+
+    #[test]
+    fn live_count_matches_the_list_working_bucket() {
+        let rows = vec![
+            row("active", false, Some("active"), None),
+            row("active", false, None, Some("working")),
+            row("active", false, None, None),
+            row("active", false, Some("blocked"), None),
+            row("active", false, None, Some("idle")),
+            row("ended", false, Some("active"), None),
+            row("active", true, Some("blocked"), None),
+            row("draft", false, None, None),
+        ];
+        assert_eq!(bucket_counts(&rows), (3, 1));
+    }
+
+    #[test]
+    fn soft_limited_rows_count_as_needs_input_not_working() {
+        let mut limited = row("active", false, Some("active"), Some("working"));
+        limited.5 = Some("rate-limited".into());
+        assert_eq!(bucket_counts(&[limited]), (0, 1));
     }
 
     #[test]

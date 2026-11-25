@@ -51,7 +51,7 @@
 								><Badge
 									size="xs"
 									numeric
-									tone="danger"
+									tone="accent"
 									variant="solid"
 									>{unread > 99 ? '99+' : unread}</Badge
 								></span

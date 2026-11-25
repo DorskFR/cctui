@@ -100,8 +100,8 @@
 	.col:hover .bar {
 		filter: brightness(1.15);
 	}
-	/* The axis mirrors the bar track column-for-column so each label sits under
-	   its own bar; overflow is visible so an edge label is not clipped. */
+	/* Each label sits under its own bar; the edge labels grow inward so they
+	   stay inside the chart without being clipped. */
 	.axis {
 		display: flex;
 		gap: 3px;
@@ -111,5 +111,11 @@
 		min-width: 0;
 		display: flex;
 		justify-content: center;
+	}
+	.tick:first-child {
+		justify-content: flex-start;
+	}
+	.tick:last-child {
+		justify-content: flex-end;
 	}
 </style>

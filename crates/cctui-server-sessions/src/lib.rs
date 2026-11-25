@@ -35,6 +35,7 @@ pub mod store;
 pub mod targets;
 pub mod transcript_md;
 pub mod turn_dedupe;
+pub mod undo_window;
 pub mod uploads;
 pub mod ws;
 

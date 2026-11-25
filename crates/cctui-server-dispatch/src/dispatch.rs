@@ -1291,7 +1291,7 @@ pub async fn execute_dispatch(
     let additions = cctui_server_kernel::accounts_types::dispatch_additions(&req.payload)
         .map_err(|e| bad_request(e.to_string()))?;
     if let Some(joined) = deduplicated_early(state, &req, &v).await {
-        return Ok(shown_queued(joined));
+        return Ok(joined);
     }
 
     if let Some(uid) = real_user {
@@ -1330,7 +1330,6 @@ pub async fn execute_dispatch(
         forward_recorded(state, &req, &v, &record)
     })
     .await
-    .map(shown_queued)
 }
 
 /// A dispatch step implemented outside this module, exported under `name`.
@@ -1341,15 +1340,6 @@ fn step(name: &'static str) -> tracing::Span {
         otel.name = name,
         code.function.name = name
     )
-}
-
-/// A re-send that joined a run still held in the queue answers `queued`, so a
-/// retrying caller sees it waits; policy and records saw `deduplicated`.
-pub fn shown_queued((code, Json(mut r)): Forwarded) -> Forwarded {
-    if r.status == "deduplicated" && r.queue_position.is_some() {
-        r.status = "queued".into();
-    }
-    (code, Json(r))
 }
 
 /// A `deduplicated` dispatch joined a run that is still going and already
@@ -1561,5 +1551,58 @@ mod alias_tests {
         assert_eq!(hinted, vec!["openai"]);
         let bare: Vec<&str> = alias_rows(&rows, None).iter().map(|r| r.family().label()).collect();
         assert_eq!(bare, vec!["anthropic", "openai", "fireworks"]);
+    }
+}
+
+#[cfg(test)]
+mod response_tests {
+    use async_trait::async_trait;
+
+    use super::{ValidatedDispatch, accepted};
+    use crate::dispatchers::{DispatchError, DispatchHandle, DispatchSpec, Dispatcher};
+
+    struct Fake;
+
+    #[async_trait]
+    impl Dispatcher for Fake {
+        fn id(&self) -> &'static str {
+            "k8s"
+        }
+
+        async fn dispatch(&self, _: &DispatchSpec<'_>) -> Result<DispatchHandle, DispatchError> {
+            Err(DispatchError::Unsupported("dispatch".into()))
+        }
+    }
+
+    fn answered(status: &str, queue_position: Option<u32>) -> (String, Option<u32>) {
+        let v = ValidatedDispatch {
+            dispatcher: std::sync::Arc::new(Fake),
+            enrolled: None,
+            session_id: "s".into(),
+            dedup_key: Some("k".into()),
+            caller: "c".into(),
+            forwarded_payload: serde_json::Value::Null,
+        };
+        let handle = DispatchHandle {
+            handle: "jobs/w".into(),
+            namespace: None,
+            status: Some(status.into()),
+            queue_position,
+            exposure: None,
+        };
+        let (_, axum::Json(r)) = accepted(&v, handle);
+        (r.status, r.queue_position)
+    }
+
+    #[test]
+    fn a_resend_onto_a_queued_run_answers_deduplicated_with_its_position() {
+        assert_eq!(answered("deduplicated", Some(2)), ("deduplicated".into(), Some(2)));
+        assert_eq!(answered("deduplicated", None), ("deduplicated".into(), None));
+    }
+
+    #[test]
+    fn the_dispatch_that_creates_a_queued_run_answers_queued_with_its_position() {
+        assert_eq!(answered("queued", Some(1)), ("queued".into(), Some(1)));
+        assert_eq!(answered("dispatched", None), ("dispatched".into(), None));
     }
 }

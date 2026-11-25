@@ -1219,6 +1219,7 @@ async fn reaper_sweep(state: &AppState) {
     demote_idle_registered(state).await;
     let archived = auto_archive_stale(state).await;
     auto_archive::sweep(state).await;
+    cctui_server_sessions::undo_window::revoke_orphaned_tokens(state).await;
     dispatch_archive::sweep(state).await;
     let events_pruned = cctui_server_kernel::state_events::prune(&state.pool).await;
     if archived > 0 || events_pruned > 0 {

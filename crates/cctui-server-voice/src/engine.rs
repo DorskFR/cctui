@@ -1682,6 +1682,7 @@ mod tests {
         h.signals.send(Signal::TurnEnd).await.unwrap();
         tokio::time::sleep(Duration::from_millis(20)).await;
         h.inbound.send(Inbound::Control(VoiceClientMsg::Skip {})).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(20)).await;
         h.signals.send(turn_start()).await.unwrap();
         h.signals.send(Signal::Text("Fresh.".into())).await.unwrap();
         h.collect_until(|f| *f == Outbound::Audio(Bytes::from_static(b"Fresh."))).await;
