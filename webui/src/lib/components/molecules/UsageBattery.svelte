@@ -39,7 +39,7 @@
 				<Text size="xs" numeric nowrap tone="inherit">{readingText(w)}</Text>
 			</span>
 		{/snippet}
-		<UsageDetail rows={gauge.rows} onnavigate={() => (open = false)} />
+		<div class="panel"><UsageDetail rows={gauge.rows} onnavigate={() => (open = false)} /></div>
 	</Popover>
 {/if}
 
@@ -54,6 +54,9 @@
 		border-radius: 6px;
 		color: var(--text-muted);
 		background: var(--bg-elevated-2);
+	}
+	.panel {
+		padding: var(--sp-2) var(--sp-3);
 	}
 	.gauge:hover {
 		color: var(--text);
