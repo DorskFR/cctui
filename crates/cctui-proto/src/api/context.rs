@@ -4,8 +4,30 @@
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
-/// When an item applies. Keys are AND-ed, the values of one key are OR-ed, and
-/// an empty key matches anything, so an empty filter matches every launch.
+/// Whose machines an item reaches.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export))]
+#[serde(rename_all = "snake_case")]
+pub enum ContextReach {
+    /// Only machines the item's owner owns.
+    #[default]
+    Owner,
+    /// Every user's machines. Only an admin may set it.
+    AllUsers,
+}
+
+impl ContextReach {
+    #[must_use]
+    pub const fn is_owner(&self) -> bool {
+        matches!(self, Self::Owner)
+    }
+}
+
+/// When an item applies.
+///
+/// Keys are AND-ed, the values of one key are OR-ed, and an empty key matches
+/// anything within the item's [`ContextReach`]. Dispatched workers only match
+/// with `dispatch`, and only the owner's own dispatches.
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[cfg_attr(test, derive(ts_rs::TS), ts(export))]
 pub struct ContextMatch {
@@ -18,15 +40,35 @@ pub struct ContextMatch {
     pub labels: Vec<String>,
     #[serde(default)]
     pub adapters: Vec<String>,
+    #[serde(default, skip_serializing_if = "ContextReach::is_owner")]
+    #[cfg_attr(test, ts(as = "Option<ContextReach>", optional))]
+    pub reach: ContextReach,
+    /// Also reach workers the owner dispatches.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[cfg_attr(test, ts(as = "Option<bool>", optional))]
+    pub dispatch: bool,
+    /// Dispatcher names a dispatch must target; empty is any.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[cfg_attr(test, ts(as = "Option<Vec<String>>", optional))]
+    pub dispatchers: Vec<String>,
+    /// Dispatch `payload.profile` values; empty is any.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[cfg_attr(test, ts(as = "Option<Vec<String>>", optional))]
+    pub profiles: Vec<String>,
 }
 
 impl ContextMatch {
+    /// No key and no reach beyond the default.
     #[must_use]
     pub const fn is_empty(&self) -> bool {
         self.machines.is_empty()
             && self.paths.is_empty()
             && self.labels.is_empty()
             && self.adapters.is_empty()
+            && self.reach.is_owner()
+            && !self.dispatch
+            && self.dispatchers.is_empty()
+            && self.profiles.is_empty()
     }
 }
 
@@ -224,6 +266,89 @@ pub struct ContextToolResponse {
     pub attached: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub unknown: Vec<String>,
+}
+
+/// What `PATCH /context` changes on every listed item. List keys merge into
+/// the item's filter; a missing key is left alone.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export))]
+pub struct ContextMatchLists {
+    #[serde(default)]
+    #[cfg_attr(test, ts(as = "Option<Vec<String>>", optional))]
+    pub machines: Vec<String>,
+    #[serde(default)]
+    #[cfg_attr(test, ts(as = "Option<Vec<String>>", optional))]
+    pub paths: Vec<String>,
+    #[serde(default)]
+    #[cfg_attr(test, ts(as = "Option<Vec<String>>", optional))]
+    pub labels: Vec<String>,
+    #[serde(default)]
+    #[cfg_attr(test, ts(as = "Option<Vec<String>>", optional))]
+    pub adapters: Vec<String>,
+    #[serde(default)]
+    #[cfg_attr(test, ts(as = "Option<Vec<String>>", optional))]
+    pub dispatchers: Vec<String>,
+    #[serde(default)]
+    #[cfg_attr(test, ts(as = "Option<Vec<String>>", optional))]
+    pub profiles: Vec<String>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export))]
+pub struct ContextMatchSet {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(test, ts(optional))]
+    pub reach: Option<ContextReach>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(test, ts(optional))]
+    pub dispatch: Option<bool>,
+    /// Empty `machines` before `add` applies.
+    #[serde(default)]
+    #[cfg_attr(test, ts(as = "Option<bool>", optional))]
+    pub clear_machines: bool,
+}
+
+/// `PATCH /context`: one edit applied to many items, directly, with no
+/// approval proposal.
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export))]
+pub struct BulkContextUpdate {
+    #[cfg_attr(test, ts(type = "string[]"))]
+    pub ids: Vec<Uuid>,
+    #[serde(default)]
+    #[cfg_attr(test, ts(as = "Option<ContextMatchLists>", optional))]
+    pub add: ContextMatchLists,
+    #[serde(default)]
+    #[cfg_attr(test, ts(as = "Option<ContextMatchLists>", optional))]
+    pub remove: ContextMatchLists,
+    #[serde(default)]
+    #[cfg_attr(test, ts(as = "Option<ContextMatchSet>", optional))]
+    pub set: ContextMatchSet,
+}
+
+/// One item's outcome in a bulk edit: the item as it now stands, or why it
+/// was left alone.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export))]
+pub struct BulkContextOutcome {
+    #[cfg_attr(test, ts(type = "string"))]
+    pub id: Uuid,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(test, ts(optional))]
+    pub item: Option<ContextItem>,
+    /// HTTP status the single-item edit would have answered.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(test, ts(optional))]
+    pub status: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(test, ts(optional))]
+    pub error: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export))]
+pub struct BulkContextResponse {
+    pub outcomes: Vec<BulkContextOutcome>,
 }
 
 fn user_scope() -> String {

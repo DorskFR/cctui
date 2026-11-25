@@ -39,6 +39,8 @@ import type { SpawnRequest } from "@bindings/SpawnRequest";
 import type { ContextItem } from "@bindings/ContextItem";
 import type { ContextItemSpec } from "@bindings/ContextItemSpec";
 import type { UpdateContextItemRequest } from "@bindings/UpdateContextItemRequest";
+import type { BulkContextUpdate } from "@bindings/BulkContextUpdate";
+import type { BulkContextResponse } from "@bindings/BulkContextResponse";
 import type { ResolvedContextResponse } from "@bindings/ResolvedContextResponse";
 import type { SessionContextResponse } from "@bindings/SessionContextResponse";
 import type { AttachContextRequest } from "@bindings/AttachContextRequest";
@@ -390,6 +392,9 @@ export const endpoints = {
   updateContextItem: (id: string, body: UpdateContextItemRequest) =>
     api.patch<ContextItem>(`/context/${id}`, body),
   deleteContextItem: (id: string) => api.del<void>(`/context/${id}`),
+  /** One match edit over many items; each answers for itself. */
+  bulkUpdateContext: (body: BulkContextUpdate) =>
+    api.patch<BulkContextResponse>("/context", body),
   /** The rules a spawn into these coordinates gets, and the memories it
    * pre-checks. Empty values are left out of the query. */
   resolveContext: (q: Record<string, string>) =>

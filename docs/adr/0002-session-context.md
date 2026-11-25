@@ -292,3 +292,25 @@ launch, so an agent that read a hostile page must not be able to plant one
 unseen. There is no delete through the tool. Saves are capped at 20 per
 session per hour and 200 items per user, and `created_by_session` /
 `updated_by_session` record which session wrote what.
+
+### Reach: the owner's machines unless widened
+
+An empty filter used to mean every machine the launching scope could reach,
+which carried one user's rules onto another user's machine through a
+grantee spawn, a child or an adopted session. Reach is now part of the
+filter and evaluated in `filter_matches` alone, against the machine owner
+and dispatch carried on the launch scope:
+
+- by default an item reaches only machines its owner owns; naming another
+  user's machine is refused (422);
+- `reach = all_users`, settable by an admin only (403 otherwise), reaches
+  every user's machines, and its rules join every launch while the owner is
+  still an admin;
+- `dispatch = true` adds workers the owner dispatches, narrowed by
+  `dispatchers` and dispatch `profiles`; without it a dispatched worker gets
+  no item, its context comes from packs.
+
+`CctuiContext` cannot set either widening. `PATCH /context` edits the
+filter of many items at once, directly, answering per item. Workspace
+migration 32 drops other users' machine ids from non-admin items and
+disables an item left with none rather than widening it.

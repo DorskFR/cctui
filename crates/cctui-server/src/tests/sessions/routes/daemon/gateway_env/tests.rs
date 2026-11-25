@@ -563,7 +563,8 @@ async fn with_context_off_both_launch_pulls_are_empty_and_ownership_still_holds(
     .expect("valid rule");
     let rule = insert(&pool, ua, &rule, None, None).await.expect("rule");
     let key = format!("cmd-{}", Uuid::new_v4());
-    let scope = StoredScope { user_id: ua, coords: SpawnScope::default(), dispatched: false };
+    let coords = SpawnScope { machine_id: Some(ma.to_string()), ..SpawnScope::default() };
+    let scope = StoredScope { user_id: ua, coords, dispatched: false };
     ownership::record(&pool, &key, &scope).await;
     let mut state = AppState::for_test(pool.clone());
     state.config.features = FeatureSet::all().without(Feature::Context);

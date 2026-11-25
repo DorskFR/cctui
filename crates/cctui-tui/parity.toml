@@ -399,15 +399,21 @@ reason = "administration, spawn drafts, profiles, bookmarks and dispatch live in
 
 [[route]]
 id = "get_context"
-# GET /context — List the caller's context items, or create one.
+# GET /context — List the caller's context items, create one, or edit the match of many at once.
 tui = "handled"
 module = "app/context_items.rs"
 
 [[route]]
 id = "post_context"
-# POST /context — List the caller's context items, or create one.
+# POST /context — List the caller's context items, create one, or edit the match of many at once.
 tui = "waived"
 reason = "creating an item means writing a body, scope and match filter: a form the webui editor owns, not a keystroke"
+
+[[route]]
+id = "patch_context"
+# PATCH /context — List the caller's context items, create one, or edit the match of many at once.
+tui = "waived"
+reason = "a bulk match edit picks many items and machines at once: the webui multi-select owns it, not a keystroke"
 
 [[route]]
 id = "get_context_resolve"

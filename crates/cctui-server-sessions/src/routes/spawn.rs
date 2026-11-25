@@ -397,6 +397,8 @@ fn launch_owner_scope(
             working_dir: Some(req.working_dir.clone()),
             label_ids: label_ids.to_vec(),
             adapter: Some(adapter_id.to_owned()),
+            machine_owner: Some(owner),
+            dispatch: None,
         },
         dispatched: false,
     }
@@ -421,8 +423,12 @@ async fn resolve_spawn_context<S: SessionsContext>(
 ) -> Vec<crate::routes::context::ContextItem> {
     let uid = scope.user_id;
     let asked = req.context.clone().unwrap_or_default();
-    let items = match crate::routes::context::list_for_user(state.pool(), uid).await {
-        Ok(items) => items,
+    let found = tokio::try_join!(
+        crate::routes::context::list_for_user(state.pool(), uid),
+        crate::routes::context::list_shared_rules(state.pool(), uid),
+    );
+    let (items, shared) = match found {
+        Ok(found) => found,
         Err(e) => {
             tracing::warn!(error = %e, "context lookup failed; spawning without it");
             return Vec::new();
@@ -430,7 +436,7 @@ async fn resolve_spawn_context<S: SessionsContext>(
     };
     let mut picks = asked.items;
     picks.extend(profile_context_names(state, req, uid, &items).await);
-    crate::routes::context::resolve_for_spawn(&items, &picks, &scope.coords)
+    crate::routes::context::resolve_for_spawn(&items, &shared, &picks, &scope.coords)
 }
 
 /// The names of the items the request's profile pins. Empty when the request
@@ -1355,6 +1361,62 @@ pub async fn get_machine_commands<S: SessionsContext>(
 
 #[cfg(test)]
 mod tests {
+    use uuid::Uuid;
+
+    use crate::auth::{AuthContext, Scope};
+    use crate::routes::context::test_items::{names, rule};
+    use crate::routes::context::{ContextMatch, resolve_rules};
+
+    fn human(user_id: Uuid, admin: bool) -> AuthContext {
+        let mut scopes = vec![Scope::Read, Scope::Dispatch];
+        if admin {
+            scopes.push(Scope::Admin);
+        }
+        AuthContext {
+            user_id,
+            key_id: Uuid::nil(),
+            machine_id: None,
+            scopes: scopes.into_iter().collect(),
+        }
+    }
+
+    fn spawn_on(machine: Uuid) -> cctui_proto::api::SpawnRequest {
+        serde_json::from_value(serde_json::json!({
+            "machine_id": machine.to_string(), "working_dir": "/w",
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn a_grantees_spawn_on_another_users_machine_gets_none_of_the_grantees_default_rules() {
+        let (a, b) = (Uuid::new_v4(), Uuid::new_v4());
+        let (ma, mb) = (Uuid::new_v4(), Uuid::new_v4());
+        let items = [rule(a, "house", ContextMatch::default())];
+
+        let grantee =
+            super::launch_owner_scope(&human(a, false), &spawn_on(mb), &[], b, mb, "codex");
+        assert_eq!((grantee.user_id, grantee.coords.machine_owner), (a, Some(b)));
+        assert!(resolve_rules(&items, &grantee.coords).is_empty(), "B's machine");
+
+        let own = super::launch_owner_scope(&human(a, false), &spawn_on(ma), &[], a, ma, "codex");
+        assert_eq!(names(&resolve_rules(&items, &own.coords)), ["house"]);
+
+        let admin = super::launch_owner_scope(&human(a, true), &spawn_on(mb), &[], b, mb, "codex");
+        assert_eq!(admin.user_id, b, "an admin's spawn belongs to the machine owner");
+        assert!(resolve_rules(&items, &admin.coords).is_empty());
+    }
+
+    #[test]
+    fn a_scheduled_launch_on_another_users_machine_gets_none_of_the_other_users_default_rules() {
+        let (a, b) = (Uuid::new_v4(), Uuid::new_v4());
+        let mb = Uuid::new_v4();
+        let ctx = crate::scheduled_spawns::scheduled_ctx(b);
+        let scope = super::launch_owner_scope(&ctx, &spawn_on(mb), &[], b, mb, "codex");
+        assert_eq!((scope.user_id, scope.coords.machine_owner), (b, Some(b)));
+        let items =
+            [rule(a, "theirs", ContextMatch::default()), rule(b, "mine", ContextMatch::default())];
+        assert_eq!(names(&resolve_rules(&items, &scope.coords)), ["mine"]);
+    }
 
     #[test]
     fn spawn_labels_are_dropped_with_organising_off() {
