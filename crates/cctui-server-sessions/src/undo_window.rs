@@ -8,6 +8,9 @@ use std::time::Duration;
 
 use dashmap::DashMap;
 
+use crate::context::SessionsContext;
+use crate::events::kind;
+
 /// Longer than the webui's 7 s undo toast.
 pub const UNDO_WINDOW: Duration = Duration::from_secs(10);
 
@@ -61,6 +64,41 @@ impl PendingTeardowns {
     pub fn is_pending(&self, session_id: &str) -> bool {
         self.pending.contains_key(session_id)
     }
+}
+
+/// Revoke the live tokens of archived sessions past their undo window.
+///
+/// A restart inside the window loses the teardown; an archive with no
+/// `session.archived` event counts as old.
+pub async fn revoke_orphaned_tokens<S: SessionsContext>(state: &S) -> usize {
+    let ids: Vec<String> = match sqlx::query_scalar(
+        "SELECT DISTINCT s.id FROM session_tokens t JOIN sessions s ON s.id = t.session_id \
+          WHERE t.revoked_at IS NULL AND s.status = 'archived' \
+            AND NOT EXISTS (SELECT 1 FROM events e \
+                 WHERE e.session_id = s.id AND e.kind = $1 \
+                   AND e.occurred_at > now() - make_interval(secs => $2))",
+    )
+    .bind(kind::SESSION_ARCHIVED)
+    .bind(UNDO_WINDOW.as_secs_f64())
+    .fetch_all(state.pool())
+    .await
+    {
+        Ok(ids) => ids,
+        Err(err) => {
+            tracing::warn!(%err, "orphaned archive token sweep failed");
+            return 0;
+        }
+    };
+    let pending = PendingTeardowns::global();
+    let mut revoked = 0;
+    for id in ids.iter().filter(|id| !pending.is_pending(id)) {
+        state.revoke_session_tokens(id).await;
+        revoked += 1;
+    }
+    if revoked > 0 {
+        tracing::info!(revoked, "revoked tokens of archived sessions past their undo window");
+    }
+    revoked
 }
 
 #[cfg(test)]

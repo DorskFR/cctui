@@ -1119,3 +1119,97 @@ async fn a_blank_query_is_not_refused_when_transcript_search_is_off() {
         search_without_transcript_search("   ", false).await.expect("blank query is a browse");
     assert!(found.sessions.is_empty());
 }
+
+async fn archived_with_live_token(pool: &sqlx::PgPool, tag: &str) -> String {
+    let (uid, machine) = crate::events::tests::seed_user_machine(pool, tag).await;
+    let sid = crate::events::tests::seed_session(pool, uid, machine, None).await;
+    let account: uuid::Uuid =
+        sqlx::query_scalar("INSERT INTO accounts (user_id, name) VALUES ($1, $2) RETURNING id")
+            .bind(uid)
+            .bind(format!("{tag}-{uid}"))
+            .fetch_one(pool)
+            .await
+            .unwrap();
+    let provider: uuid::Uuid = sqlx::query_scalar(
+        "INSERT INTO account_providers (user_id, account_id, provider) \
+         VALUES ($1, $2, 'anthropic') RETURNING id",
+    )
+    .bind(uid)
+    .bind(account)
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    sqlx::query("UPDATE sessions SET status = 'archived' WHERE id = $1")
+        .bind(&sid)
+        .execute(pool)
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO session_tokens (token_hash, session_id, account_id) VALUES ($1, $2, $3)",
+    )
+    .bind(format!("hash-{}", uuid::Uuid::new_v4()))
+    .bind(&sid)
+    .bind(provider)
+    .execute(pool)
+    .await
+    .unwrap();
+    sid
+}
+
+async fn live_tokens(pool: &sqlx::PgPool, sid: &str) -> i64 {
+    sqlx::query_scalar(
+        "SELECT count(*) FROM session_tokens WHERE session_id = $1 AND revoked_at IS NULL",
+    )
+    .bind(sid)
+    .fetch_one(pool)
+    .await
+    .unwrap()
+}
+
+#[tokio::test]
+async fn an_archive_whose_window_was_lost_has_its_token_revoked() {
+    use cctui_server_sessions::undo_window::{PendingTeardowns, UNDO_WINDOW};
+    let Some(url) = cctui_server_kernel::test_support::db_url("orphaned_archive_tokens") else {
+        return;
+    };
+    let pool = sqlx::PgPool::connect(&url).await.expect("connect test db");
+    let state = crate::state::AppState::for_test(pool.clone());
+
+    let orphan = archived_with_live_token(&pool, "orphan-old").await;
+    sqlx::query(
+        "INSERT INTO events (kind, session_id, actor, summary, occurred_at) \
+         VALUES ('session.archived', $1, 'user', 'archived', now() - interval '1 hour')",
+    )
+    .bind(&orphan)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let no_event = archived_with_live_token(&pool, "orphan-noevent").await;
+    let recent = archived_with_live_token(&pool, "orphan-recent").await;
+    sqlx::query(
+        "INSERT INTO events (kind, session_id, actor, summary) \
+         VALUES ('session.archived', $1, 'user', 'archived')",
+    )
+    .bind(&recent)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let held = archived_with_live_token(&pool, "orphan-held").await;
+    PendingTeardowns::global().schedule(&held, Vec::new(), UNDO_WINDOW * 60, async {});
+
+    cctui_server_sessions::undo_window::revoke_orphaned_tokens(&state).await;
+
+    assert_eq!(live_tokens(&pool, &orphan).await, 0, "an old archive keeps no live token");
+    assert_eq!(live_tokens(&pool, &no_event).await, 0, "a missing event counts as old");
+    assert_eq!(live_tokens(&pool, &recent).await, 1, "another replica may still undo it");
+    assert_eq!(live_tokens(&pool, &held).await, 1, "a window held here is left alone");
+
+    let _ = PendingTeardowns::global().cancel(&held);
+    for sid in [&orphan, &no_event, &recent, &held] {
+        sqlx::query("DELETE FROM session_tokens WHERE session_id = $1")
+            .bind(sid)
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+}
