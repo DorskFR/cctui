@@ -1,204 +1,22 @@
 <script lang="ts">
-	import { updated } from '$app/state';
-	import { ws } from '#lib/ws.svelte.ts';
-	import { useMe, useVersion, useSessions, qk } from '#lib/queries/index.ts';
-	import { setUploadCaps } from '#lib/uploadCaps.svelte.ts';
-	import { releaseChannel, versionLine } from '#lib/releaseChannel.ts';
-	import { MediaQuery } from 'svelte/reactivity';
-	import type { SessionListResponse } from '@bindings/SessionListResponse';
-	import { useQueryClient } from '@tanstack/svelte-query';
-	import { fontScale } from '#lib/fontscale.svelte.ts';
-	import { auth } from '#lib/auth.svelte.ts';
-	import { hasFeature } from '#lib/features.svelte.ts';
-	import { notify } from '#lib/notify.svelte.ts';
-	import { notifications } from '#lib/notifications.svelte.ts';
-	import { untrack } from 'svelte';
 	import { settings } from '#lib/settings.svelte.ts';
-	import { toasts } from '#lib/toast.svelte.ts';
-	import { Avatar, Dot, FontScalePicker, Menu, Text, ThemePicker } from '@dorsk/tsumikit';
-	import type { MenuItem } from '@dorsk/tsumikit';
-	import NavLink from '#lib/components/atoms/NavLink.svelte';
+	import { ThemePicker, FontScalePicker } from '@dorsk/tsumikit';
 	import MainNav from '#lib/components/organisms/MainNav.svelte';
 	import UsageBattery from '#lib/components/molecules/UsageBattery.svelte';
-import ResourceBattery from '#lib/components/molecules/ResourceBattery.svelte';
+	import ResourceBattery from '#lib/components/molecules/ResourceBattery.svelte';
 	import ProviderStatusDot from '#lib/components/molecules/ProviderStatusDot.svelte';
-	import UpdateModal from '#lib/components/organisms/UpdateModal.svelte';
 	import NotificationBell from '#lib/components/organisms/NotificationBell.svelte';
+	import HeaderBrand from './header/HeaderBrand.svelte';
+	import AccountMenu from './header/AccountMenu.svelte';
+	import { installShellWatchers } from './header/shellWatchers.svelte.ts';
 	import { m } from '#lib/paraglide/messages.js';
 
-	const version = useVersion();
-	const me = useMe();
-	let updateOpen = $state(false);
-	const instanceName = $derived(version.data?.instance_name ?? null);
-	$effect(() => notify.setInstanceName(instanceName));
-	$effect(() => setUploadCaps(version.data?.upload_caps));
-
-	// Global "needs input" watcher. Header is always mounted inside
-	// the query provider, so it's the natural home for the cross-route watcher.
-	const qc = useQueryClient();
-	const sessions = useSessions(() => false);
-
-	// Live ws changes → refetch the list even on routes other than /sessions.
-	$effect(() => {
-		void ws.changeTick;
-		qc.invalidateQueries({ queryKey: qk.sessionsAll });
-	});
-
-	// Cheap per-session ws patches applied to both list caches in place —
-	// no refetch. The 60s poll reconciles anything the patch can't know.
-	$effect(() =>
-		ws.onListPatch((p) => {
-			const { session_id, ...fields } = p;
-			for (const key of [qk.sessions(false), qk.sessions(true), qk.sessions(false, true)]) {
-				qc.setQueryData<SessionListResponse>(key, (old) =>
-					old
-						? {
-								...old,
-								sessions: old.sessions.map((s) =>
-									s.id === session_id ? { ...s, ...fields } : s
-								)
-							}
-						: old
-				);
-			}
-		})
-	);
-
-	const needsInput = $derived(
-		(sessions.data?.sessions ?? []).filter((s) => s.attention === 'needs_input')
-	);
-	const covered = $derived(
-		new Set(notifications.items.flatMap((n) => (n.session_id ? [n.session_id] : [])))
-	);
-
-	$effect(() => notifications.connect(ws));
-	$effect(() => ws.onNotification((n) => notify.announce(n)));
-	$effect(() => notify.setUnread(notifications.unread));
-	// A socket that was down missed frames: every (re)open reloads the list.
-	$effect(() => {
-		if (ws.status !== 'open') return;
-		untrack(() => void notifications.load().catch(() => {}));
-	});
-	$effect(() => notify.reconcile(needsInput, covered));
-	$effect(() => notify.reconcileCompleted(sessions.data?.sessions));
-
-	async function toggleNotify() {
-		if (settings.notifyEnabled) {
-			await settings.setNotifyEnabled(false);
-			toasts.info(m.nav_notify_off());
-			return;
-		}
-		if (!notify.supported) {
-			toasts.error(m.nav_notify_unsupported());
-			return;
-		}
-		const ok = await settings.setNotifyEnabled(true);
-		if (ok) toasts.ok(m.nav_notify_on());
-		else toasts.error(m.nav_notify_blocked());
-	}
-
-	const userName = $derived(me.data?.user_name ?? '');
-	const userRole = $derived(me.data?.role ?? '');
-	const roleSuffix = $derived(
-		userRole && userRole.toLowerCase() !== userName.toLowerCase() ? userRole : ''
-	);
-	const latest = $derived(hasFeature('self_update') ? (version.data?.latest_version ?? null) : null);
-	const notifyLabel = $derived(
-		settings.notifyEnabled ? m.nav_notify_on_label() : m.nav_notify_off_label()
-	);
-
-	// The kit font picker writes the kit store; the blob follows so the choice
-	// round-trips across devices.
-	// (The theme picker is app-owned and persists through `settings.setTheme`.)
-	$effect(() => {
-		const f = fontScale.current;
-		const d = settings.state.display;
-		if (d.fontScale !== f) settings.setDisplay({ fontScale: f });
-	});
-
-	// Below the nav breakpoint `.vers` is hidden, so the menu carries the version.
-	const narrow = new MediaQuery('(max-width: 47.999rem)');
-	const srvVersion = $derived(version.data?.version);
-	const userMenu = $derived<MenuItem[]>([
-		...(narrow.current
-			? [
-					{
-						label: versionLine(__CLIENT_VERSION__, srvVersion),
-						icon: 'git-commit' as const,
-						disabled: true,
-						tag:
-							releaseChannel(srvVersion ?? __CLIENT_VERSION__) === 'beta'
-								? m.release_channel_beta()
-								: undefined
-					}
-				]
-			: []),
-		...(latest
-			? [
-					{
-						label: m.nav_update_available({ version: latest }),
-						icon: 'arrow-up' as const,
-						tag: `v${latest}`,
-						tagTone: 'danger' as const,
-						onselect: () => (updateOpen = true)
-					}
-				]
-			: []),
-		{
-			label: notifyLabel,
-			icon: 'bell' as const,
-			pressed: settings.notifyEnabled,
-			onselect: () => void toggleNotify()
-		},
-		{ label: m.nav_log_out(), icon: 'log-out' as const, danger: true, onselect: () => void auth.logout() }
-	]);
+	installShellWatchers();
 </script>
-
-{#snippet alertDot()}
-	<Dot color="var(--danger)" />
-{/snippet}
 
 <header class="hd">
 	<div class="hd-inner">
-		<div class="lead">
-			<NavLink href="/sessions" title={m.nav_sessions()}>
-				<div class="brand">
-					<Text variant="code" tone="accent" size="lg" weight="bold">»_</Text>
-					<Text size="lg" weight="bold">cctui</Text>
-				</div>
-			</NavLink>
-			<span
-				class="conn"
-				class:on={ws.status === 'open'}
-				class:mid={ws.status === 'connecting'}
-				title={m.nav_ws_status({ status: ws.status })}
-			></span>
-			<span class="vers">
-				<Text size="xs" tone="faint" variant="code">ui v{__CLIENT_VERSION__}</Text>
-				{#if version.data}
-					<NavLink href={version.data.commit_url} target="_blank" rel="noopener">
-						<Text size="xs" tone="faint" variant="code">srv v{version.data.version}</Text>
-					</NavLink>
-					{#if releaseChannel(version.data.version) === 'beta'}
-						<span title={m.release_channel_beta_title()}>
-							<Text size="xs" tone="accent" variant="code" weight="bold">{m.release_channel_beta()}</Text>
-						</span>
-					{/if}
-				{/if}
-				{#if updated.current}
-					<button
-						type="button"
-						class="reload"
-						title={m.reload_new_ui_title()}
-						onclick={() => location.reload()}
-					>
-						<Text size="xs" tone="accent" variant="code" weight="bold"
-							>{m.reload_new_ui_hint()}</Text
-						>
-					</button>
-				{/if}
-			</span>
-		</div>
+		<HeaderBrand />
 		<div class="tabs">
 			{#if settings.nav === 'top'}
 				<MainNav placement="top" />
@@ -220,37 +38,10 @@ import ResourceBattery from '#lib/components/molecules/ResourceBattery.svelte';
 				<FontScalePicker />
 			</span>
 			<NotificationBell />
-			<Menu label={m.nav_user_menu()} items={userMenu} bare placement="bottom-end">
-				{#snippet trigger()}
-					<span class="pill">
-						<Avatar
-							name={userName || userRole}
-							tone="accent"
-							size={24}
-							decorative
-							status={latest ? alertDot : undefined}
-						/>
-						<span class="who">
-							{#if userName}<span class="who-name">{userName}</span>{/if}
-							{#if userName && roleSuffix}<span class="who-sep">·</span>{/if}
-							{#if roleSuffix}<span class="who-role">{roleSuffix}</span>{/if}
-						</span>
-					</span>
-				{/snippet}
-			</Menu>
+			<AccountMenu />
 		</div>
 	</div>
 </header>
-
-{#if updateOpen && version.data?.latest_version}
-	<UpdateModal
-		latestVersion={version.data.latest_version}
-		latestUrl={version.data.latest_url ?? version.data.repo_url}
-		selfUpdateReady={version.data.self_update_ready}
-		selfUpdateHook={version.data.self_update_hook}
-		onclose={() => (updateOpen = false)}
-	/>
-{/if}
 
 <style>
 	.hd {
@@ -293,19 +84,10 @@ import ResourceBattery from '#lib/components/molecules/ResourceBattery.svelte';
 		align-items: center;
 		gap: var(--sp-2);
 	}
-	.lead,
 	.tail {
 		display: flex;
 		align-items: center;
-		gap: var(--sp-2);
-		min-width: 0;
-	}
-	.tail {
 		justify-content: flex-end;
-	}
-	.brand {
-		display: flex;
-		align-items: center;
 		gap: var(--sp-2);
 		min-width: 0;
 	}
@@ -325,45 +107,6 @@ import ResourceBattery from '#lib/components/molecules/ResourceBattery.svelte';
 		.hd-inner {
 			grid-template-columns: auto minmax(0, 1fr);
 		}
-	}
-	.conn {
-		width: 8px;
-		height: 8px;
-		border-radius: 50%;
-		background: var(--dot-dead);
-		flex: none;
-	}
-	.conn.on {
-		background: var(--ok);
-		box-shadow: 0 0 6px var(--ok);
-	}
-	.conn.mid {
-		background: var(--warn);
-	}
-	/* ui / srv stacked in one column: two lines cost no more width than one, so
-	   the block never has to compete with the nav for room. It cannot wrap, so
-	   below the nav breakpoint it goes away entirely rather than run under the
-	   account cluster, and the account menu shows the version instead. */
-	.vers {
-		display: none;
-		flex-direction: column;
-		align-items: flex-start;
-		flex: none;
-		line-height: 1;
-		white-space: nowrap;
-	}
-	@media (min-width: 48rem) {
-		.vers {
-			display: flex;
-		}
-	}
-	.reload {
-		border: 0;
-		padding: 0;
-		background: none;
-		cursor: pointer;
-		font: inherit;
-		text-decoration: underline;
 	}
 	.prefs {
 		display: inline-flex;
@@ -388,44 +131,5 @@ import ResourceBattery from '#lib/components/molecules/ResourceBattery.svelte';
 	}
 	.batt:empty + .divider {
 		display: none;
-	}
-	.pill {
-		display: inline-flex;
-		align-items: center;
-		gap: var(--sp-2);
-		height: 32px;
-		padding: 0 var(--sp-3) 0 var(--sp-1);
-		border: 1px solid var(--border);
-		border-radius: var(--r-pill);
-		color: var(--text);
-		font-size: var(--fs-sm);
-		max-width: 16rem;
-	}
-	.pill:hover {
-		background: var(--bg-elevated-2);
-	}
-	.who {
-		display: inline-flex;
-		align-items: baseline;
-		gap: var(--sp-1);
-		min-width: 0;
-		white-space: nowrap;
-	}
-	.who-name {
-		font-weight: var(--fw-medium);
-		overflow: hidden;
-		text-overflow: ellipsis;
-	}
-	.who-sep,
-	.who-role {
-		color: var(--text-muted);
-	}
-	@media (max-width: 47.999rem) {
-		.who {
-			display: none;
-		}
-		.pill {
-			padding-right: var(--sp-1);
-		}
 	}
 </style>
