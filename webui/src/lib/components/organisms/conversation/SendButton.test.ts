@@ -90,3 +90,15 @@ describe('SendButton without a menu', () => {
 		expect(onclick).toHaveBeenCalledTimes(1);
 	});
 });
+
+describe('SendButton emphasis', () => {
+	it('stays quiet until the composer is armed', () => {
+		const { main } = render({ cacheCold: false, armed: false });
+		expect(main.className).not.toContain('btn-primary');
+	});
+
+	it('fills as the primary once armed', () => {
+		const { main } = render({ cacheCold: false, armed: true });
+		expect(main.className).toContain('btn-primary');
+	});
+});

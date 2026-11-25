@@ -544,6 +544,7 @@
 					{route}
 					{launching}
 					menu={schedulingOn || coldItems !== null || autoFollowupTokens !== null}
+					armed={focused || !!input.trim() || att.files.length > 0}
 					onclick={submit}
 				/>
 			{/snippet}
