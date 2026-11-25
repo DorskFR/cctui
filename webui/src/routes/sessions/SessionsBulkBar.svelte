@@ -68,7 +68,6 @@
 		align-items: center;
 		margin-bottom: var(--sp-3);
 		padding: var(--sp-2) var(--sp-3);
-		border: 1px solid var(--border-strong);
 		border-radius: var(--r-md);
 		background: var(--bg-elevated);
 		box-shadow: var(--shadow-md);
