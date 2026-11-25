@@ -118,7 +118,6 @@
 	"accounts_auth_bearer": "Jeton Bearer",
 	"accounts_auth_keep": "Conserver l'actuel",
 	"accounts_confirm_delete_account": "Supprimer le compte « {name} » et tous ses identifiants de fournisseur ?",
-	"accounts_confirm_remove_provider": "Retirer l'identifiant {provider} de « {name} » ? Le compte et ses autres fournisseurs sont conservés.",
 	"accounts_created": "créé le",
 	"accounts_delete_account": "Supprimer le compte",
 	"accounts_deleted": "Supprimé",
@@ -1369,7 +1368,6 @@
 	"providers_out_of_schema_help": "Absente du schéma de réglages embarqué : transmise telle quelle au harnais, sans vérification.",
 	"providers_out_of_schema": "hors schéma",
 	"providers_reauthenticate": "Réauthentifier",
-	"providers_remove_aria": "Retirer le fournisseur {provider}",
 	"providers_remove_key_aria": "Retirer {key}",
 	"providers_requests": "{n} requêtes",
 	"providers_settings_help": "Appliqués à chaque session exécutée sous ce fournisseur. Les paramètres sélectionnés et l'environnement partagent une seule liste ; le serveur rejette les clés gérées par l'organisation.",
@@ -1506,7 +1504,21 @@
 	"sessions_filter_sections_count": "Filtrer les sections ({count}/{total})",
 	"sessions_filtering_by_labels": "Filtrage par {count} étiquette(s)",
 	"sessions_glyphs_expand_label": "État de la session",
-	"sessions_group_count": "{count} sessions",
+	"sessions_group_count": [
+		{
+			"declarations": [
+				"input count",
+				"local countPlural = count: plural"
+			],
+			"selectors": [
+				"countPlural"
+			],
+			"match": {
+				"countPlural=one": "{count} session",
+				"countPlural=other": "{count} sessions"
+			}
+		}
+	],
 	"sessions_hue": "Teinte {hue}",
 	"sessions_kanban_empty": "Rien ici",
 	"sessions_label_color_aria": "Couleur de l'étiquette",
@@ -1685,12 +1697,10 @@
 	"settings_row_density_label": "Densité des lignes",
 	"settings_row_density_normal": "Confortable",
 	"settings_row_density_compact": "Compacte",
-	"settings_admin_instance_cleared": "Nom de l'instance effacé",
 	"settings_admin_instance_name_help": "Libellé commun à tout le serveur, affiché « cctui (NOM) » dans le bandeau et dans l'onglet du navigateur, pour distinguer plusieurs déploiements. Vide (par défaut) : la marque seule.",
 	"settings_admin_instance_name_label": "Nom de l'instance",
 	"settings_admin_instance_name_placeholder": "ex. Acme",
 	"settings_admin_instance_save": "Enregistrer",
-	"settings_admin_instance_saved": "Nom de l'instance enregistré",
 	"settings_appearance_desc": "Thème, taille du texte et langue. Les mêmes réglages sont accessibles depuis l'en-tête.",
 	"settings_archive_done_button_help": "Affiche le bouton « tout archiver » dans l’en-tête du groupe Terminées. L’archivage par session et le geste de balayage restent disponibles.",
 	"settings_archive_done_button_label": "Tout archiver dans Terminées",
@@ -1996,7 +2006,6 @@
 	"settings_scope_you": "Vous",
 	"settings_self_update_adapter": "Adaptateur",
 	"settings_self_update_clear": "Effacer",
-	"settings_self_update_cleared": "Machine de mise à jour effacée",
 	"settings_self_update_dir": "Dossier de travail",
 	"settings_self_update_dir_placeholder": "/chemin/vers/le/déploiement",
 	"settings_self_update_from_env": "Actuellement pris de CCTUI_SELF_UPDATE_MACHINE / CCTUI_SELF_UPDATE_DIR ; enregistrer ici l'emporte.",
@@ -2082,7 +2091,6 @@
 	"settings_spawn_limits_saved": "Limites CctuiAgent enregistrées",
 	"settings_spawn_limits_invalid": "Enfants et profondeur doivent être des entiers positifs ; le budget un nombre positif ou nul.",
 	"settings_spawn_unlimited": "illimité",
-	"settings_self_update_saved": "Machine de mise à jour enregistrée",
 	"settings_codex_sandbox_help": "Comment corriger",
 	"settings_codex_sandbox_unknown": "Échec de la sonde du bac à sable de Codex",
 	"settings_codex_sandbox_userns_denied": "Bac à sable de Codex indisponible : AppArmor bloque les espaces de noms utilisateur pour bwrap",
@@ -3289,5 +3297,11 @@
 			}
 		}
 	],
-	"list_auto_approve": "approbation auto"
+	"list_auto_approve": "approbation auto",
+	"accounts_confirm_remove_provider": "Retirer l'identifiant {provider} de « {name} » ? Le compte et ses autres fournisseurs sont conservés.",
+	"providers_remove_aria": "Retirer le fournisseur {provider}",
+	"settings_admin_instance_cleared": "Nom de l'instance effacé",
+	"settings_admin_instance_saved": "Nom de l'instance enregistré",
+	"settings_self_update_cleared": "Machine de mise à jour effacée",
+	"settings_self_update_saved": "Machine de mise à jour enregistrée"
 }

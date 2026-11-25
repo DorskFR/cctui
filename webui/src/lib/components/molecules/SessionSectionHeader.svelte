@@ -86,6 +86,7 @@
 </div>
 
 {#snippet headerActions()}
+	<span class="acts" class:pinned={hidden}>
 	<Menu label={m.sessions_sort_menu_label()} items={sortItems} bare placement="bottom-end">
 		{#snippet trigger()}
 			<Text
@@ -122,11 +123,28 @@
 			onclick={onarchive}
 		/>
 	{/if}
+	</span>
 {/snippet}
 
 <style>
 	.ssh {
 		container: ssh / inline-size;
+	}
+	.acts {
+		display: flex;
+		align-items: center;
+		gap: var(--sp-2);
+	}
+	@media (hover: hover) {
+		.acts {
+			opacity: 0;
+			transition: opacity var(--dur-fast);
+		}
+		.ssh:hover .acts,
+		.ssh:focus-within .acts,
+		.acts.pinned {
+			opacity: 1;
+		}
 	}
 	@container ssh (max-width: 27.75em) {
 		.sort-words {

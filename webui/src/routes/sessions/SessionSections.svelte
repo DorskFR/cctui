@@ -111,15 +111,17 @@
 	{#if sp.matchCount}
 		<div data-testid="search-match-count"><Text size="sm" tone="muted">{sp.matchCount}</Text></div>
 	{/if}
-	<div class="section">
-		{@render groupHeader('live', m.sessions_section_live(), liveTop.length, {
-			archiveIds: idsForSection(liveTop, ns.childGroups)
-		})}
-		{#if !sp.hiddenSections.has('live')}
-			<SessionRows {sp} rows={liveTop} childGroups={ns.childGroups} allowSelect={false} hl={sp.searchTerms} {pending} />
-		{/if}
-	</div>
-	{#if sp.showArchived}
+	{#if liveTop.length > 0}
+		<div class="section">
+			{@render groupHeader('live', m.sessions_section_live(), liveTop.length, {
+				archiveIds: idsForSection(liveTop, ns.childGroups)
+			})}
+			{#if !sp.hiddenSections.has('live')}
+				<SessionRows {sp} rows={liveTop} childGroups={ns.childGroups} allowSelect={false} hl={sp.searchTerms} {pending} />
+			{/if}
+		</div>
+	{/if}
+	{#if sp.showArchived && archTop.length > 0}
 		<div class="section">
 			{@render groupHeader('archived', m.sessions_section_archived(), archTop.length, {})}
 			{#if !sp.hiddenSections.has('archived')}

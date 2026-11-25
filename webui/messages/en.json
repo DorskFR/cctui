@@ -118,7 +118,6 @@
 	"accounts_auth_bearer": "Bearer token",
 	"accounts_auth_keep": "Keep current",
 	"accounts_confirm_delete_account": "Delete account \"{name}\" and all its provider credentials?",
-	"accounts_confirm_remove_provider": "Remove the {provider} credential from \"{name}\"? The account and its other providers stay.",
 	"accounts_created": "created",
 	"accounts_delete_account": "Delete account",
 	"accounts_deleted": "Deleted",
@@ -1369,7 +1368,6 @@
 	"providers_out_of_schema_help": "Not in the bundled settings schema: passed to the harness as-is, unchecked.",
 	"providers_out_of_schema": "out of schema",
 	"providers_reauthenticate": "Reauthenticate",
-	"providers_remove_aria": "Remove {provider} provider",
 	"providers_remove_key_aria": "Remove {key}",
 	"providers_requests": "{n} requests",
 	"providers_settings_help": "Applied to every session run under this provider. Curated settings and environment share one list; the server rejects org-managed keys.",
@@ -1506,7 +1504,21 @@
 	"sessions_filter_sections_count": "Filter sections ({count}/{total})",
 	"sessions_filtering_by_labels": "Filtering by {count} label(s)",
 	"sessions_glyphs_expand_label": "Session status",
-	"sessions_group_count": "{count} sessions",
+	"sessions_group_count": [
+		{
+			"declarations": [
+				"input count",
+				"local countPlural = count: plural"
+			],
+			"selectors": [
+				"countPlural"
+			],
+			"match": {
+				"countPlural=one": "{count} session",
+				"countPlural=other": "{count} sessions"
+			}
+		}
+	],
 	"sessions_hue": "Hue {hue}",
 	"sessions_kanban_empty": "Nothing here",
 	"sessions_label_color_aria": "Label color",
@@ -1685,12 +1697,10 @@
 	"settings_row_density_label": "Row density",
 	"settings_row_density_normal": "Comfortable",
 	"settings_row_density_compact": "Compact",
-	"settings_admin_instance_cleared": "Instance name cleared",
 	"settings_admin_instance_name_help": "Server-wide label shown as “cctui (NAME)” in the header and the browser tab, so several deployments stay telling apart. Empty (the default) shows the bare brand.",
 	"settings_admin_instance_name_label": "Instance name",
 	"settings_admin_instance_name_placeholder": "e.g. Acme",
 	"settings_admin_instance_save": "Save",
-	"settings_admin_instance_saved": "Instance name saved",
 	"settings_appearance_desc": "Theme, text size and language. The same settings are reachable from the header.",
 	"settings_archive_done_button_help": "Show the archive-all control on the Completed group header. Per-session archive and the swipe gesture stay available either way.",
 	"settings_archive_done_button_label": "Archive all on Completed",
@@ -1996,7 +2006,6 @@
 	"settings_scope_you": "You",
 	"settings_self_update_adapter": "Adapter",
 	"settings_self_update_clear": "Clear",
-	"settings_self_update_cleared": "Self-update machine cleared",
 	"settings_self_update_dir": "Working directory",
 	"settings_self_update_dir_placeholder": "/path/to/the/deployment",
 	"settings_self_update_from_env": "Currently taken from CCTUI_SELF_UPDATE_MACHINE / CCTUI_SELF_UPDATE_DIR; saving here overrides it.",
@@ -2082,7 +2091,6 @@
 	"settings_spawn_limits_saved": "CctuiAgent limits saved",
 	"settings_spawn_limits_invalid": "Children and depth must be positive whole numbers; the budget a non-negative number.",
 	"settings_spawn_unlimited": "unlimited",
-	"settings_self_update_saved": "Self-update machine saved",
 	"settings_codex_sandbox_help": "How to fix it",
 	"settings_codex_sandbox_unknown": "Codex sandbox probe failed",
 	"settings_codex_sandbox_userns_denied": "Codex sandbox unavailable: AppArmor blocks user namespaces for bwrap",
@@ -3289,5 +3297,11 @@
 			}
 		}
 	],
-	"list_auto_approve": "auto-approve"
+	"list_auto_approve": "auto-approve",
+	"accounts_confirm_remove_provider": "Remove the {provider} credential from \"{name}\"? The account and its other providers stay.",
+	"providers_remove_aria": "Remove {provider} provider",
+	"settings_admin_instance_cleared": "Instance name cleared",
+	"settings_admin_instance_saved": "Instance name saved",
+	"settings_self_update_cleared": "Self-update machine cleared",
+	"settings_self_update_saved": "Self-update machine saved"
 }
