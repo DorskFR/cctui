@@ -60,6 +60,34 @@ When something doesn't fit a Tsumikit component:
 - Favour composition (small atoms/molecules) over configuration flags that make
   one component do many things.
 
+## Visual rules
+
+Check every screen against these before it ships.
+
+- **One filled primary per view.** The single main action gets
+  `variant="primary"`; everything else is default, ghost or link. A form's
+  Save sits at the end of its fields and is filled only once there is
+  something to save.
+- **Accent is not status.** The accent colour marks the current selection and
+  the primary action. Success, warning and failure use the `ok`, `warn` and
+  `danger` tones only.
+- **Mono for code only.** Use the monospace font for paths, hashes, ids,
+  commands and tool I/O. Dates, costs, counts, model and profile names are sans;
+  numbers that line up in columns get `font-variant-numeric: tabular-nums`.
+- **Shade over borders.** Separate regions with the elevation steps
+  (`--bg` → `--bg-elevated` → `--bg-elevated-2`), not outlines and rulings.
+  Keep 1px borders for inputs, focus rings and dense tables.
+- **Hit targets.** Anything clickable is at least 24px on a fine pointer and
+  44px on a coarse one, either visibly or through its hit box.
+- **Words over glyphs.** Icon-only for universal actions (search, close, more).
+  Data gets a word ("25M tokens"), not a symbol.
+- **Destructive actions confirm with `ConfirmModal`, `tone="danger"`.** Never
+  the native `confirm()`: `scripts/no-native-confirm.sh` and biome's
+  `noRestrictedGlobals` reject it. The message says what stops working.
+- **Spacing on the scale.** Gaps use `--sp-1`/`2`/`3`/`4`/`6`/`8`. A page
+  title sits 16px above its subtitle, and the title group 24px above the
+  content.
+
 ## Z-scale and the top layer
 
 - We keep a z-index scale in `variables.css` (`--z-header/nav: 50`,
