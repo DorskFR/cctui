@@ -67,7 +67,7 @@ describe('drawer header ⋯ menu', () => {
 		const head = pane.slice(pane.indexOf('<DrawerHeader'), pane.indexOf('/>', pane.indexOf('<DrawerHeader')));
 		const bar = pane.slice(pane.indexOf('<DrawerToolbar'), pane.indexOf('/>', pane.indexOf('<DrawerToolbar')));
 		expect(head).not.toContain('terminal');
-		expect(bar).toContain('terminalOpen={p.terminalOpen}');
+		expect(bar).toContain('{terminalOpen}');
 		expect(bar).toContain('ontoggleTerminal=');
 		expect(toolbar).toContain('data-journey="terminal"');
 	});

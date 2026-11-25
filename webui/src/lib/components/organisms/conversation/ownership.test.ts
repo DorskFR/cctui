@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { MachineRow } from '@bindings/MachineRow';
 import type { MeResponse } from '@bindings/MeResponse';
 import pane from '../ConversationPane.svelte?raw';
+import model from './paneModel.svelte.ts?raw';
 import { ownsSession } from './ownership';
 
 const who = (role: string): MeResponse =>
@@ -26,7 +27,7 @@ describe('ownsSession', () => {
 
 describe('ConversationPane context attach', () => {
 	it('offers Attach only on live sessions the viewer owns', () => {
-		expect(pane).toContain('contextAttachable={!archived && owned}');
-		expect(pane).toContain('ownsSession(me.data, myMachines.data, session.machine_id)');
+		expect(pane).toContain('contextAttachable={!archived && p.owned}');
+		expect(model).toContain('ownsSession(this.#me.data, this.#machines.data, this.session.machine_id)');
 	});
 });

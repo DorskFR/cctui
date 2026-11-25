@@ -1,92 +1,29 @@
 <script lang="ts">
-	import { untrack } from 'svelte';
-	import { replaceState } from '$app/navigation';
-	import { page } from '$app/state';
 	import type { SessionListItem } from '@bindings/SessionListItem';
-	import type { AgentEvent } from '@bindings/AgentEvent';
-	import type { FollowupReason } from '@bindings/FollowupReason';
-	import type { FollowupResponse } from '@bindings/FollowupResponse';
-	import type { FollowupFailed, SessionSuperseded } from '#lib/ws/frames.ts';
-	import { sessionHref } from '#lib/sessionFailureToast.ts';
 	import { ws } from '#lib/ws.svelte.ts';
-	import {
-		endpoints,
-		useConversation,
-		useSessionActions,
-		useLabels,
-		useMachines,
-		useMe,
-		useVoiceConfig,
-		qk
-	} from '#lib/queries/index.ts';
-	import { toasts } from '#lib/toast.svelte.ts';
-	import { errMessage } from '#lib/api.ts';
-	import { clearSessionRoom, setSessionRoom, setSessionRoomByName } from '#lib/rooms.ts';
-	import { useQueryClient } from '@tanstack/svelte-query';
-	import { drafts, VIEW_OPTS } from '#lib/drafts.ts';
-	import { supportsAttachments as adapterSupportsAttachments } from '#lib/attachments.ts';
-	import { harnessCapabilities } from '#lib/harnesses.ts';
-	import { harnessTable } from '#lib/harnesses.svelte.ts';
 	import { Dropzone } from '@dorsk/tsumikit';
-	import ForkModal from './conversation/ForkModal.svelte';
+	import { hasFeature } from '#lib/features.svelte.ts';
+	import { m } from '#lib/paraglide/messages.js';
 	import DrawerHeader from './conversation/DrawerHeader.svelte';
 	import DrawerToolbar from './conversation/DrawerToolbar.svelte';
 	import ActivityBanner from './conversation/ActivityBanner.svelte';
 	import DrawerBanners from './conversation/DrawerBanners.svelte';
 	import OutcomeCard from './OutcomeCard.svelte';
-	import ForkSelectBar from './conversation/ForkSelectBar.svelte';
 	import AutoArchiveNotice from './conversation/AutoArchiveNotice.svelte';
 	import TaskPanel from './conversation/TaskPanel.svelte';
 	import SessionEventsPanel from './conversation/SessionEventsPanel.svelte';
 	import TerminalPane from './conversation/TerminalPane.svelte';
 	import Conversation from './conversation/Conversation.svelte';
 	import ConversationComposer from './conversation/ConversationComposer.svelte';
-	import PluginPaneHost from './conversation/PluginPaneHost.svelte';
-	import { registerComposer } from '#lib/plugins/composerBridge.svelte.ts';
-	import { DrawerPlugins } from '#lib/plugins/drawerPlugins.svelte.ts';
-	import { useHarnesses, usePlugins } from '#lib/queries/index.ts';
-	import { settings } from '#lib/settings.svelte.ts';
-	import { scheduledTurns, useScheduledMessages } from '#lib/queries/scheduled.ts';
-	import { hasFeature } from '#lib/features.svelte.ts';
-	import BookmarkSaveModal from './bookmarks/BookmarkSaveModal.svelte';
-	import type { Line, MsgCategory, ViewOpts } from './conversation/types';
-	import { parseViewOpts } from './conversation/filters';
-	import { lineMarkdown, mergeEventSources } from './conversation/format';
-	import { ConversationStream, mergeLiveEvent } from './conversation/stream.svelte';
-	import { ScrollController } from './conversation/scroll.svelte';
-	import { ConversationSearch } from './conversation/convSearch.svelte';
 	import ConversationSearchBar from './conversation/ConversationSearchBar.svelte';
-	import { ForkController } from './conversation/fork.svelte';
-	import { ForkSelection } from './conversation/forkSelect.svelte';
-	import { SessionActions } from './conversation/sessionActions.svelte';
-	import { EarlierPages } from './conversation/earlierPages.svelte';
-	import { LineRenderer } from './conversation/lineRender.svelte';
-	import { FollowupLine } from './conversation/followupLine.svelte';
-	import {
-		PENDING_MARK_KEY,
-		anchorFor,
-		generationEvents,
-		instructionEvent,
-		markerLine,
-		ownLines,
-		stripFirstTurn
-	} from './conversation/threadView';
-	import { MessagePins } from './conversation/messagePins.svelte';
-	import { BookmarkSaver } from './conversation/bookmarkSave.svelte';
+	import PluginPaneHost from './conversation/PluginPaneHost.svelte';
+	import LiveVoiceBar from './conversation/LiveVoiceBar.svelte';
+	import PaneOverlays from './conversation/PaneOverlays.svelte';
+	import { PaneModel } from './conversation/paneModel.svelte';
 	import { guardEscape } from './conversation/escapeGuard';
 	import { livenessClass } from './conversation/liveness';
-	import { ownsSession } from './conversation/ownership';
-	import { notify } from '#lib/notify.svelte.ts';
-	import type { ConversationChrome } from './conversation/chrome';
-	import { m } from '#lib/paraglide/messages.js';
-	import LiveVoiceBar from './conversation/LiveVoiceBar.svelte';
 	import { voiceTranscriptLanded } from './conversation/voiceMessage';
-	import { LiveVoice } from '#lib/voice/liveVoice.svelte.ts';
-	import { SpeechPlayer } from '#lib/voice/player.ts';
-	import { speakText } from '#lib/voice/speakLine.ts';
-	import { voiceCaps } from '#lib/voice/capabilities.ts';
-	import { acquireWakeLock } from '#lib/voice/wakeLock.ts';
-	import { ttsMime } from '#lib/voice/mime.ts';
+	import type { ConversationChrome } from './conversation/chrome';
 
 	let {
 		session: opened,
@@ -105,512 +42,78 @@
 		/** Omitted in a tile, which has nothing to close back to. */
 		onclose?: () => void;
 		highlight?: string[];
-		/** Causal seq of the matched message when opened from a search hit
-		 *  (`SessionListItem.match_seq`). `null` opens tail-anchored as usual. */
+		/** Causal seq of the matched message when opened from a search hit. */
 		focusSeq?: number | null;
-		// "New session from same script" for archived sessions.
 		onNewFromScript?: (s: SessionListItem) => void;
 		onFollowup?: (s: SessionListItem, instruction?: string) => void;
-		// Open another session in place by id — used to jump straight to a
-		// freshly forked conversation without a manual refresh.
+		/** Open another session in place, e.g. a fresh fork. */
 		onNavigate?: (sessionId: string) => void;
-		/** `drawer` keeps the back chevron and the document scroll lock; `tile`
-		 *  swaps in close/maximize and leaves the page scrollable. */
 		chrome?: ConversationChrome;
-		/** False for the tiles that are not the active one: only the active pane
-		 *  answers the window keyboard chords. */
+		/** Only the active pane answers the window keyboard chords. */
 		active?: boolean;
 		maximized?: boolean;
 		onmaximize?: () => void;
 	} = $props();
 
-	// The pane follows its follow-up line: header, composer and stream target
-	// the line's head, whichever generation was opened.
-	const line = new FollowupLine({
-		thread: (sid, opts) => endpoints.threadConversation(sid, opts),
-		tree: (sid) => endpoints.sessionThread(sid),
-		session: (sid) => endpoints.session(sid)
-	});
-	const session = $derived(
-		line.headId && line.headId !== opened.id ? (line.head ?? opened) : opened
-	);
-	// Moves only when the opened session leaves the line, so a head swap keeps
-	// scroll, render window and panes.
-	let viewKey = $state(untrack(() => opened.id));
-	$effect(() => {
-		const sid = opened.id;
-		if (!untrack(() => line.members.has(sid))) viewKey = sid;
-	});
-	$effect(() => {
-		void viewKey;
-		untrack(() => void line.open(opened));
-	});
-
-	const id = $derived(session.id);
-	const archived = $derived(session.status === 'archived');
-	const me = useMe();
-	const myMachines = useMachines(
-		() => me.data?.user_id ?? '',
-		() => me.data?.role === 'admin' && !!me.data?.user_id && hasFeature('machine_spawn')
-	);
-	const owned = $derived(ownsSession(me.data, myMachines.data, session.machine_id));
-	const needsInput = $derived(session.attention === 'needs_input' && !archived);
+	const p = new PaneModel(() => ({ opened, highlight, focusSeq, chrome, onclose, onFollowup, onNavigate }));
+	const { line, stream, search, sa, fork, forkSelect, pins, plugins, renderer, earlier, voice, actions } = p;
+	const session = $derived(p.session);
+	const id = $derived(p.id);
+	const archived = $derived(p.archived);
+	const lines = $derived(p.lines);
+	const terminalOpen = $derived(p.terminalOpen);
+	const tile = $derived(chrome === 'tile');
 	const waitingSince = $derived(session.last_message_at ? Date.parse(session.last_message_at) : null);
 	const showStatusBadge = $derived(session.status === 'new' || session.status === 'archived');
-	const qc = useQueryClient();
 
-	// Read-only live terminal pane, toggled from the toolbar.
-	let terminalOpen = $state(false);
-	// Runtime plugins: a pane docked on the drawer's left edge plus the buttons
-	// they contribute to assistant lines.
-	const pluginsOn = $derived(hasFeature('plugins'));
-	const installedPlugins = usePlugins();
-	const plugins = new DrawerPlugins({
-		sessionId: () => id,
-		installed: () => (pluginsOn ? (installedPlugins.data ?? []) : []),
-		enabled: () => settings.pluginsEnabled
-	});
-	$effect(() => plugins.ensureLoaded());
-
-	let view = $state<ViewOpts>(parseViewOpts(drafts.get(VIEW_OPTS)));
-	$effect(() => {
-		drafts.set(VIEW_OPTS, JSON.stringify(view));
-	});
-
-	const history = useConversation(() => id, () => true);
-	const actions = useSessionActions();
-
-	// Header labels/star share the session list's label set and mutations so
-	// both stay in sync.
 	const organising = $derived(hasFeature('organising'));
-	const labelsQuery = useLabels();
-	const allLabels = $derived(labelsQuery.data?.labels ?? []);
-
-	const togglePin = (s: SessionListItem) => (s.pinned ? actions.unpin(s.id) : actions.pin(s.id));
-
-	// Room is a field on the session, so a change invalidates the session list
-	// that the grouping and the card badge read.
-	async function setRoom(sessionId: string, pick: { id: string } | { name: string }) {
-		try {
-			if ('id' in pick) await setSessionRoom(sessionId, pick.id);
-			else await setSessionRoomByName(sessionId, pick.name);
-			void qc.invalidateQueries({ queryKey: qk.sessionsAll });
-		} catch (e) {
-			toasts.error(errMessage(e));
-		}
-	}
-
-	async function clearRoom(sessionId: string) {
-		try {
-			await clearSessionRoom(sessionId);
-			void qc.invalidateQueries({ queryKey: qk.sessionsAll });
-		} catch (e) {
-			toasts.error(errMessage(e));
-		}
-	}
-
-	// Shared by the viewport (binds the scroller) and the composer (binds the
-	// textarea, whose growth must re-pin the viewport).
-	const scroll = new ScrollController();
-
-	const stream = new ConversationStream({
-		id: () => id,
-		archived: () => archived,
-		historyData: () => history.data,
-		pin: scroll.stickToBottom,
-		invalidateConversation: () => qc.invalidateQueries({ queryKey: qk.conversation(id) }),
-		invalidateSessions: () => qc.invalidateQueries({ queryKey: qk.sessionsAll }),
-		mergeIntoCache: (sid, ev) =>
-			qc.setQueryData<AgentEvent[]>(qk.conversation(sid), (prev) => mergeLiveEvent(prev, ev)),
-		sessionTodos: () => session.todos
-	});
-	// (Re)subscribe when the open session changes or a forced resubscribe is
-	// requested; tear down listeners on switch/unmount.
-	$effect(() => {
-		const sid = id;
-		void stream.resubTick;
-		return stream.subscribe(sid);
-	});
-	// Catch up after the tab regains focus (the ws may have gone half-open).
-	$effect(() => stream.installVisibilityRefresh());
-	// Suppress this session's own toasts/sounds while it is on screen — ref-counted,
-	// so a session open in both the drawer and a tile survives one of them closing.
-	$effect(() => notify.holdOpen(id));
-
-	// Account switcher: opened from the header key glyph or by a soft-limit block.
-	let acctModalOpen = $state(false);
-
-	const earlier: EarlierPages = new EarlierPages({
-		id: () => id,
-		historyLength: () => history.data?.length ?? 0,
-		events: () => events
-	});
-	// History (fetched) + earlier pages + live (ws) events, ordered by causal
-	// `seq` (falling back to `ts`); live events already present in history are
-	// dropped so a refetch and an optimistic reply's persisted form never
-	// render twice.
-	const events: AgentEvent[] = $derived(mergeEventSources(history.data ?? [], earlier.pages, stream.live));
-	// The thread above the head shows only once the head reaches its first event.
-	const headComplete = $derived(!earlier.canFetch && (history.data !== undefined || line.fresh));
-	const threadShown = $derived(line.active && headComplete);
-	const renderEvents = $derived.by(() => {
-		if (line.headGen < 2) return events;
-		return headComplete ? generationEvents(events, line.headMark) : stripFirstTurn(events, null);
-	});
-
-	// Opened from a search hit: land centred on it instead of the tail.
-	$effect(() => {
-		const seq = focusSeq;
-		const sid = id;
-		if (seq != null) void earlier.focus(sid, seq);
-	});
-	// `Line` carries no seq, so the focused line is addressed by `ts`. A pruned
-	// or filtered-out event resolves to null and the drawer just opens normally.
-	const focusTs = $derived.by(() => {
-		if (focusSeq == null) return null;
-		const ev = events.find((e) => e.seq === focusSeq);
-		return ev ? Number(ev.ts) : null;
-	});
-
-	const scheduledQuery = useScheduledMessages(() => id);
-	const scheduledTurnMap = $derived(scheduledTurns(scheduledQuery.data));
-	const renderer = new LineRenderer({
-		id: () => id,
-		machineId: () => (hasFeature('files') ? session.machine_id : ''),
-		view: () => view,
-		// The find bar owns the highlight once it is open, so the /sessions-search
-		// terms and a refined in-conversation query never fight over it.
-		highlight: () => (search.open ? search.terms : highlight),
-		events: () => renderEvents,
-		prior: () => (threadShown ? line.segments : []),
-		scheduledTurns: () => scheduledTurnMap,
-		pending: () => stream.pendingReplies,
-		failed: () => stream.failedReplies,
-		retrying: () => stream.retryingReplies,
-		askPreamble: () => stream.ask?.preamble,
-		planPreamble: () => stream.plan?.preamble
-	});
-	const headLines = $derived(ownLines(renderer.lines, id, line.headGen));
-	const pendingLines = $derived.by(() => {
-		const mark = line.pending;
-		if (!mark) return [];
-		const ev = instructionEvent(mark);
-		const own = ev ? renderer.segmentLines({ sessionId: PENDING_MARK_KEY, events: [ev] }) : [];
-		return [markerLine(mark), ...own.map((l) => ({ ...l, key: `${PENDING_MARK_KEY}:${l.key}` }))];
-	});
-	const lines = $derived([
-		...renderer.priorLines,
-		...(threadShown && line.headGen >= 2 && line.headMark ? [markerLine(line.headMark)] : []),
-		...headLines,
-		...pendingLines
-	]);
-	function revealHead(categories: MsgCategory[]): void {
-		const msgFilter = { ...view.msgFilter };
-		for (const c of categories) msgFilter[c] = true;
-		view = { ...view, msgFilter };
-	}
-	$effect(() => {
-		void lines.length;
-		void plugins.ready.length;
-		plugins.autoOpenFrom(lines);
-	});
-
-	// Only follow new content when the user is pinned to the bottom.
-	$effect(() => {
-		void lines.length;
-		void stream.perms.length;
-		void stream.working;
-		scroll.followIfStuck();
-	});
-	// Reset to bottom + sticky when switching sessions — except when opened on a
-	// search hit, which must land mid-transcript and stay there.
-	$effect(() => {
-		void viewKey;
-		if (focusSeq == null) untrack(() => scroll.resetForSession());
-		else untrack(() => scroll.unstick());
-	});
-	// Keep pinned to the bottom while the composer grows. Re-runs when
-	// the scroller / textarea attach (the controller reads both reactively).
-	$effect(() => scroll.observeResize());
-
-	const pins = new MessagePins({
-		id: () => id,
-		events: () => events,
-		canFetchOlder: () => earlier.canFetch,
-		fetchOlder: earlier.fetchEarlier,
-		scroll
-	});
 	const searchable = $derived(hasFeature('transcript_search'));
-	// Find-in-conversation. The hit list is the server's: the DOM only holds
-	// the paged tail, so a `mark.search-hit` count can never be the total.
-	const search = new ConversationSearch({
-		id: () => id,
-		fetchHits: (sid: string, q: string, signal?: AbortSignal) =>
-			endpoints.conversationSearch(sid, q, undefined, signal),
-		ensureSeqVisible: (seq) => pins.ensureSeqVisible(seq),
-		onerror: (e) => toasts.error(errMessage(e))
-	});
-	$effect(() => {
-		const ev = stream.live.at(-1);
-		if (ev) untrack(() => search.appendLive(ev));
-	});
-	$effect(() => {
-		if (!stream.working) untrack(() => search.turnEnded());
-	});
-	// Older pages and search hits belong to one session; the terminal and
-	// plugin panes survive a head swap.
-	$effect(() => {
-		void id;
-		earlier.reset();
-		search.reset();
-	});
-	$effect(() => {
-		void viewKey;
-		terminalOpen = false;
-		untrack(() => plugins.close());
-	});
-
-	// Opened from the /sessions search: the bar starts filled with those terms
-	// so both flows run through one code path.
-	$effect(() => {
-		const seed = searchable ? highlight.join(' ').trim() : '';
-		if (seed) untrack(() => search.openBar(seed));
-	});
-
-	const isCodexSession = $derived((session.adapter_id ?? '').startsWith('codex'));
-	useHarnesses();
-	const harnessCaps = $derived(harnessCapabilities(session.adapter_id, harnessTable()));
-
-	const sa = new SessionActions({
-		id: () => id,
-		session: () => session,
-		events: () => events,
-		view: () => view,
-		actions,
-		onclose: () => onclose?.()
-	});
-
-	const fork = new ForkController({
-		id: () => id,
-		archived: () => archived,
-		isCodex: () => isCodexSession,
-		session: () => session,
-		fork: (sid, body) => actions.fork(sid, body),
-		// Jump straight to the new conversation when claude returned its id;
-		// otherwise close and let the list refetch surface it.
-		onForked: (sid) => {
-			if (sid && onNavigate) onNavigate(sid);
-			else onclose?.();
-		}
-	});
-
 	const canFork = $derived(hasFeature('machine_spawn'));
-	// Subset fork from a conversation extract, only where the harness forks.
-	const forkable = $derived(canFork && harnessCaps.fork && !archived);
-	const forkSelect = new ForkSelection();
-	function forkSelection() {
-		const range = forkSelect.range(headLines);
-		if (range.length === 0) return;
-		fork.openExtract({ mode: 'selected', anchor_message_id: null, selected_message_ids: range });
-	}
-
-	const supportsAttachments = $derived(
-		hasFeature('uploads') && adapterSupportsAttachments(session.adapter_id)
-	);
-	let composer = $state<ConversationComposer>();
-	$effect(() =>
-		registerComposer(id, {
-			insertText: (text) => void composer?.insertText(text),
-			send: (text) => composer?.sendText(text),
-			addFiles: (files) => composer?.addFiles(files),
-			focus: () => composer?.focus()
-		})
-	);
-
-	// Edit a still-pending message: drop the in-flight echo and pull its
-	// text back into the composer to fix and resend.
-	function editPending(text: string, ts: number) {
-		if (archived) return;
-		const typed = stream.discardOptimistic(ts);
-		composer?.loadDraft(typed ?? text);
-	}
-
-	function quoteLine(ln: Line, selection: string | null) {
-		if (archived) return;
-		void composer?.insertQuote(selection ?? lineMarkdown(ln));
-	}
-
-	const bookmarks = new BookmarkSaver({ id: () => id, sessionName: () => session.name ?? null });
-
-	// ── Voice ─────────────────────────────────────────────────
-	const voiceConfig = useVoiceConfig();
-	const caps = $derived(voiceCaps(voiceConfig.data));
-	const voiceEnabled = $derived(caps.stt && !archived);
-	const liveVoice = new LiveVoice({
-		connect: (url) => new WebSocket(url),
-		vad: (cb) => import('#lib/voice/vad.ts').then((mod) => mod.createVad(cb, settings.voice.micId)),
-		player: new SpeechPlayer({
-			mime: () => ttsMime(voiceConfig.data?.tts_format ?? 'opus'),
-			speed: () => settings.voice.speed,
-			speaker: () => settings.voice.speakerId
-		}),
-		wakeLock: acquireWakeLock,
-		prefs: () => settings.voice
-	});
-	function toggleLiveVoice() {
-		if (liveVoice.active) liveVoice.stop();
-		else void liveVoice.start(id);
-	}
-	// A pane that moves to another session, or unmounts, drops its loop.
-	$effect(() => {
-		void id;
-		return () => liveVoice.stop();
-	});
-	$effect(() => {
-		if (liveVoice.error) toasts.error(liveVoice.error);
-	});
-	$effect(() => {
-		liveVoice.setLanguage(settings.voice.language);
-	});
-	$effect(() => {
-		if (!caps.live) untrack(() => liveVoice.stop());
-	});
-	let speakingKey = $state<string | null>(null);
-	async function speakLine(ln: Line) {
-		if (!ln.key || !ln.text) return;
-		const key = ln.key;
-		try {
-			const outcome = await speakText(key, ln.text, {
-				voice: settings.voice.voice,
-				speed: settings.voice.speed,
-				summarize: settings.voice.summarizeLong,
-				speaker: settings.voice.speakerId,
-				onend: () => {
-					if (speakingKey === key) speakingKey = null;
-				}
-			});
-			speakingKey = outcome === 'started' ? key : null;
-		} catch (e) {
-			speakingKey = null;
-			toasts.error(errMessage(e));
-		}
-	}
-
+	const forkable = $derived(canFork && p.harnessCaps.fork && !archived);
 	const canFollowup = $derived(
 		!!onFollowup && hasFeature('automation') && hasFeature('machine_spawn')
 	);
-	function followup(instruction?: string) {
+	const canTerminal = $derived(p.harnessCaps.live_view && hasFeature('terminal'));
+	const followup = (instruction?: string) => {
 		if (canFollowup) onFollowup?.(session, instruction);
-	}
-	const canTerminal = $derived(harnessCaps.live_view && hasFeature('terminal'));
-
-	function swapHead(ev: SessionSuperseded) {
-		if (!line.supersede(ev, { session, events, complete: headComplete })) return;
-		if (ev.archive_error)
-			toasts.error(m.composer_followup_archive_failed({ error: ev.archive_error }));
-		if (chrome !== 'tile')
-			replaceState(sessionHref(ev.to), { ...page.state, spawned: ev.to } as App.PageState);
-	}
-	function followupFailed(ev: FollowupFailed) {
-		if (!line.fail(ev)) return;
-		toasts.error(m.followup_thread_failed({ error: ev.error }));
-		composer?.restoreDraft(ev.instruction);
-	}
-	$effect(() => {
-		const sid = id;
-		const offSwap = ws.onSuperseded(sid, (ev) => untrack(() => swapHead(ev)));
-		const offFail = ws.onFollowupFailed(sid, (ev) => untrack(() => followupFailed(ev)));
-		return () => {
-			offSwap();
-			offFail();
-		};
-	});
-	function followupStarted(res: FollowupResponse, instruction: string, reason: FollowupReason) {
-		line.begin(res, instruction, reason);
-		if (res.state !== 'registered' || !res.to) return;
-		swapHead({
-			followup_id: res.followup_id,
-			from: res.from,
-			to: res.to,
-			reason,
-			instruction,
-			archived: true,
-			archive_error: null,
-			at: new Date().toISOString()
-		});
-	}
-
-	let anchor = $state<{ key: string; tick: number } | null>(null);
-	let anchorTick = 0;
-	/** Page in what lies between the tail and `target`, then scroll to it. */
-	async function landOn(target: string) {
-		if (target === id) {
-			scroll.jumpToBottom();
-			return;
-		}
-		await line.ready;
-		const isRoot = target === line.rootId;
-		for (let i = 0; i < 50 && earlier.canFetch; i++) await earlier.fetchEarlier();
-		for (let i = 0; i < 50 && line.canFetchOlder && (isRoot || !anchorFor(lines, target, line.rootId)); i++)
-			await line.fetchOlder();
-		const key = anchorFor(lines, target, line.rootId);
-		if (key) anchor = { key, tick: ++anchorTick };
-	}
-	function openGeneration(sessionId: string): boolean {
-		if (!line.members.has(sessionId)) return false;
-		void landOn(sessionId);
-		return true;
-	}
-	let landed: string | null = null;
-	$effect(() => {
-		const target = line.target;
-		if (!target || history.data === undefined) return;
-		const token = `${viewKey}|${target}`;
-		if (landed === token) return;
-		landed = token;
-		void untrack(() => landOn(target));
-	});
-
+	};
 </script>
 
 <div class="conv-pane" data-chrome={chrome}>
-		{#if plugins.current && plugins.open}
-			{#key plugins.current.info.id}
-				<PluginPaneHost
-					plugin={plugins.current.info}
-					module={plugins.current.module}
-					{session}
-					params={plugins.open.params}
-					onclose={() => plugins.close()}
-				/>
-			{/key}
-		{/if}
-		<!-- svelte-ignore a11y_no_static_element_interactions -->
-		<div
-			class="drawer"
-			class:plugin-open={plugins.current !== null}
-			data-journey="conversation"
-			onkeydown={guardEscape}
+	{#if plugins.current && plugins.open}
+		{#key plugins.current.info.id}
+			<PluginPaneHost
+				plugin={plugins.current.info}
+				module={plugins.current.module}
+				{session}
+				params={plugins.open.params}
+				onclose={() => plugins.close()}
+			/>
+		{/key}
+	{/if}
+	<!-- svelte-ignore a11y_no_static_element_interactions -->
+	<div
+		class="drawer"
+		class:plugin-open={plugins.current !== null}
+		data-journey="conversation"
+		onkeydown={guardEscape}
+	>
+		<Dropzone
+			overlay
+			multiple
+			label={m.composer_drop_files()}
+			disabled={!p.supportsAttachments || archived}
+			onfiles={(f) => p.composer?.addFiles(f)}
+			onactive={(a) => p.composer?.setDragActive(a)}
 		>
-			<!-- The whole drawer is a file drop area: dragging files over it
-			     shows the tsumikit Dropzone overlay; on drop they're staged as composer
-			     attachments. overlay mode wraps the content without hijacking clicks. -->
-			<Dropzone
-				overlay
-				multiple
-				label={m.composer_drop_files()}
-				disabled={!supportsAttachments || archived}
-				onfiles={(f) => composer?.addFiles(f)}
-				onactive={(a) => composer?.setDragActive(a)}
-			>
-				<DrawerHeader
+			<DrawerHeader
 				{session}
 				{archived}
-				{isCodexSession}
+				isCodexSession={p.isCodexSession}
 				livenessClass={livenessClass(session)}
 				{showStatusBadge}
 				{maximized}
-				compact={chrome === 'tile'}
+				compact={tile}
 				{onmaximize}
 				{onclose}
 				onrename={sa.rename}
@@ -620,7 +123,7 @@
 				onexport={sa.export}
 				onsearch={searchable ? () => search.openBar() : undefined}
 				onescape={search.escape}
-				onescapeaction={chrome === 'tile' && stream.working ? sa.interrupt : undefined}
+				onescapeaction={tile && stream.working ? sa.interrupt : undefined}
 				shortcuts={active}
 				onfork={canFork ? fork.openDialog : undefined}
 				onfollowup={canFollowup ? () => followup() : undefined}
@@ -629,33 +132,33 @@
 				oninterrupt={sa.interrupt}
 				onarchive={sa.archive}
 				onstoparchive={sa.stopAndArchive}
-				onTogglePin={organising ? togglePin : undefined}
-				onAccountClick={() => (acctModalOpen = true)}
-				{allLabels}
+				onTogglePin={organising ? p.togglePin : undefined}
+				onAccountClick={() => (p.acctModalOpen = true)}
+				allLabels={p.allLabels}
 				onCreateLabel={(name, color) => actions.createLabel(name, color, { session_id: id })}
 				onAttachLabel={organising ? actions.attachLabel : undefined}
 				onDetachLabel={actions.detachLabel}
 				onUpdateLabel={actions.updateLabel}
 				onDeleteLabel={actions.deleteLabel}
-				onsetroom={hasFeature('rooms') ? setRoom : undefined}
-				onclearroom={hasFeature('rooms') ? clearRoom : undefined}
-				onthreadjump={openGeneration}
+				onsetroom={hasFeature('rooms') ? p.setRoom : undefined}
+				onclearroom={hasFeature('rooms') ? p.clearRoom : undefined}
+				onthreadjump={p.thread.open}
 			/>
 
-			{#if chrome !== 'tile'}
+			{#if !tile}
 				<DrawerToolbar
-					bind:view
+					bind:view={p.view}
 					autoApprove={session.auto_approve}
 					ontoggleAuto={sa.toggleAutoApprove}
 					{terminalOpen}
-					ontoggleTerminal={canTerminal ? () => (terminalOpen = !terminalOpen) : undefined}
+					ontoggleTerminal={canTerminal ? () => (p.terminalOpen = !terminalOpen) : undefined}
 					plugins={plugins.buttons}
 					pins={pins.pins}
 					{lines}
 					onjumpseq={organising ? (seq) => void pins.ensureSeqVisible(seq) : undefined}
 					onunpin={organising ? pins.unpinSeq : undefined}
 					sessionId={session.id}
-					contextAttachable={!archived && owned}
+					contextAttachable={!archived && p.owned}
 				/>
 			{/if}
 
@@ -667,30 +170,30 @@
 			<SessionEventsPanel sessionId={id} />
 
 			{#if terminalOpen && canTerminal}
-				<TerminalPane sessionId={id} onclose={() => (terminalOpen = false)} />
+				<TerminalPane sessionId={id} onclose={() => (p.terminalOpen = false)} />
 			{/if}
 
-			<DrawerBanners sessionId={id} {needsInput} {stream} bind:acctModalOpen />
+			<DrawerBanners sessionId={id} needsInput={p.needsInput} {stream} bind:acctModalOpen={p.acctModalOpen} />
 			<OutcomeCard outcome={session.latest_outcome} />
 
 			<Conversation
 				{stream}
-				{scroll}
+				scroll={p.scroll}
 				sessionId={id}
-				{viewKey}
+				viewKey={p.viewKey}
 				{lines}
-				isLoading={history.isLoading && lines.length === 0}
-				canFetchOlder={earlier.canFetch || (threadShown && line.canFetchOlder)}
+				isLoading={p.history.isLoading && lines.length === 0}
+				canFetchOlder={earlier.canFetch || (p.threadShown && line.canFetchOlder)}
 				fetchingOlder={earlier.fetching || line.fetching}
 				onfetcholder={earlier.canFetch ? earlier.fetchEarlier : line.fetchOlder}
-				{anchor}
-				onopengeneration={(sid) => void openGeneration(sid)}
+				anchor={p.thread.anchor}
+				onopengeneration={(sid) => void p.thread.open(sid)}
 				headHidden={renderer.headHidden}
-				onrevealhead={revealHead}
+				onrevealhead={p.revealHead}
 				{archived}
 				askPreambleHtml={renderer.askPreambleHtml}
 				planPreambleHtml={renderer.planPreambleHtml}
-				onedit={editPending}
+				onedit={p.editPending}
 				onrespondperm={(rid, allow, optionId) => ws.respondPermission(id, rid, allow, optionId)}
 				{forkable}
 				selectMode={forkSelect.active}
@@ -699,84 +202,49 @@
 				pinnedSeqs={pins.pinnedSeqs}
 				onpin={organising ? pins.toggleLine : undefined}
 				bind:jumper={pins.renderWindow}
-				{focusTs}
-				onbookmark={organising ? bookmarks.open : undefined}
-				isBookmarked={organising ? bookmarks.isBookmarked : undefined}
+				focusTs={p.focusTs}
+				onbookmark={organising ? p.bookmarks.open : undefined}
+				isBookmarked={organising ? p.bookmarks.isBookmarked : undefined}
 				pluginActionsFor={(ln) => plugins.actionsFor(ln)}
 				onpluginaction={(a) => plugins.openWith(a.pluginId, a.params)}
-				onquote={quoteLine}
-				onspeak={caps.tts ? speakLine : undefined}
-				{speakingKey}
+				onquote={p.quoteLine}
+				onspeak={voice.caps.tts ? voice.speak : undefined}
+				speakingKey={voice.speakingKey}
 			/>
 
-			<ActivityBanner {stream} {archived} {needsInput} {waitingSince} />
-			<AutoArchiveNotice {session} onpin={organising ? () => togglePin(session) : undefined} />
+			<ActivityBanner {stream} {archived} needsInput={p.needsInput} {waitingSince} />
+			<AutoArchiveNotice {session} onpin={organising ? () => p.togglePin(session) : undefined} />
 
-			{#if liveVoice.active}
+			{#if voice.live.active}
 				<LiveVoiceBar
-					voice={liveVoice}
-					onstop={toggleLiveVoice}
-					landed={voiceTranscriptLanded(lines, liveVoice.transcript)}
+					voice={voice.live}
+					onstop={voice.toggleLive}
+					landed={voiceTranscriptLanded(lines, voice.live.transcript)}
 				/>
 			{/if}
 			<ConversationComposer
-				bind:this={composer}
+				bind:this={p.composer}
 				{session}
 				{archived}
 				lastAgentAt={stream.lastAgentAt}
-				{voiceEnabled}
-				voiceLive={liveVoice.active}
-				onvoicelive={caps.live ? toggleLiveVoice : undefined}
-				{supportsAttachments}
-				{scroll}
+				voiceEnabled={p.voiceEnabled}
+				voiceLive={voice.live.active}
+				onvoicelive={voice.caps.live ? voice.toggleLive : undefined}
+				supportsAttachments={p.supportsAttachments}
+				scroll={p.scroll}
 				onsend={(body, dictated, followup) => stream.sendBody(body, dictated, followup)}
 				stageFiles={(files) => actions.stageFiles(id, files)}
 				onNewFromScript={() => onNewFromScript?.(session)}
 				onFork={canFork ? fork.openDialog : undefined}
 				onFollowup={canFollowup ? followup : undefined}
 				onResume={canFork ? sa.resume : undefined}
-				onfollowupstarted={followupStarted}
-				compact={chrome === 'tile'}
+				onfollowupstarted={p.thread.started}
+				compact={tile}
 			/>
-			</Dropzone>
-		</div>
+		</Dropzone>
+	</div>
 
-		{#if forkSelect.active && canFork}
-			<ForkSelectBar
-				contained={chrome === 'tile'}
-				count={forkSelect.selected.size}
-				onfork={forkSelection}
-				onforkall={fork.openDialog}
-				oncancel={forkSelect.exit}
-			/>
-		{/if}
-
-		{#if fork.open && canFork}
-			<ForkModal
-				{archived}
-				{isCodexSession}
-				parentTokens={fork.parentTokens}
-				models={fork.models}
-				efforts={fork.efforts}
-				forking={fork.forking}
-				extractLabel={fork.extractLabel}
-				bind:model={fork.model}
-				bind:effort={fork.effort}
-				bind:prompt={fork.prompt}
-				oncancel={fork.cancel}
-				onsubmit={fork.submit}
-			/>
-		{/if}
-
-	{#if bookmarks.draft}
-		<BookmarkSaveModal
-			heading={m.bookmarks_save_title()}
-			saveLabel={m.bookmarks_save_action()}
-			title={bookmarks.draft.title}
-			onsave={bookmarks.save}
-			onclose={bookmarks.close}
-		/>
-	{/if}
+	<PaneOverlays {p} {canFork} contained={tile} />
 </div>
 
 <style>

@@ -24,7 +24,7 @@ describe('the tiles grid owns which pane holds the keyboard', () => {
 
 	it('interrupts rather than closes when a tile takes Escape', () => {
 		expect(pane).toContain(
-			"onescapeaction={chrome === 'tile' && stream.working ? sa.interrupt : undefined}"
+			'onescapeaction={tile && stream.working ? sa.interrupt : undefined}'
 		);
 		expect(header).toContain('(onescapeaction ?? onclose)?.()');
 	});

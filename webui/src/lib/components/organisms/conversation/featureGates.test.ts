@@ -45,7 +45,7 @@ describe('conversation pane gates', () => {
 
 	it('wires the terminal only with terminal', () => {
 		expect(pane).toContain("const canTerminal = $derived(p.harnessCaps.live_view && hasFeature('terminal'));");
-		expect(pane).toContain('{#if p.terminalOpen && canTerminal}');
+		expect(pane).toContain('{#if terminalOpen && canTerminal}');
 	});
 
 	it('links local files only with files', () => {
