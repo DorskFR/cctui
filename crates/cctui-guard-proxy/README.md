@@ -35,13 +35,14 @@ Log level is controlled by `RUST_LOG` (defaults to `info`).
 
 ## Policy file
 
-JSON, hot-reloaded on change (mtime poll, ~1s). A missing or invalid file means
-deny-all.
+JSON, hot-reloaded on change (mtime/inode poll, ~100ms). A missing or invalid
+file means deny-all.
 
 ```json
 {
   "allowed_hosts": ["example.com:443", "api.example.com:*"],
-  "default": "deny"
+  "default": "deny",
+  "generation": 3
 }
 ```
 
@@ -50,14 +51,17 @@ deny-all.
   matches a hostname entry.
 - `default` — `"deny"` (recommended) or `"allow"`. `"allow"` permits anything not
   explicitly listed; use only for debugging.
+- `generation` — optional counter stamped by `cctui-guard`; `0` when absent.
 
 ## Health endpoint
 
 On `--health-listen`:
 
 - `GET /health` — liveness; always `200 OK` while the process is up.
-- `GET /ready` — readiness; `200 OK` once a policy is loaded, `503` otherwise
-  (deny-all but not yet ready to allow traffic).
+- `GET /ready` — readiness; `200` with `{"ready":true,"generation":N}` once a
+  policy is loaded, `503` with `{"ready":false,"generation":null}` otherwise
+  (deny-all but not yet ready to allow traffic). `cctui-guard` polls it to
+  confirm a transition's policy is live.
 
 ## Tests
 

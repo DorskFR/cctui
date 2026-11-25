@@ -66,6 +66,15 @@ struct Cli {
     #[arg(long = "policy-out", default_value = "/var/run/guard-proxy/policy.json")]
     policy_out: PathBuf,
 
+    /// guard-proxy health listener whose `/ready` must report a rewritten
+    /// policy's generation before `/transition` answers. Empty ⇒ no wait.
+    #[arg(long = "proxy-ready", env = "GUARD_PROXY_READY", default_value = "127.0.0.1:15002")]
+    proxy_ready: String,
+
+    /// Milliseconds `/transition` waits for that confirmation.
+    #[arg(long = "proxy-ready-timeout-ms", default_value_t = 2000)]
+    proxy_ready_timeout_ms: u64,
+
     /// Hosts always allowed in every written policy (repeatable), e.g.
     /// `--always-allow automation.example.com:443`.
     #[arg(long = "always-allow")]
@@ -484,6 +493,10 @@ async fn main() -> anyhow::Result<()> {
         .with_timeouts(
             Duration::from_secs(cli.gate_timeout_secs),
             Duration::from_secs(cli.judge_timeout_secs),
+        )
+        .with_proxy_handshake(
+            Some(cli.proxy_ready.clone()),
+            Duration::from_millis(cli.proxy_ready_timeout_ms),
         )
         .with_grants(grants),
     );

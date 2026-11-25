@@ -188,18 +188,20 @@ async fn handle(mut conn: TcpStream, peer: IpAddr, health: &Health) -> anyhow::R
     // `/health` is liveness (the process is up). `/ready` is readiness: it only
     // reports 200 once a policy is actually loaded — until then the proxy is
     // deny-all, which is healthy but not "ready to allow traffic".
-    let response: &[u8] = match path {
-        "/health" => b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nOK",
-        "/ready" if health.policy.is_loaded() => {
-            b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\nConnection: close\r\n\r\nReady"
-        }
-        "/ready" => {
-            b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 9\r\nConnection: close\r\n\r\nNo policy"
-        }
-        _ => b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+    let response = match path {
+        "/health" => http_response(200, "text/plain", "OK"),
+        "/ready" => ready_response(&health.policy),
+        _ => b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_vec(),
     };
-    conn.write_all(response).await?;
+    conn.write_all(&response).await?;
     Ok(())
+}
+
+/// The guard's `/transition` waits on `generation` to know its policy is live.
+fn ready_response(policy: &PolicyManager) -> Vec<u8> {
+    let generation = policy.generation();
+    let body = serde_json::json!({ "ready": generation.is_some(), "generation": generation });
+    json_response(if generation.is_some() { 200 } else { 503 }, &body.to_string())
 }
 
 #[cfg(test)]
@@ -366,6 +368,38 @@ mod tests {
         let resp = send(LOOPBACK, state, &request).await;
         assert!(resp.starts_with("HTTP/1.1 403"), "got: {resp}");
         assert!(!dir.path().join("policy.json").exists());
+    }
+
+    fn ready_body(resp: &str) -> serde_json::Value {
+        let (_, body) = resp.split_once("\r\n\r\n").unwrap();
+        serde_json::from_str(body).unwrap()
+    }
+
+    #[tokio::test]
+    async fn ready_reports_the_loaded_policy_generation() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = health(dir.path(), None, GuardAuth::default(), None);
+        let request = "GET /ready HTTP/1.1\r\nHost: g\r\n\r\n";
+
+        let resp = send(LOOPBACK, state.clone(), request).await;
+        assert!(resp.starts_with("HTTP/1.1 503"), "got: {resp}");
+        assert_eq!(ready_body(&resp), serde_json::json!({ "ready": false, "generation": null }));
+
+        std::fs::write(
+            dir.path().join("policy.json"),
+            r#"{"allowed_hosts":[],"default":"deny","generation":5}"#,
+        )
+        .unwrap();
+        state.policy.load().unwrap();
+        let resp = send(LOOPBACK, state.clone(), request).await;
+        assert!(resp.starts_with("HTTP/1.1 200"), "got: {resp}");
+        assert_eq!(ready_body(&resp), serde_json::json!({ "ready": true, "generation": 5 }));
+
+        std::fs::write(dir.path().join("policy.json"), r#"{"allowed_hosts":[],"default":"deny"}"#)
+            .unwrap();
+        state.policy.load().unwrap();
+        let resp = send(LOOPBACK, state, request).await;
+        assert_eq!(ready_body(&resp), serde_json::json!({ "ready": true, "generation": 0 }));
     }
 
     #[tokio::test]

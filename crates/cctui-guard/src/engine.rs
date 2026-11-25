@@ -4,6 +4,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
@@ -12,6 +13,7 @@ use crate::capability::Grants;
 use crate::decision_log::{DecisionLog, build_report};
 use crate::ir::WorkflowStep;
 use crate::parser::{JudgeQuestion, expand_set};
+use crate::proxy_sync::{self, Handshake};
 use crate::rules::{check_rules, segment_needs_bash_grant, split_bash_segments};
 
 /// Tools always allowed regardless of step rules.
@@ -102,6 +104,11 @@ pub struct WorkflowEngine {
     judge_timeout: Duration,
     /// Compiled capability grants of the steps that grant any.
     grants: BTreeMap<u32, Grants>,
+    policy_generation: AtomicU64,
+    /// guard-proxy health listener (`host:port`) whose `/ready` confirms a
+    /// policy generation; `None` answers transitions without waiting.
+    proxy_ready: Option<String>,
+    handshake_timeout: Duration,
 }
 
 impl WorkflowEngine {
@@ -157,6 +164,7 @@ impl WorkflowEngine {
         if first != 0 {
             visits.insert(first, 1);
         }
+        let generation = proxy_sync::existing_generation(&proxy_policy_file);
         let engine = Self {
             lock: Mutex::new(()),
             state: Mutex::new((i64::from(first), visits.clone())),
@@ -173,6 +181,9 @@ impl WorkflowEngine {
             gate_timeout: Duration::from_secs(DEFAULT_GATE_TIMEOUT_SECS),
             judge_timeout: Duration::from_secs(DEFAULT_JUDGE_TIMEOUT_SECS),
             grants: BTreeMap::new(),
+            policy_generation: AtomicU64::new(generation),
+            proxy_ready: None,
+            handshake_timeout: proxy_sync::DEFAULT_HANDSHAKE_TIMEOUT,
         };
 
         if let Some(parent) = engine.state_file.parent()
@@ -205,6 +216,13 @@ impl WorkflowEngine {
         self
     }
 
+    #[must_use]
+    pub fn with_proxy_handshake(mut self, ready_addr: Option<String>, timeout: Duration) -> Self {
+        self.proxy_ready = ready_addr.filter(|a| !a.trim().is_empty());
+        self.handshake_timeout = timeout;
+        self
+    }
+
     /// Install the steps' compiled capability grants and rewrite the current
     /// step's egress policy to include their hosts.
     #[must_use]
@@ -224,7 +242,10 @@ impl WorkflowEngine {
     fn write_state(&self, step: i64, visits: &BTreeMap<u32, u32>) -> std::io::Result<()> {
         let on_disk: serde_json::Map<String, Value> =
             visits.iter().map(|(k, v)| (k.to_string(), json!(v))).collect();
-        std::fs::write(&self.state_file, json!({ "step": step, "visits": on_disk }).to_string())?;
+        proxy_sync::write_atomic(
+            &self.state_file,
+            json!({ "step": step, "visits": on_disk }).to_string().as_bytes(),
+        )?;
         *self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner) =
             (step, visits.clone());
         Ok(())
@@ -307,10 +328,40 @@ impl WorkflowEngine {
             }
         };
 
-        std::fs::write(
-            &self.proxy_policy_file,
-            serde_json::to_string_pretty(&policy).unwrap_or_default(),
-        )
+        self.write_policy_doc(policy)
+    }
+
+    fn write_policy_doc(&self, mut policy: Value) -> std::io::Result<()> {
+        let generation = self.policy_generation.load(Ordering::SeqCst) + 1;
+        if let Some(obj) = policy.as_object_mut() {
+            obj.insert("generation".to_string(), json!(generation));
+        }
+        let text = serde_json::to_string_pretty(&policy).unwrap_or_default();
+        proxy_sync::write_atomic(&self.proxy_policy_file, text.as_bytes())?;
+        self.policy_generation.store(generation, Ordering::SeqCst);
+        Ok(())
+    }
+
+    fn confirm_policy_loaded(&self, generation: u64) {
+        let Some(addr) = &self.proxy_ready else {
+            return;
+        };
+        match proxy_sync::await_generation(addr, generation, self.handshake_timeout) {
+            Handshake::Confirmed => {
+                tracing::debug!("guard-proxy loaded policy generation {generation}");
+            }
+            Handshake::TimedOut { last_seen } => tracing::warn!(
+                "guard-proxy at {addr} did not load policy generation {generation} within {:?} \
+                 (last reported {last_seen:?}); answering the transition anyway",
+                self.handshake_timeout
+            ),
+            Handshake::Unsupported => tracing::info!(
+                "guard-proxy at {addr} does not report a policy generation; not waiting"
+            ),
+            Handshake::Unreachable(e) => {
+                tracing::info!("guard-proxy at {addr} unreachable ({e}); not waiting");
+            }
+        }
     }
 
     /// Current state, for `GET /state`.
@@ -679,8 +730,8 @@ impl WorkflowEngine {
         if self.proxy_dir_present() {
             let mut hosts = self.expand_network_rules(&["net-claude".to_string()]);
             hosts.extend(self.always_allowed_hosts.iter().cloned());
-            let policy = json!({ "allowed_hosts": hosts, "default": "deny" }).to_string();
-            if let Err(e) = std::fs::write(&self.proxy_policy_file, policy) {
+            let policy = json!({ "allowed_hosts": hosts, "default": "deny" });
+            if let Err(e) = self.write_policy_doc(policy) {
                 let reason = format!("failed to write exit egress policy: {e}");
                 tracing::error!("DENY transition Step {current_u} → Exit: {reason}");
                 self.decision_log.transition(i64::from(current_u), "exit", "deny", &reason);
@@ -817,9 +868,28 @@ impl WorkflowEngine {
 
     /// Validate and apply a transition request. `target` may be a number or the
     /// string `"exit"`. Exit is always allowed from any step.
+    ///
+    /// A transition that rewrote the egress policy answers once guard-proxy
+    /// confirms it loaded it (or the handshake gives up), outside the lock so
+    /// `/check` is not held up meanwhile.
     #[must_use]
     pub fn transition(&self, target: &Value) -> TransitionResponse {
-        let _guard = self.lock.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (resp, written) = {
+            let _guard = self.lock.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let before = self.policy_generation.load(Ordering::SeqCst);
+            let resp = self.transition_locked(target);
+            let after = self.policy_generation.load(Ordering::SeqCst);
+            (resp, (after != before).then_some(after))
+        };
+        if let Some(generation) = written
+            && resp.get("ok").and_then(Value::as_bool) == Some(true)
+        {
+            self.confirm_policy_loaded(generation);
+        }
+        resp
+    }
+
+    fn transition_locked(&self, target: &Value) -> TransitionResponse {
         let current = self.read_state();
 
         let Some(current_u) = u32::try_from(current).ok().filter(|n| self.steps.contains_key(n))
