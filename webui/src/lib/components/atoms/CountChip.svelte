@@ -27,14 +27,14 @@
 		height: 1.5em;
 		padding: 0 var(--sp-1);
 		border-radius: var(--r-pill);
-		background: var(--count-bg);
-		color: var(--count-fg);
+		background: var(--bg-elevated-2);
+		color: var(--text-muted);
 		font-size: var(--fs-xs);
 		font-weight: var(--fw-semibold);
 		line-height: 1;
 	}
 	.unread {
-		background: var(--count-bg-unread);
-		color: var(--count-fg-unread);
+		background: color-mix(in srgb, var(--accent) 18%, transparent);
+		color: color-mix(in oklab, var(--accent) 75%, var(--text));
 	}
 </style>
