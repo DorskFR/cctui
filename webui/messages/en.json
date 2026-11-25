@@ -87,6 +87,22 @@
 	"access_title": "Users & keys",
 	"access_user_meta": "{machines} machines · {accounts} accounts",
 	"access_user_meta_accounts": "{accounts} accounts",
+	"access_user_online": [
+		{
+			"declarations": [
+				"input n",
+				"local nPlural = n: plural"
+			],
+			"selectors": [
+				"nPlural"
+			],
+			"match": {
+				"nPlural=one": "1 machine online",
+				"nPlural=other": "{n} machines online"
+			}
+		}
+	],
+	"access_user_offline": "offline",
 	"account_delete_help": "Deleting \"{name}\" removes the identity and every provider credential under it. This cannot be undone.",
 	"account_emoji_clear": "Clear",
 	"account_emoji_hint": "One emoji, shown wherever this account appears. Leave empty for a coloured letter square.",
