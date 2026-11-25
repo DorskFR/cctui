@@ -28,7 +28,7 @@ thiserror.workspace = true
 async-trait.workspace = true
 reqwest.workspace = true
 clap.workspace = true
-nix = { version = "0.31", default-features = false, features = ["net"] }
+nix = { version = "0.32", default-features = false, features = ["net"] }
 rcgen = { version = "0.14.8", default-features = false, features = ["pem", "aws_lc_rs"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["aws-lc-rs", "tls12"] }
 webpki-roots = "1"
