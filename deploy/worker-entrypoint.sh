@@ -687,10 +687,12 @@ guard_put() {
 }
 
 # cctui-guard rewrites policy.json per step: mirror every change to the guard pod.
+# The poll is short because each /transition waits until the guard pod reports
+# the new generation.
 guard_policy_sync() {
     _gs_last=$(cksum "$POLICY_FILE" "$PRIVATE_ALLOW_FILE" 2>/dev/null || true)
     while :; do
-        sleep "${WORKER_GUARD_SYNC_SECS:-1}"
+        sleep "${WORKER_GUARD_SYNC_SECS:-0.2}"
         _gs_now=$(cksum "$POLICY_FILE" "$PRIVATE_ALLOW_FILE" 2>/dev/null || true)
         [ "$_gs_now" != "$_gs_last" ] || continue
         if guard_put /policy "$POLICY_FILE" && guard_put /private-allow "$PRIVATE_ALLOW_FILE"; then
@@ -699,6 +701,13 @@ guard_policy_sync() {
             log "WARNING: guard pod: policy push failed; retrying"
         fi
     done
+}
+
+# Where cctui-guard confirms a policy generation is live: the guard pod's
+# /ready in external-pod mode, its loopback default otherwise.
+guard_proxy_ready_addr() {
+    [ "${NET_MODE:-}" = external-pod ] || return 0
+    printf '%s\n' "${GUARD_PROXY_HOST}:${PROXY_HEALTH_PORT}"
 }
 
 # Steer the guard pod over HTTP, trust its CA, and route the worker through it:
@@ -1555,6 +1564,10 @@ phase_guard() {
 
     if guard_exec_on; then
         set -- "$@" --exec-socket "$GUARD_EXEC_SOCKET"
+    fi
+    _gr_addr=$(guard_proxy_ready_addr)
+    if [ -n "$_gr_addr" ]; then
+        set -- "$@" --proxy-ready "$_gr_addr"
     fi
 
     is_root || log "WARNING: guard: non-root start, cctui-guard runs as the agent's uid $(id -u)"
