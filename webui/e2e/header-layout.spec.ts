@@ -60,7 +60,9 @@ test('mobile: the account menu carries the version', async ({ page }, testInfo) 
 	await openSessions(page, MOBILE);
 	await expect(page.locator('header.hd .vers')).toHaveCount(0);
 	await page.locator('header.hd .pill').click();
-	await expect(page.getByRole('menuitem', { name: /v(dev|\d+\.\d+\.\d+)/ })).toBeVisible();
+	await expect(
+		page.getByRole('menuitem', { name: /^(ui )?v(dev|pr-\d+|\d+\.\d+\.\d+)/ })
+	).toBeVisible();
 
 	await page.screenshot({
 		path: testInfo.outputPath('mobile-390.png'),
