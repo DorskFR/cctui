@@ -5,8 +5,8 @@ import menu from './DrawerMenu.svelte?raw';
 
 const markup = header.slice(header.indexOf('</script>'));
 const controls = markup
-	.split(/(?=<IconButton|<FontScalePicker|<DrawerMenu)/)
-	.filter((c) => /^<(IconButton|FontScalePicker|DrawerMenu)/.test(c))
+	.split(/(?=<IconButton|<DrawerMenu)/)
+	.filter((c) => /^<(IconButton|DrawerMenu)/.test(c))
 	.map((c) => c.slice(0, c.indexOf('>') + 1));
 
 const named = (label: string) => {
@@ -28,12 +28,14 @@ describe('drawer header control chrome', () => {
 			expect(named(label)).toContain('chip');
 		}
 		expect(markup).not.toContain('chip={!collapsed}');
-		for (const label of ['<FontScalePicker', '<DrawerMenu']) {
-			expect(named(label)).toContain('style={CHIP_CHROME}');
-		}
+		expect(named('<DrawerMenu')).toContain('style={CHIP_CHROME}');
 		expect(menu).toContain('placement="bottom-end" {box} {style}');
 		expect(header).toContain("const CHIP_CHROME = 'border-color: var(--border-strong); background: var(--surface)'");
 		expect(header).not.toContain('--pop-trigger-');
+	});
+
+	it('leaves text size to Settings, not the drawer header', () => {
+		expect(header).not.toContain('FontScalePicker');
 	});
 
 	it('keeps the back chevron the one quiet affordance', () => {

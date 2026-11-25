@@ -7,7 +7,7 @@
 	import type { LabelHandlers } from './headerLabels';
 	import RebindTrail from '#lib/components/molecules/RebindTrail.svelte';
 	import SessionGlyphs from '#lib/components/molecules/SessionGlyphs.svelte';
-	import { IconButton, Toolbar, FontScalePicker } from '@dorsk/tsumikit';
+	import { IconButton, Toolbar } from '@dorsk/tsumikit';
 	import HeaderMeta from './HeaderMeta.svelte';
 	import HeaderLabels from './HeaderLabels.svelte';
 	import DrawerTitle from './DrawerTitle.svelte';
@@ -122,7 +122,7 @@
 	// One square per density for every control in the bar, so they share a
 	// height and a top edge whatever chrome or glyph they carry.
 	const box: 'sm' | 'md' = $derived(collapsed ? 'sm' : 'md');
-	// Popover-backed triggers (text size, ⋯) wear the chip chrome inline;
+	// The popover-backed ⋯ trigger wears the chip chrome inline;
 	// IconButton gets it from `chip`.
 	const CHIP_CHROME = 'border-color: var(--border-strong); background: var(--surface)';
 
@@ -155,11 +155,6 @@
 		/>
 		<RebindTrail sessionId={session.id} />
 		<DrawerTitle {session} {compact} {showLabels} {labels} {renaming} bind:name={newName} onsubmit={doRename} />
-		<!-- Text size: the same kit picker as the main header, writing the one
-		     global fontScale. It stays out of the ⋯ flyout on mobile. -->
-		{#if !compact}
-			<FontScalePicker {box} style={CHIP_CHROME} />
-		{/if}
 		{#if renaming}
 			<IconButton data-overflow chip {box} variant="default" icon="check" label={m.common_save()} onclick={doRename} />
 		{:else}
