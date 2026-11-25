@@ -70,3 +70,45 @@ describe('PermissionCard', () => {
 		expect(onrespond).toHaveBeenLastCalledWith('call-1', false, 'r-once');
 	});
 });
+
+describe('PermissionCard emphasis', () => {
+	const cls = () => buttons().map((b) => b.className);
+
+	it('makes Allow the one primary and Deny a ghost on a native harness', async () => {
+		await render(base);
+		const [deny, allow] = cls();
+		expect(deny).toContain('btn-ghost');
+		expect(deny).not.toContain('btn-danger');
+		expect(allow).toContain('btn-primary');
+	});
+
+	it('maps ACP options to once primary, always outlined and reject ghost, none red', async () => {
+		await render({
+			...base,
+			options: [
+				{ option_id: 'a-always', name: 'Always allow', kind: 'allow_always' },
+				{ option_id: 'a-once', name: 'Allow once', kind: 'allow_once' },
+				{ option_id: 'r-once', name: 'Reject', kind: 'reject_once' },
+				{ option_id: 'r-always', name: 'Never', kind: 'reject_always' }
+			]
+		});
+		const [always, once, reject, never] = cls();
+		expect(once).toContain('btn-primary');
+		expect(always).not.toMatch(/btn-(primary|ghost|danger)/);
+		expect(reject).toContain('btn-ghost');
+		expect(never).toContain('btn-ghost');
+		expect(cls().filter((c) => c.includes('btn-primary'))).toHaveLength(1);
+		expect(cls().some((c) => c.includes('btn-danger'))).toBe(false);
+	});
+
+	it('promotes the first allow when the agent offers no allow-once', async () => {
+		await render({
+			...base,
+			options: [
+				{ option_id: 'r-once', name: 'Reject', kind: 'reject_once' },
+				{ option_id: 'a-always', name: 'Always allow', kind: 'allow_always' }
+			]
+		});
+		expect(cls()[1]).toContain('btn-primary');
+	});
+});

@@ -14,6 +14,11 @@
 
 	const options = $derived(req.options ?? []);
 	const allows = (kind: string) => kind.startsWith('allow');
+	const primaryId = $derived(
+		(options.find((o) => o.kind === 'allow_once') ?? options.find((o) => allows(o.kind)))?.option_id
+	);
+	const variant = (o: { option_id: string; kind: string }): 'primary' | 'default' | 'ghost' =>
+		o.option_id === primaryId ? 'primary' : allows(o.kind) ? 'default' : 'ghost';
 
 	// ExitPlanMode fallback: the preview is the tool-input JSON with a `.plan`
 	// markdown string. Render it as markdown (mirroring PlanCard) instead of a
@@ -42,14 +47,13 @@
 		{#if options.length}
 			{#each options as o (o.option_id)}
 				<Button
-					variant={allows(o.kind) ? 'primary' : 'danger'}
-					block
+					variant={variant(o)}
 					onclick={() => onrespond(req.request_id, allows(o.kind), o.option_id)}>{o.name || o.kind}</Button
 				>
 			{/each}
 		{:else}
-			<Button variant="danger" block onclick={() => onrespond(req.request_id, false)}>{m.permission_deny()}</Button>
-			<Button variant="primary" block onclick={() => onrespond(req.request_id, true)}>{m.permission_allow()}</Button>
+			<Button variant="ghost" onclick={() => onrespond(req.request_id, false)}>{m.permission_deny()}</Button>
+			<Button variant="primary" onclick={() => onrespond(req.request_id, true)}>{m.permission_allow()}</Button>
 		{/if}
 	</div>
 </Card>
@@ -60,7 +64,6 @@
 		overflow-y: auto;
 		overflow-x: hidden;
 		background: var(--bg);
-		border: 1px solid var(--border);
 		border-radius: var(--r-sm);
 		padding: var(--sp-2);
 		font-size: var(--fs-xs);
@@ -72,11 +75,11 @@
 		overflow-y: auto;
 		overflow-x: hidden;
 		background: var(--bg);
-		border: 1px solid var(--border);
 		border-radius: var(--r-sm);
 		padding: var(--sp-2);
 	}
 	.acts {
+		justify-content: flex-end;
 		gap: var(--sp-2);
 		flex-wrap: wrap;
 	}
