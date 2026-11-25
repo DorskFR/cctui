@@ -6,7 +6,15 @@ import { setCapabilitiesForTest } from '#lib/features.svelte.ts';
 import { PaneModel, type PaneInputs } from './paneModel.svelte';
 import pane from '../ConversationPane.svelte?raw';
 
-const { idle } = vi.hoisted(() => ({ idle: () => ({ data: undefined, isLoading: false }) }));
+// Real query hooks evaluate their key thunks while the model's fields initialise.
+const { idle, eager } = vi.hoisted(() => {
+	const idle = () => ({ data: undefined, isLoading: false });
+	const eager = (...thunks: unknown[]) => {
+		for (const t of thunks) if (typeof t === 'function') t();
+		return idle();
+	};
+	return { idle, eager };
+});
 
 vi.mock('@tanstack/svelte-query', () => ({
 	useQueryClient: () => ({ invalidateQueries: vi.fn(), setQueryData: vi.fn() })
@@ -17,11 +25,11 @@ vi.mock('#lib/queries/index.ts', () => {
 	return {
 		endpoints: new Proxy({}, { get: () => pending }),
 		qk: new Proxy({}, { get: () => (...args: unknown[]) => ['k', ...args] }),
-		useConversation: idle,
+		useConversation: eager,
 		useHarnesses: idle,
 		useHarnessModels: idle,
 		useLabels: idle,
-		useMachines: idle,
+		useMachines: eager,
 		useMe: idle,
 		usePlugins: idle,
 		useVoiceConfig: idle,
@@ -34,7 +42,7 @@ vi.mock('#lib/queries/index.ts', () => {
 });
 
 vi.mock('#lib/queries/scheduled.ts', () => ({
-	useScheduledMessages: idle,
+	useScheduledMessages: eager,
 	scheduledTurns: () => new Map()
 }));
 
@@ -76,6 +84,33 @@ function build(initial: { highlight?: string[]; focusSeq?: number | null } = {})
 	flushSync();
 	return { props, spies };
 }
+
+describe('pane model construction', () => {
+	it('builds and reads its derived props the way the pane hands them over', () => {
+		let p!: PaneModel;
+		stop = $effect.root(() => {
+			p = new PaneModel({
+				get opened() {
+					return session();
+				},
+				get highlight() {
+					return [];
+				},
+				get focusSeq() {
+					return null;
+				},
+				get chrome() {
+					return 'drawer' as const;
+				}
+			});
+		});
+		flushSync();
+		expect(p.id).toBe('s1');
+		expect(p.session.id).toBe('s1');
+		expect(p.archived).toBe(false);
+		expect(p.viewKey).toBe('s1');
+	});
+});
 
 describe('pane effects track only the props they read', () => {
 	it('does not reset the scroll when the list hands over a fresh copy of the same session', () => {
