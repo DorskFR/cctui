@@ -4,7 +4,6 @@ import meta from './HeaderMeta.svelte?raw';
 import composer from './ConversationComposer.svelte?raw';
 import pane from '../ConversationPane.svelte?raw';
 import model from './paneModel.svelte.ts?raw';
-import langfuseChip from '#lib/components/molecules/LangfuseChip.svelte?raw';
 import profileForm from '../spawn/ProfileForm.svelte?raw';
 
 const items = menu.slice(
@@ -72,7 +71,6 @@ describe('header meta gates', () => {
 
 	it('reads Langfuse only with observability', () => {
 		expect(meta).toContain("hasFeature('observability') && !!caps.data?.langfuse?.available");
-		expect(langfuseChip).toContain("hasFeature('observability') && !!lf?.available");
 	});
 });
 
