@@ -35,7 +35,7 @@
   "devDependencies": {
     "@biomejs/biome": "^2.6.8",
     "@dorsk/journey": "^0.8.2",
-    "@inlang/paraglide-js": "^2.25.4",
+    "@inlang/paraglide-js": "^3.2.2",
     "@playwright/test": "^1.65.1",
     "@sveltejs/adapter-static": "^4.0.0",
     "@sveltejs/kit": "^3.1.0",
