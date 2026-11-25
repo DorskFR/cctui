@@ -37,8 +37,8 @@ describe('drawer header ⋯ menu', () => {
 		expect(menu).not.toContain('onterminal');
 	});
 
-	it('only stands in for rename while the bar is collapsed', () => {
-		expect(items()).toMatch(/\.\.\.\(collapsed\s*\?\s*\[\s*renaming/);
+	it('stands in for search only while the bar is collapsed', () => {
+		expect(items()).toMatch(/\.\.\.\(collapsed && onsearch\s*\?/);
 		expect(header).toContain('collapseBelow="{COLLAPSE_BELOW}px"');
 	});
 
