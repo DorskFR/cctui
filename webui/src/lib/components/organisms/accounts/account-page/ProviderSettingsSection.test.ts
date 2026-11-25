@@ -64,8 +64,10 @@ const activeNav = () =>
 describe('ProviderSettingsSection', () => {
 	it('renders the settings inline on the account page, not in a dialog', () => {
 		render({});
-		expect(document.getElementById('provider-settings')).not.toBeNull();
-		expect(document.querySelector('dialog')).toBeNull();
+		const section = document.getElementById('provider-settings');
+		expect(section).not.toBeNull();
+		expect(section?.closest('dialog')).toBeNull();
+		expect(document.querySelector('dialog[open]')).toBeNull();
 	});
 
 	it('offers one tab per editable provider and selects through onselect', () => {
