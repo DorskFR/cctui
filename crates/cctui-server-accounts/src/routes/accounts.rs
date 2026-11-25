@@ -26,6 +26,7 @@ pub use cctui_proto::api::accounts::{
 
 use crate::context::AccountsHost;
 use crate::routes::gateway;
+use crate::store::account_providers;
 use cctui_server_kernel::auth::AuthContext;
 use cctui_server_kernel::error::AppError;
 
@@ -371,22 +372,14 @@ pub async fn render_and_broadcast_usage(
 /// cache so we never spam the rate-limited upstream. OpenAI/codex providers
 /// have no such API, so the 5h/7d windows are metered locally from recorded
 /// token usage — same shape, same cache, same UI chip.
-/// Ownership: a user may only read their own providers; admin may read any.
+/// Readable by the owner, a live share grantee of the account, or an admin.
 pub async fn account_usage<S: AccountsHost>(
     State(state): State<S>,
     Extension(ctx): Extension<AuthContext>,
     Path(id): Path<Uuid>,
 ) -> Result<Json<AccountUsage>, AppError> {
-    // Authorize + resolve provider in one go. Admin (`ctx.user_id` = NULL) may
-    // read any provider; a user only its own.
-    let provider: Option<String> = sqlx::query_scalar(
-        "SELECT provider FROM account_providers \
-         WHERE id = $1 AND ($2::uuid IS NULL OR user_id = $2)",
-    )
-    .bind(id)
-    .bind(ctx.owner_filter())
-    .fetch_optional(state.kernel_pool())
-    .await?;
+    let provider =
+        account_providers::provider_readable(state.kernel_pool(), id, ctx.owner_filter()).await?;
     let Some(provider) = provider else {
         return Err(AppError::new(StatusCode::NOT_FOUND, "no such account"));
     };

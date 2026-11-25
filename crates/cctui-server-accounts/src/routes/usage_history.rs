@@ -10,6 +10,7 @@ use chrono::{DateTime, Duration, Utc};
 use serde::Deserialize;
 use uuid::Uuid;
 
+use crate::store::account_providers;
 use crate::store::usage_samples::{self, CloseRow, HistoryRow, RETENTION_DAYS};
 use cctui_server_kernel::auth::AuthContext;
 use cctui_server_kernel::context::KernelContext;
@@ -35,17 +36,23 @@ pub fn clamp_from(from: Option<DateTime<Utc>>, now: DateTime<Utc>) -> DateTime<U
 async fn owned_provider_ids(
     state: &impl KernelContext,
     ctx: &AuthContext,
-    only: Option<Uuid>,
 ) -> Result<Vec<Uuid>, AppError> {
-    sqlx::query_scalar(
-        "SELECT id FROM account_providers \
-         WHERE ($1::uuid IS NULL OR user_id = $1) AND ($2::uuid IS NULL OR id = $2)",
-    )
-    .bind(ctx.owner_filter())
-    .bind(only)
-    .fetch_all(state.pool())
-    .await
-    .map_err(AppError::from)
+    sqlx::query_scalar("SELECT id FROM account_providers WHERE $1::uuid IS NULL OR user_id = $1")
+        .bind(ctx.owner_filter())
+        .fetch_all(state.pool())
+        .await
+        .map_err(AppError::from)
+}
+
+async fn require_readable(
+    state: &impl KernelContext,
+    ctx: &AuthContext,
+    id: Uuid,
+) -> Result<(), AppError> {
+    match account_providers::provider_readable(state.pool(), id, ctx.owner_filter()).await? {
+        Some(_) => Ok(()),
+        None => Err(AppError::new(StatusCode::NOT_FOUND, "no such account")),
+    }
 }
 
 #[must_use]
@@ -99,9 +106,7 @@ pub async fn account_usage_history<S: KernelContext>(
     Path(id): Path<Uuid>,
     Query(q): Query<HistoryQuery>,
 ) -> Result<Json<UsageHistory>, AppError> {
-    if owned_provider_ids(&state, &ctx, Some(id)).await?.is_empty() {
-        return Err(AppError::new(StatusCode::NOT_FOUND, "no such account"));
-    }
+    require_readable(&state, &ctx, id).await?;
     let from = clamp_from(q.from, Utc::now());
     let rows = usage_samples::history(state.pool(), id, q.window.as_deref(), from).await?;
     Ok(Json(UsageHistory {
@@ -129,11 +134,8 @@ pub async fn account_usage_closes<S: KernelContext>(
     Path(id): Path<Uuid>,
     Query(q): Query<HistoryQuery>,
 ) -> Result<Json<WindowCloses>, AppError> {
-    let ids = owned_provider_ids(&state, &ctx, Some(id)).await?;
-    if ids.is_empty() {
-        return Err(AppError::new(StatusCode::NOT_FOUND, "no such account"));
-    }
-    closes_for(&state, &ids, &q).await
+    require_readable(&state, &ctx, id).await?;
+    closes_for(&state, &[id], &q).await
 }
 
 /// `GET /accounts/usage/closes?window=&from=`: every credential the caller owns.
@@ -142,7 +144,7 @@ pub async fn all_usage_closes<S: KernelContext>(
     Extension(ctx): Extension<AuthContext>,
     Query(q): Query<HistoryQuery>,
 ) -> Result<Json<WindowCloses>, AppError> {
-    let ids = owned_provider_ids(&state, &ctx, None).await?;
+    let ids = owned_provider_ids(&state, &ctx).await?;
     closes_for(&state, &ids, &q).await
 }
 
