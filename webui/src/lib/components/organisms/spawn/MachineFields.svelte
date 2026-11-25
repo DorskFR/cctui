@@ -157,8 +157,7 @@
 
 <Field for="sp-prompt">
 	{#snippet hint()}
-		<Kbd keys="mod+enter" />
-		{m.spawn_submit_hint_spawn()}
+		<span class="chord-hint"><Kbd keys="mod+enter" /> {m.spawn_submit_hint_spawn()}</span>
 	{/snippet}
 	<div class="prompt-head">
 		<PromptHistoryMenu
@@ -222,5 +221,10 @@
 		overflow: hidden;
 		white-space: nowrap;
 		text-overflow: ellipsis;
+	}
+	@media (pointer: coarse) {
+		.chord-hint {
+			display: none;
+		}
 	}
 </style>

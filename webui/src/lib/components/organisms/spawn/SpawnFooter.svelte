@@ -17,6 +17,7 @@
 	// root would leave slack after the caret; a grid root hands the slack to the
 	// main segment and keeps the caret glued to it.
 	const FOOT_SPLIT_GROW = `${FOOT_PRIMARY_GROW}; display: grid; grid-template-columns: 1fr auto`;
+	const CHORD = 'Control+Enter Meta+Enter';
 </script>
 
 {#if sf.spawnFailure}
@@ -55,6 +56,7 @@
 			disabled={sf.busy || !sf.valid}
 			menuDisabled={!sf.draftValid}
 			title={sf.disabledReason}
+			primaryProps={{ 'aria-keyshortcuts': CHORD }}
 			onclick={sf.submit}
 		>
 			{sf.spawnLabel}
@@ -67,6 +69,7 @@
 			loading={sf.busy}
 			disabled={sf.busy || !sf.valid}
 			title={sf.disabledReason}
+			aria-keyshortcuts={CHORD}
 			onclick={sf.submit}
 		>
 			{sf.spawnLabel}

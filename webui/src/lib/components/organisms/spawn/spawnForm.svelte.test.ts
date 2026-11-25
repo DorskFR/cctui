@@ -354,6 +354,17 @@ describe('SpawnForm validation', () => {
 	});
 });
 
+describe('SpawnForm submit label', () => {
+	it('names the action alone, without the keyboard chord', () => {
+		dispatcherList = ['k8s-a'];
+		const sf = open();
+		expect(sf.spawnLabel).toBe('Launch');
+		sf.setTarget('dispatch');
+		flushSync();
+		expect(sf.spawnLabel).toBe('Dispatch');
+	});
+});
+
 describe('SpawnForm spawn body', () => {
 	it('maps the account choice onto the request', () => {
 		const sf = open();

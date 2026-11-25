@@ -110,6 +110,7 @@ test('390px: closed, the picker is one card and Labels/Files/Env vars and Launch
 	await inViewport(dialog.getByText('Files', { exact: true }).first());
 	await inViewport(dialog.getByText('Env vars', { exact: true }).first());
 	await inViewport(dialog.getByRole('button', { name: /^Launch/ }));
+	await expect(dialog.locator('.chord-hint').first()).toBeVisible();
 
 	const scrolled = await dialog.evaluate((root) =>
 		[root, ...root.querySelectorAll('*')]
@@ -263,4 +264,15 @@ test('New profile writes nothing until Create profile, and Cancel leaves the lis
 	await form.getByRole('button', { name: 'Create profile' }).click();
 	await expect.poll(() => writes).toEqual(['POST /api/v1/profiles']);
 	await expect(form).toHaveCount(0);
+});
+
+test.describe('coarse pointer', () => {
+	test.use({ hasTouch: true, isMobile: true });
+
+	test('390px: no keyboard hint, and the button reads Launch alone', async ({ page }) => {
+		await stub(page);
+		const dialog = await openSpawn(page);
+		await expect(dialog.locator('.chord-hint').first()).toBeHidden();
+		await expect(dialog.getByRole('button', { name: 'Launch', exact: true })).toBeVisible();
+	});
 });
