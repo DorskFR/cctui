@@ -26,6 +26,7 @@ vi.mock("#lib/queries/index.ts", () => {
   const q = <T>(data: T) => ({ data, isLoading: false, isError: false });
   return {
     useMachineResources: () => q(machineList),
+    useMe: () => q(undefined),
     useVoiceConfig: () => q(undefined),
     useDispatchers: () => q([]),
     useSessions: () => q({ sessions: [] }),
@@ -226,7 +227,7 @@ describe("SpawnModal schedule split-button", () => {
     machineList = [];
     await open({ seedSlot: false });
     expect(caret()).toBeNull();
-    const reason = "No machines enrolled — enroll one with a user token from Users & keys.";
+    const reason = "No machines enrolled — enroll one with a user token.";
     const spawn = [...document.querySelectorAll("button")].find((b) =>
       b.textContent?.includes("Launch"),
     );

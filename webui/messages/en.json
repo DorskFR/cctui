@@ -2170,8 +2170,6 @@
 	"settings_speech_summary_model": "Summary model",
 	"settings_speech_summary_model_help": "Chat model that shortens long messages before they are read aloud.",
 	"settings_speech_summary_off": "Off",
-	"settings_speech_save": "Save",
-	"settings_speech_saved": "Speech settings saved",
 	"settings_speech_load": "Refresh models and voices",
 	"settings_speech_test": "Test",
 	"settings_speech_test_ok": "Speech service is working",
@@ -2193,7 +2191,6 @@
 	"settings_upstreams_remove": "Remove {host}",
 	"settings_upstreams_empty": "No hosts allowed beyond public https endpoints.",
 	"settings_upstreams_managed": "LiteLLM or speech endpoint, always allowed",
-	"settings_upstreams_saved": "Allowed upstream hosts saved",
 	"settings_upstreams_reset_help": "Clear the saved list",
 	"settings_spawn_limits_label": "CctuiAgent limits",
 	"settings_spawn_limits_help": "Defaults for sessions launched without their own CctuiAgent limits. Leave a field empty to use the env seed (CCTUI_SPAWN_MAX_*) or the built-in default: unlimited children and budget, depth 3.",
@@ -2371,7 +2368,7 @@
 	"spawn_mode_yolo_label": "Yolo",
 	"spawn_model_default": "Default",
 	"spawn_no_machines": "No machines enrolled",
-	"spawn_no_machines_hint": "No machines enrolled — enroll one with a user token from Users & keys.",
+	"spawn_no_machines_hint": "No machines enrolled — enroll one with a user token.",
 	"spawn_no_provider": "no provider",
 	"spawn_permission_mode_label": "Permission mode",
 	"spawn_profile_account_aria": "Account",
@@ -3437,5 +3434,8 @@
 	"error_search_archived_placeholder": "Name, folder or id",
 	"error_session_missing_body": "This session was archived or deleted. Search the archived sessions, or go back to your sessions.",
 	"error_session_missing_title": "Session not found",
-	"list_auto_approve": "auto-approve"
+	"list_auto_approve": "auto-approve",
+	"settings_speech_save": "Save",
+	"settings_speech_saved": "Speech settings saved",
+	"settings_upstreams_saved": "Allowed upstream hosts saved"
 }

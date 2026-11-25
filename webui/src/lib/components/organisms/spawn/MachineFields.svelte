@@ -10,14 +10,13 @@
 	import type { PromptAttachments } from '#lib/promptAttachments.svelte.ts';
 	import type { GitInfo } from '@bindings/GitInfo';
 	import MachinePicker from '#lib/components/molecules/MachinePicker.svelte';
+	import NoMachinesHint from './NoMachinesHint.svelte';
 	import {
-		Callout,
 		Field,
 		FilterInput,
 		Icon,
 		Input,
 		Kbd,
-		Link,
 		WorkingDir,
 		type Query
 	} from '@dorsk/tsumikit';
@@ -109,10 +108,7 @@
 </script>
 
 {#if machines.length === 0}
-	<Callout tone="warn" icon="info">
-		{m.spawn_no_machines_hint()}
-		<Link href="/access">{m.access_title()}</Link>
-	</Callout>
+	<NoMachinesHint />
 {/if}
 
 <div class="where" data-journey="where">

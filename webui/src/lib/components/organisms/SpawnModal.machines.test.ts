@@ -5,10 +5,12 @@ import SpawnModal from "./SpawnModal.svelte";
 
 let machineList: unknown[] = [];
 
+let meData: { role: string } | undefined;
 vi.mock("#lib/queries/index.ts", () => {
   const q = <T>(data: T) => ({ data, isLoading: false, isError: false });
   return {
     useMachineResources: () => q(machineList),
+    useMe: () => q(meData),
     useVoiceConfig: () => q(undefined),
     useDispatchers: () => q([]),
     useSessions: () => q({ sessions: [] }),
@@ -111,12 +113,15 @@ describe("SpawnModal with no machines enrolled", () => {
     machineList = [];
   });
 
-  it("points at Users & keys and disables both CTAs with that reason", async () => {
+  it("points an admin at Users & keys and disables both CTAs with that reason", async () => {
+    meData = { role: "admin" };
     await open();
-    const reason = "No machines enrolled — enroll one with a user token from Users & keys.";
+    const reason = "No machines enrolled — enroll one with a user token.";
     expect(text()).toContain(reason);
     expect(
-      document.querySelector<HTMLAnchorElement>('a[href="/access"]'),
+      document.querySelector<HTMLAnchorElement>(
+        'a[href="/settings/instance#instance-users"]',
+      ),
     ).toBeTruthy();
 
     const buttons = [...document.querySelectorAll("button")];
@@ -126,6 +131,18 @@ describe("SpawnModal with no machines enrolled", () => {
     expect(spawn?.title).toBe(reason);
     expect(draft?.disabled).toBe(true);
     expect(draft?.title).toBe(reason);
+  });
+
+  it("points a non-admin at their own Profile, where the user token lives", async () => {
+    meData = { role: "user" };
+    await open();
+    const link = document.querySelector<HTMLAnchorElement>(
+      'a[href="/settings/accounts#profile"]',
+    );
+    expect(link?.textContent?.trim()).toBe("Profile");
+    expect(
+      document.querySelector('a[href^="/settings/instance"]'),
+    ).toBeNull();
   });
 
   it("disables the machine select rather than offering a fake option", async () => {

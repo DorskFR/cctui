@@ -2170,8 +2170,6 @@
 	"settings_speech_summary_model": "Modèle de résumé",
 	"settings_speech_summary_model_help": "Modèle de chat qui raccourcit les longs messages avant leur lecture à voix haute.",
 	"settings_speech_summary_off": "Désactivé",
-	"settings_speech_save": "Enregistrer",
-	"settings_speech_saved": "Réglages vocaux enregistrés",
 	"settings_speech_load": "Actualiser modèles et voix",
 	"settings_speech_test": "Tester",
 	"settings_speech_test_ok": "Le service vocal fonctionne",
@@ -2193,7 +2191,6 @@
 	"settings_upstreams_remove": "Retirer {host}",
 	"settings_upstreams_empty": "Aucun hôte autorisé en dehors des points d'accès https publics.",
 	"settings_upstreams_managed": "Point d'accès LiteLLM ou vocal, toujours autorisé",
-	"settings_upstreams_saved": "Hôtes amont autorisés enregistrés",
 	"settings_upstreams_reset_help": "Vider la liste enregistrée",
 	"settings_spawn_limits_label": "Limites CctuiAgent",
 	"settings_spawn_limits_help": "Valeurs par défaut pour les sessions lancées sans leurs propres limites CctuiAgent. Laissez un champ vide pour utiliser l'environnement (CCTUI_SPAWN_MAX_*) ou la valeur par défaut : enfants et budget illimités, profondeur 3.",
@@ -2371,7 +2368,7 @@
 	"spawn_mode_yolo_label": "Yolo",
 	"spawn_model_default": "Défaut",
 	"spawn_no_machines": "Aucune machine enrôlée",
-	"spawn_no_machines_hint": "Aucune machine enrôlée — enrôlez-en une avec un jeton utilisateur depuis Utilisateurs et clés.",
+	"spawn_no_machines_hint": "Aucune machine enrôlée — enrôlez-en une avec un jeton utilisateur.",
 	"spawn_no_provider": "aucun fournisseur",
 	"spawn_permission_mode_label": "Mode de permission",
 	"spawn_profile_account_aria": "Compte",
@@ -3437,5 +3434,8 @@
 	"error_search_archived_placeholder": "Nom, dossier ou identifiant",
 	"error_session_missing_body": "Cette session a été archivée ou supprimée. Cherchez-la dans les sessions archivées, ou revenez à vos sessions.",
 	"error_session_missing_title": "Session introuvable",
-	"list_auto_approve": "approbation auto"
+	"list_auto_approve": "approbation auto",
+	"settings_speech_save": "Enregistrer",
+	"settings_speech_saved": "Réglages vocaux enregistrés",
+	"settings_upstreams_saved": "Hôtes amont autorisés enregistrés"
 }
