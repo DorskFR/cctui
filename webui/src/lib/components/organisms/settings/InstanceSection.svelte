@@ -132,6 +132,7 @@
 								bind:value={suMachine}
 								machines={allMachines.data}
 								label={m.settings_self_update_machine()}
+								variant="field"
 							/>
 						{/if}
 						<Input
