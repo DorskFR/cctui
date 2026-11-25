@@ -101,7 +101,7 @@ toml = "1.1"
 tokio-util = { version = "0.7", features = ["io"] }
 async-trait = "0.1"
 kube = { version = "5.1", default-features = false, features = ["client", "rustls-tls", "ring", "derive", "admission"] }
-json-patch = "4"
+json-patch = "5"
 axum-server = { version = "0.8", features = ["tls-rustls-no-provider"] }
 rustls = { version = "0.23", default-features = false, features = ["ring"] }
 lettre = { version = "0.11", default-features = false, features = ["smtp-transport", "builder", "hostname", "tokio1-rustls", "ring", "webpki-roots"] }
