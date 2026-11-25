@@ -44,6 +44,7 @@
 		{onclose}
 		hideBelow="959px"
 		label={m.common_close()}
+		z={0}
 		style="background: rgb(0 0 0 / 40%)"
 	/>
 	<ResizablePanel
@@ -102,7 +103,9 @@
 		color: var(--text-muted);
 	}
 	/* Zero-size stacking-context host so the fixed panel and scrim paint on
-	   the drawer layer instead of inside the page's own stacking order. */
+	   the drawer layer instead of inside the page's own stacking order. The
+	   scrim sits at z 0 in it: the panel's isolated layout is z auto, so any
+	   higher scrim would cover the panel. */
 	.drawer-host {
 		position: relative;
 		z-index: var(--z-drawer);

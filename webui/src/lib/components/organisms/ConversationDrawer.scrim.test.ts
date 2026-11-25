@@ -19,5 +19,7 @@ describe('conversation drawer scrim', () => {
 
 	it('paints the scrim under the panel', () => {
 		expect(markup.indexOf('<Scrim')).toBeLessThan(markup.indexOf('<ResizablePanel'));
+		const scrim = markup.slice(markup.indexOf('<Scrim'), markup.indexOf('/>', markup.indexOf('<Scrim')));
+		expect(scrim).toContain('z={0}');
 	});
 });

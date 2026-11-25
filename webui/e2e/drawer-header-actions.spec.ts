@@ -94,3 +94,17 @@ test('an idle drawer shows no Stop and keeps rename and archive in ⋯', async (
 	await expect(menu.getByRole('menuitem', { name: 'Rename' })).toBeVisible();
 	await expect(menu.getByRole('menuitem', { name: 'Archive' })).toBeVisible();
 });
+
+test('nothing covers the drawer: a point on Back hits Back, not the scrim', async ({ page }) => {
+	await openDrawer(page, WIDE);
+	const back = page.locator('[data-journey="header"]').getByRole('button', { name: 'Back' });
+	const box = (await back.boundingBox())!;
+	const hit = await page.evaluate(
+		([x, y]) => {
+			const el = document.elementFromPoint(x, y);
+			return { back: el?.closest('button')?.getAttribute('aria-label') ?? null, scrim: !!el?.closest('[data-tsu="Scrim"]') };
+		},
+		[box.x + box.width / 2, box.y + box.height / 2]
+	);
+	expect(hit).toEqual({ back: 'Back', scrim: false });
+});
