@@ -9,6 +9,7 @@
 	import { toasts } from '#lib/toast.svelte.ts';
 	import { ApiError } from '#lib/api.ts';
 	import { m } from '#lib/paraglide/messages.js';
+	import { autoSave, serverSave } from './serverSave.svelte.ts';
 	import { lostControls, missingHalves, type SpeechControl } from './speech.logic.ts';
 
 	const FORMATS = ['opus', 'mp3', 'aac', 'flac', 'wav', 'pcm'];
@@ -37,7 +38,6 @@
 	function apply(next: SpeechSettingsInfo) {
 		info = next;
 		draft = { ...next.config };
-		keyDraft = '';
 		confirming = [];
 	}
 
@@ -70,9 +70,8 @@
 			: []
 	);
 
-	const dirty = $derived(
-		!!info && !!draft && (keyDraft.trim() !== '' || JSON.stringify(draft) !== JSON.stringify(info.config))
-	);
+	const configDirty = $derived(!!info && !!draft && JSON.stringify(draft) !== JSON.stringify(info.config));
+	const dirty = $derived(configDirty || keyDraft.trim() !== '');
 
 	async function run(action: () => Promise<void>) {
 		busy = true;
@@ -85,32 +84,58 @@
 		}
 	}
 
-	const save = (clearKey = false, confirmed = false) =>
-		run(async () => {
-			if (!draft || !info) return;
-			const lost = confirmed ? [] : lostControls(info.config, draft);
-			if (lost.length) {
-				confirming = lost;
-				return;
-			}
-			const key = keyDraft.trim();
+	let saving = false;
+	let again = false;
+	async function save(clearKey = false, confirmed = false) {
+		if (!draft || !info) return;
+		if (saving) {
+			again = true;
+			return;
+		}
+		const lost = confirmed ? [] : lostControls(info.config, draft);
+		if (lost.length) {
+			confirming = lost;
+			return;
+		}
+		const key = keyDraft.trim();
+		const sent = JSON.stringify(draft);
+		const body = {
+			config: { ...draft, stt_language: draft.stt_language?.trim() || null },
+			revision: info.revision,
+			...(key ? { api_key: key } : {}),
+			...(clearKey ? { clear_key: true } : {})
+		};
+		saving = busy = true;
+		const res = await serverSave.run(async () => {
 			try {
-				apply(
-					await endpoints.setSpeechSettings({
-						config: { ...draft, stt_language: draft.stt_language?.trim() || null },
-						revision: info.revision,
-						...(key ? { api_key: key } : {}),
-						...(clearKey ? { clear_key: true } : {})
-					})
-				);
+				return await endpoints.setSpeechSettings(body);
 			} catch (e) {
 				if (!(e instanceof ApiError && e.status === 409)) throw e;
 				apply(await endpoints.speechSettings());
-				toasts.error(m.settings_speech_stale());
-				return;
+				throw new ApiError(409, m.settings_speech_stale());
 			}
-			toasts.ok(m.settings_speech_saved());
 		});
+		saving = busy = false;
+		if (res) {
+			if (JSON.stringify(draft) === sent) apply(res);
+			else {
+				info = res;
+				confirming = [];
+			}
+			if (keyDraft.trim() === key) keyDraft = '';
+		}
+		if (again) {
+			again = false;
+			if (configDirty) void save();
+		}
+	}
+	autoSave(
+		() => (configDirty && confirming.length === 0 ? JSON.stringify(draft) : undefined),
+		() => save()
+	);
+	const saveKey = () => {
+		if (keyDraft.trim()) void save();
+	};
 
 	function keepCurrent() {
 		if (info && draft) {
@@ -177,6 +202,10 @@
 						bind:value={keyDraft}
 						placeholder={m.settings_speech_key_placeholder()}
 						aria-label={m.settings_speech_key()}
+						onblur={saveKey}
+						onkeydown={(e: KeyboardEvent) => {
+							if (e.key === 'Enter') saveKey();
+						}}
 					/>
 					{#if info.has_key}
 						<Button variant="ghost" disabled={busy} onclick={() => save(true)}>
@@ -267,9 +296,6 @@
 				</div>
 			{/if}
 			<div class="line actions">
-				<Button disabled={!dirty || busy || confirming.length > 0} onclick={() => save()}>
-					{m.settings_speech_save()}
-				</Button>
 				<Button variant="ghost" disabled={busy || dirty || !info.config.enabled} onclick={loadCatalog}>
 					{m.settings_speech_load()}
 				</Button>

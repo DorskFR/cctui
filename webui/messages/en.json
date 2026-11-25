@@ -3426,8 +3426,5 @@
 	"error_search_archived_placeholder": "Name, folder or id",
 	"error_session_missing_body": "This session was archived or deleted. Search the archived sessions, or go back to your sessions.",
 	"error_session_missing_title": "Session not found",
-	"list_auto_approve": "auto-approve",
-	"settings_speech_save": "Save",
-	"settings_speech_saved": "Speech settings saved",
-	"settings_upstreams_saved": "Allowed upstream hosts saved"
+	"list_auto_approve": "auto-approve"
 }

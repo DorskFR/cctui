@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { flushSync, mount, unmount, tick } from 'svelte';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { SpeechSettingsInfo } from '@bindings/SpeechSettingsInfo';
 import { ApiError } from '#lib/api.ts';
 
@@ -15,18 +15,28 @@ vi.mock('#lib/queries/index.ts', () => ({ endpoints: api }));
 vi.mock('#lib/toast.svelte.ts', () => ({ toasts: toast }));
 
 import SpeechGroup from './SpeechGroup.svelte';
+import { serverSave } from './serverSave.svelte.ts';
 
 let comp: ReturnType<typeof mount> | null = null;
+beforeEach(() => {
+	vi.useFakeTimers();
+});
 afterEach(() => {
 	if (comp) unmount(comp);
 	comp = null;
 	document.body.replaceChildren();
+	vi.useRealTimers();
 	vi.clearAllMocks();
 });
 
 const settle = async () => {
 	for (let i = 0; i < 5; i++) await tick();
 	flushSync();
+};
+/** Lets the auto-save pause run out and the write land. */
+const pause = async () => {
+	await vi.advanceTimersByTimeAsync(700);
+	await settle();
 };
 const button = (text: string) =>
 	[...document.querySelectorAll('button')].find((b) => b.textContent?.trim() === text) as
@@ -83,11 +93,13 @@ describe('speech settings', () => {
 		await settle();
 		expect(document.body.textContent).toContain('no key');
 		expect(input('Base URL').value).toBe(config.base_url);
-		expect(button('Save')?.disabled).toBe(true);
+		expect(button('Save')).toBeUndefined();
 
 		api.setSpeechSettings.mockResolvedValue(info({ has_key: true }));
 		type(input('API key'), ' sk-new ');
-		button('Save')?.click();
+		await pause();
+		expect(api.setSpeechSettings).not.toHaveBeenCalled();
+		input('API key').dispatchEvent(new FocusEvent('blur'));
 		await settle();
 		expect(api.setSpeechSettings).toHaveBeenCalledWith({ config, revision: 'r1', api_key: 'sk-new' });
 		expect(document.body.textContent).toContain('key set');
@@ -95,8 +107,7 @@ describe('speech settings', () => {
 
 		api.setSpeechSettings.mockResolvedValue(info({ has_key: true, config: { ...config, tts_voice: 'bf_emma' } }));
 		choose('Voice', 'bf_emma');
-		button('Save')?.click();
-		await settle();
+		await pause();
 		expect(api.setSpeechSettings).toHaveBeenLastCalledWith({
 			config: { ...config, tts_voice: 'bf_emma' },
 			revision: 'r1'
@@ -133,8 +144,7 @@ describe('speech settings', () => {
 		api.setSpeechSettings.mockResolvedValue(info());
 		choose('Speech-to-text model', 'whistle');
 		choose('Summary model', 'qwen3-1.7b');
-		button('Save')?.click();
-		await settle();
+		await pause();
 		expect(api.setSpeechSettings).toHaveBeenLastCalledWith({
 			config: { ...config, tts_voice: 'custom', stt_model: 'whistle', summary_model: 'qwen3-1.7b' },
 			revision: 'r1'
@@ -168,8 +178,7 @@ describe('speech settings', () => {
 
 		api.setSpeechSettings.mockResolvedValue(info({ config: { ...config, stt_model: '' } }));
 		choose('Speech-to-text model', '');
-		button('Save')?.click();
-		await settle();
+		await pause();
 		expect(api.setSpeechSettings).not.toHaveBeenCalled();
 		button('Save anyway')?.click();
 		await settle();
@@ -181,8 +190,7 @@ describe('speech settings', () => {
 		api.setSpeechSettings.mockResolvedValue(info({ config: { ...config, tts_model: '' } }));
 		choose('Speech-to-text model', 'parakeet');
 		choose('Text-to-speech model', '');
-		button('Save')?.click();
-		await settle();
+		await pause();
 		expect(document.querySelector('[role="alertdialog"]')?.textContent).toContain(
 			'This save removes these for every user: read-aloud.'
 		);
@@ -208,8 +216,7 @@ describe('speech settings', () => {
 		expect(select('Summary model').options[0].textContent?.trim()).toBe('Off');
 
 		choose('Speech-to-text model', '');
-		button('Save')?.click();
-		await settle();
+		await pause();
 		expect(document.querySelector('[role="alertdialog"]')?.textContent).toContain(
 			'This save removes these for every user: the mic (dictation), voice-to-spawn, voice mode.'
 		);
@@ -217,7 +224,7 @@ describe('speech settings', () => {
 		await settle();
 		expect(document.querySelector('[role="alertdialog"]')).toBeNull();
 		expect(select('Speech-to-text model').value).toBe('parakeet');
-		expect(button('Save')?.disabled).toBe(true);
+		await pause();
 		expect(api.setSpeechSettings).not.toHaveBeenCalled();
 	});
 
@@ -231,10 +238,9 @@ describe('speech settings', () => {
 		await settle();
 
 		type(input('Base URL'), 'http://other.ai:8000/v1');
-		button('Save')?.click();
-		await settle();
+		await pause();
 		expect(api.setSpeechSettings).toHaveBeenLastCalledWith(expect.objectContaining({ revision: 'r1' }));
-		expect(toast.error).toHaveBeenCalledWith(
+		expect(serverSave.error).toBe(
 			'Speech settings were changed elsewhere. The form now shows the saved values; make your change again.'
 		);
 		expect(toast.ok).not.toHaveBeenCalled();
@@ -243,8 +249,7 @@ describe('speech settings', () => {
 
 		api.setSpeechSettings.mockResolvedValue(info({ revision: 'r3' }));
 		choose('Voice', 'af_heart');
-		button('Save')?.click();
-		await settle();
+		await pause();
 		expect(api.setSpeechSettings).toHaveBeenLastCalledWith(expect.objectContaining({ revision: 'r2' }));
 	});
 
@@ -269,8 +274,7 @@ describe('speech settings', () => {
 
 		api.setSpeechSettings.mockResolvedValue(info({ config: { ...config, stt_part_ms: 1500 } }));
 		type(field, '1.5');
-		button('Save')?.click();
-		await settle();
+		await pause();
 		expect(api.setSpeechSettings).toHaveBeenLastCalledWith({
 			config: { ...config, stt_part_ms: 1500 },
 			revision: 'r1'
@@ -278,22 +282,21 @@ describe('speech settings', () => {
 
 		api.setSpeechSettings.mockResolvedValue(info());
 		type(input('Text appears after (seconds of speech)'), '');
-		button('Save')?.click();
-		await settle();
+		await pause();
 		expect(api.setSpeechSettings).toHaveBeenLastCalledWith({ config, revision: 'r1' });
 	});
 
-	it('surfaces a save error as a toast', async () => {
+	it('surfaces a save error in the page indicator', async () => {
 		api.speechSettings.mockResolvedValue(info());
 		api.speechCatalog.mockResolvedValue(catalog);
-		api.setSpeechSettings.mockRejectedValue(new Error('base_url is required to enable speech'));
+		api.setSpeechSettings.mockRejectedValue(new ApiError(422, 'base_url is required to enable speech'));
 		comp = mount(SpeechGroup, { target: document.body });
 		await settle();
 		type(input('Base URL'), '');
-		button('Save')?.click();
-		await settle();
+		await pause();
 		button('Save anyway')?.click();
 		await settle();
-		expect(toast.error).toHaveBeenCalledWith('base_url is required to enable speech');
+		expect(serverSave.status).toBe('error');
+		expect(serverSave.error).toBe('base_url is required to enable speech');
 	});
 });

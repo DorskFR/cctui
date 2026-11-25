@@ -4,7 +4,7 @@
 	import SettingRow from '#lib/components/molecules/SettingRow.svelte';
 	import { endpoints } from '#lib/queries/index.ts';
 	import type { UpstreamHostsInfo } from '@bindings/UpstreamHostsInfo';
-	import { toasts } from '#lib/toast.svelte.ts';
+	import { serverSave } from './serverSave.svelte.ts';
 	import { m } from '#lib/paraglide/messages.js';
 	import { sourceLabel } from './serverSettings.logic';
 
@@ -21,15 +21,12 @@
 
 	async function save(hosts: string[] | null) {
 		saving = true;
-		try {
-			info = await endpoints.setUpstreamHosts(hosts);
-			draft = '';
-			toasts.ok(m.settings_upstreams_saved());
-		} catch (e) {
-			toasts.error(e instanceof Error ? e.message : String(e));
-		} finally {
-			saving = false;
-		}
+		const sent = draft;
+		const next = await serverSave.run(() => endpoints.setUpstreamHosts(hosts));
+		saving = false;
+		if (!next) return;
+		info = next;
+		if (draft === sent) draft = '';
 	}
 
 	function add() {
