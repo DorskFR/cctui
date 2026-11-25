@@ -114,7 +114,6 @@ function harness(over: Partial<SessionsPageDeps> = {}, stored: Record<string, st
 			right: null
 		}),
 		clearUrlSession: vi.fn(),
-		confirm: () => true,
 		spawnSlot: {
 			currentKey: () => 'slot',
 			read: () => slot,
@@ -771,8 +770,20 @@ describe('SessionsPage — spawn form and drafts', () => {
 		expect(actions.launchDraft).toHaveBeenCalledWith('d');
 		expect(deps.spawnSlot.clear).toHaveBeenCalledWith('m', '/w');
 		expect(sp.launchingDraft).toBeNull();
-		await sp.discardDraft(d);
+		sp.discardDraft(d);
+		expect(actions.discardDraft).not.toHaveBeenCalled();
+		expect(sp.discardPending?.id).toBe('d');
+		await sp.confirmDiscard();
 		expect(actions.discardDraft).toHaveBeenCalledWith('d');
+		expect(sp.discardPending).toBeNull();
+	});
+
+	it('keeps a draft when the discard is cancelled', () => {
+		const { sp, actions } = make();
+		sp.discardDraft(session({ id: 'd', status: 'draft' }));
+		sp.cancelDiscard();
+		expect(sp.discardPending).toBeNull();
+		expect(actions.discardDraft).not.toHaveBeenCalled();
 	});
 
 	it('cancels a scheduled launch without touching the draft', async () => {

@@ -113,7 +113,6 @@ export interface SessionsPageDeps {
   refetchLive: () => Promise<unknown>;
   dockLayout: () => DockLayout;
   clearUrlSession: () => void;
-  confirm: (message: string) => boolean;
   spawnSlot: {
     currentKey: () => string;
     read: (key: string) => SpawnSlotPayload | null;
@@ -731,14 +730,24 @@ export class SessionsPage {
     }
   };
 
-  discardDraft = async (s: SessionListItem) => {
-    if (!this.#d.confirm(m.sessions_confirm_discard_draft())) return;
+  discardPending = $state<SessionListItem | null>(null);
+  discardDraft = (s: SessionListItem) => {
+    this.discardPending = s;
+  };
+  cancelDiscard = () => {
+    this.discardPending = null;
+  };
+  confirmDiscard = async () => {
+    const s = this.discardPending;
+    if (!s) return;
     try {
       await this.#d.actions.discardDraft(s.id);
       this.#d.spawnSlot.clear(s.machine_id, s.working_dir);
       this.#d.toasts.ok(m.sessions_toast_draft_discarded());
     } catch (e) {
       this.#d.toasts.error(errMessage(e));
+    } finally {
+      this.discardPending = null;
     }
   };
 

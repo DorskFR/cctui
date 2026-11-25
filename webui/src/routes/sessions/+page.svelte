@@ -82,7 +82,6 @@
 		refetchLive: () => qc.invalidateQueries({ queryKey: qk.sessions(false) }),
 		dockLayout,
 		clearUrlSession: () => replaceUrlSession(null),
-		confirm: (message) => confirm(message),
 		spawnSlot: {
 			currentKey: currentSpawnSlot,
 			read: readSpawnSlot,
@@ -451,6 +450,17 @@
 		busy={sp.archiveConfirm.busy}
 		onconfirm={sp.archiveConfirm.confirm}
 		oncancel={sp.archiveConfirm.cancel}
+	/>
+{/if}
+
+{#if sp.discardPending}
+	<ConfirmModal
+		open
+		tone="danger"
+		title={m.sessions_confirm_discard_draft()}
+		confirmLabel={m.sessions_discard()}
+		onconfirm={sp.confirmDiscard}
+		oncancel={sp.cancelDiscard}
 	/>
 {/if}
 
