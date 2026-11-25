@@ -55,7 +55,29 @@
 		onmaximize?: () => void;
 	} = $props();
 
-	const p = new PaneModel(() => ({ opened, highlight, focusSeq, chrome, onclose, onFollowup, onNavigate }));
+	const p = new PaneModel({
+		get opened() {
+			return opened;
+		},
+		get highlight() {
+			return highlight;
+		},
+		get focusSeq() {
+			return focusSeq;
+		},
+		get chrome() {
+			return chrome;
+		},
+		get onclose() {
+			return onclose;
+		},
+		get onFollowup() {
+			return onFollowup;
+		},
+		get onNavigate() {
+			return onNavigate;
+		}
+	});
 	const { line, stream, search, sa, fork, forkSelect, pins, plugins, renderer, earlier, voice, actions } = p;
 	const session = $derived(p.session);
 	const id = $derived(p.id);

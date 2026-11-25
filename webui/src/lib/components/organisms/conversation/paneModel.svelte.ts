@@ -59,7 +59,7 @@ export interface PaneInputs {
 
 /** Construct during component init: it reads query context and owns effects. */
 export class PaneModel {
-	readonly #in: () => PaneInputs;
+	readonly #in: PaneInputs;
 	readonly #qc = useQueryClient();
 	readonly actions = useSessionActions();
 	readonly line = new FollowupLine({
@@ -68,7 +68,7 @@ export class PaneModel {
 		session: (sid) => endpoints.session(sid)
 	});
 	readonly session: SessionListItem = $derived.by(() => {
-		const opened = this.#in().opened;
+		const opened = this.#in.opened;
 		return this.line.headId && this.line.headId !== opened.id ? (this.line.head ?? opened) : opened;
 	});
 	// Moves only when the opened session leaves the line, so a head swap keeps
@@ -130,7 +130,7 @@ export class PaneModel {
 	});
 	// `Line` carries no seq, so the focused line is addressed by `ts`.
 	readonly focusTs = $derived.by(() => {
-		const seq = this.#in().focusSeq;
+		const seq = this.#in.focusSeq;
 		if (seq == null) return null;
 		const ev = this.events.find((e) => e.seq === seq);
 		return ev ? Number(ev.ts) : null;
@@ -143,7 +143,7 @@ export class PaneModel {
 		machineId: () => (hasFeature('files') ? this.session.machine_id : ''),
 		view: () => this.view,
 		// The open find bar owns the highlight, so it never fights the search terms.
-		highlight: () => (this.search.open ? this.search.terms : this.#in().highlight),
+		highlight: () => (this.search.open ? this.search.terms : this.#in.highlight),
 		events: () => this.#renderEvents,
 		prior: () => (this.threadShown ? this.line.segments : []),
 		scheduledTurns: () => this.#scheduledTurns,
@@ -192,7 +192,7 @@ export class PaneModel {
 		events: () => this.events,
 		view: () => this.view,
 		actions: this.actions,
-		onclose: () => this.#in().onclose?.()
+		onclose: () => this.#in.onclose?.()
 	});
 	readonly fork = new ForkController({
 		id: () => this.id,
@@ -203,7 +203,7 @@ export class PaneModel {
 		// Jump to the new conversation when claude returned its id; otherwise
 		// close and let the list refetch surface it.
 		onForked: (sid) => {
-			const { onNavigate, onclose } = this.#in();
+			const { onNavigate, onclose } = this.#in;
 			if (sid && onNavigate) onNavigate(sid);
 			else onclose?.();
 		}
@@ -218,9 +218,10 @@ export class PaneModel {
 	readonly voiceEnabled = $derived.by(() => this.voice.caps.stt && !this.archived);
 	readonly thread: ThreadLanding;
 
-	constructor(inputs: () => PaneInputs) {
+	/** `inputs` holds one getter per prop, so each effect tracks only the props it reads. */
+	constructor(inputs: PaneInputs) {
 		this.#in = inputs;
-		this.viewKey = untrack(() => inputs().opened.id);
+		this.viewKey = untrack(() => inputs.opened.id);
 		useHarnesses();
 		this.#effects();
 		this.voice = new PaneVoice(() => this.id);
@@ -234,7 +235,7 @@ export class PaneModel {
 			headComplete: () => this.headComplete,
 			historyLoaded: () => this.history.data !== undefined,
 			viewKey: () => this.viewKey,
-			keepUrl: () => this.#in().chrome === 'tile',
+			keepUrl: () => this.#in.chrome === 'tile',
 			jumpToBottom: () => this.scroll.jumpToBottom(),
 			restoreDraft: (text) => this.composer?.restoreDraft(text)
 		});
@@ -242,12 +243,12 @@ export class PaneModel {
 
 	#effects() {
 		$effect(() => {
-			const sid = this.#in().opened.id;
+			const sid = this.#in.opened.id;
 			if (!untrack(() => this.line.members.has(sid))) this.viewKey = sid;
 		});
 		$effect(() => {
 			void this.viewKey;
-			untrack(() => void this.line.open(this.#in().opened));
+			untrack(() => void this.line.open(this.#in.opened));
 		});
 		$effect(() => this.plugins.ensureLoaded());
 		$effect(() => {
@@ -261,7 +262,7 @@ export class PaneModel {
 		$effect(() => this.stream.installVisibilityRefresh());
 		$effect(() => notify.holdOpen(this.id));
 		$effect(() => {
-			const seq = this.#in().focusSeq;
+			const seq = this.#in.focusSeq;
 			const sid = this.id;
 			if (seq != null) void this.earlier.focus(sid, seq);
 		});
@@ -279,7 +280,7 @@ export class PaneModel {
 		// A search hit must land mid-transcript and stay there.
 		$effect(() => {
 			void this.viewKey;
-			if (this.#in().focusSeq == null) untrack(() => this.scroll.resetForSession());
+			if (this.#in.focusSeq == null) untrack(() => this.scroll.resetForSession());
 			else untrack(() => this.scroll.unstick());
 		});
 		$effect(() => this.scroll.observeResize());
@@ -303,7 +304,7 @@ export class PaneModel {
 			untrack(() => this.plugins.close());
 		});
 		$effect(() => {
-			const seed = hasFeature('transcript_search') ? this.#in().highlight.join(' ').trim() : '';
+			const seed = hasFeature('transcript_search') ? this.#in.highlight.join(' ').trim() : '';
 			if (seed) untrack(() => this.search.openBar(seed));
 		});
 		$effect(() =>
