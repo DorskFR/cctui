@@ -2,7 +2,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, tick, unmount, type ComponentProps } from 'svelte';
 import SessionSectionHeader from './SessionSectionHeader.svelte';
-import { m } from '#lib/paraglide/messages.js';
 
 let comp: ReturnType<typeof mount> | null = null;
 function reset() {
@@ -49,9 +48,17 @@ describe('SessionSectionHeader', () => {
 		expect(onarchive).toHaveBeenCalledTimes(1);
 	});
 
-	it('pluralises the session count', () => {
-		expect(m.sessions_group_count({ count: 1 })).toBe('1 session');
-		expect(m.sessions_group_count({ count: 3 })).toBe('3 sessions');
+	it('pluralises the session count it renders', () => {
+		const wide = vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockReturnValue(1200);
+		try {
+			render({ count: 1 });
+			expect(document.body.textContent).toMatch(/\b1 session\b/);
+			reset();
+			render({ count: 3 });
+			expect(document.body.textContent).toMatch(/\b3 sessions\b/);
+		} finally {
+			wide.mockRestore();
+		}
 	});
 
 	it('keeps the controls pinned visible while the section is hidden', () => {
