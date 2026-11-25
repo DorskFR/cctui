@@ -53,6 +53,12 @@ describe('drawer header control chrome', () => {
 		expect(stop).toContain('onclick={oninterrupt}');
 	});
 
+	it('moves the title to its own line when the bar collapses, never in a tile', () => {
+		expect(header).toContain('const titleOwnLine = $derived(collapsed && !compact)');
+		expect(markup).toMatch(/\{#if titleOwnLine\}\s*<div class="trow">\{@render title\(\)\}<\/div>/);
+		expect(markup.split('<DrawerTitle')).toHaveLength(2);
+	});
+
 	it('leaves text size to Settings, not the drawer header', () => {
 		expect(header).not.toContain('FontScalePicker');
 	});

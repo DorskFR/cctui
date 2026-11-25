@@ -126,6 +126,9 @@
 	// height and a top edge whatever glyph they carry.
 	const box: 'sm' | 'md' = $derived(collapsed ? 'sm' : 'md');
 	const canStop = $derived(working && !archived && !compact);
+	// A narrow drawer gives the title its own line so the action row keeps
+	// only Back and ⋯ (search folds into ⋯ below COLLAPSE_BELOW).
+	const titleOwnLine = $derived(collapsed && !compact);
 
 	// Window-level so the chords work wherever focus sits, including the
 	// composer. `shortcuts` is what keeps N tiles from firing N times.
@@ -139,6 +142,10 @@
 </script>
 
 <svelte:window onkeydown={onWinKey} />
+
+{#snippet title()}
+	<DrawerTitle {session} {compact} {showLabels} {labels} {renaming} bind:name={newName} onsubmit={doRename} />
+{/snippet}
 
 <div class="dhead" class:compact data-journey="header">
 	<div class="dbar" bind:clientWidth={barWidth}>
@@ -155,7 +162,11 @@
 			{onAccountClick}
 		/>
 		<RebindTrail sessionId={session.id} />
-		<DrawerTitle {session} {compact} {showLabels} {labels} {renaming} bind:name={newName} onsubmit={doRename} />
+		{#if titleOwnLine}
+			<span class="grow"></span>
+		{:else}
+			{@render title()}
+		{/if}
 		{#if canStop}
 			<Button size="sm" title={m.drawer_interrupt_title()} onclick={oninterrupt} data-journey="stop">
 				<Spinner size={12} label="" />
@@ -209,6 +220,9 @@
 		/>
 	</Toolbar>
 	</div>
+	{#if titleOwnLine}
+		<div class="trow">{@render title()}</div>
+	{/if}
 	{#if showLabels && session.labels.length > 0 && !compact}
 		<div class="hlabels">
 			<HeaderLabels {session} handlers={labels} />
@@ -250,6 +264,10 @@
 	.dbar {
 		min-width: 0;
 	}
+	.grow {
+		flex: 1;
+	}
+	.trow,
 	.hlabels {
 		display: flex;
 		min-width: 0;
