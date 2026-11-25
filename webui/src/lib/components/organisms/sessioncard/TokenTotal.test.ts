@@ -20,8 +20,8 @@ const usage = (over: Partial<TokenUsage> = {}): TokenUsage => ({
 	...over
 });
 
-function render(u: TokenUsage, sum: number | null = null) {
-	comp = mount(TokenTotal, { target: document.body, props: { usage: u, sum } });
+function render(u: TokenUsage, sum: number | null = null, cold = false) {
+	comp = mount(TokenTotal, { target: document.body, props: { usage: u, sum, cold } });
 	flushSync();
 }
 
@@ -51,6 +51,18 @@ describe('TokenTotal', () => {
 			usage({ tokens_in: 1, tokens_out: 0, cache_read_tokens: 0, cache_creation_tokens: 0 })
 		);
 		expect(document.querySelector('.tt')?.textContent).toBe('1 token');
+	});
+
+	it('marks a cold prompt cache next to the total, with a spoken label', () => {
+		render(usage(), null, true);
+		const cold = document.querySelector('.cold');
+		expect(cold?.textContent).toBe('❄️');
+		expect(cold?.getAttribute('aria-label')).toMatch(/cold/i);
+	});
+
+	it('shows no cold marker on a warm cache', () => {
+		render(usage());
+		expect(document.querySelector('.cold')).toBeNull();
 	});
 
 	it('renders nothing without usage', () => {

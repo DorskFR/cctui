@@ -27,7 +27,7 @@
 </script>
 
 {#if !view.draft}
-	<Text tone="muted" size="xs"><TokenTotal usage={s.token_usage} {sum} /></Text>
+	<Text tone="muted" size="xs"><TokenTotal usage={s.token_usage} {sum} cold={s.cache_cold} /></Text>
 	{#if usage.showCost}<span class="cost"><Text tone="muted" size="xs" numeric>{usd(usage.cost)}</Text></span>{/if}
 {/if}
 {#if spread}<span class="gap"></span>{/if}

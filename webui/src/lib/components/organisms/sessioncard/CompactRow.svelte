@@ -49,7 +49,7 @@
 {#snippet tokens()}
 	{#if !view.draft && usage.total > 0}
 		<span class="tokens"
-			><TokenTotal usage={s.token_usage} sum={view.rollup ? view.rollup.tokens : null} /><span class="prov"
+			><TokenTotal usage={s.token_usage} sum={view.rollup ? view.rollup.tokens : null} cold={s.cache_cold} /><span class="prov"
 				><AdapterIcon adapter={s.adapter_id} size={14} /></span
 			></span
 		>
