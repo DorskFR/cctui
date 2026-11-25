@@ -20,6 +20,11 @@ describe('latestSave', () => {
 		expect(latestSave(st('error', 0, null), st('idle', 0, null)).status).toBe('error');
 	});
 
+	it('shows a user save that failed after an older server save', () => {
+		const user = { status: 'error' as const, savedAt: 50, error: 'boom', at: 200 };
+		expect(latestSave(user, st('saved', 100)).status).toBe('error');
+	});
+
 	it('prefers the most recent outcome', () => {
 		expect(latestSave(st('saved', 10), st('error', 20, null)).status).toBe('error');
 		expect(latestSave(st('saved', 30), st('error', 20, null)).status).toBe('saved');
@@ -42,5 +47,24 @@ describe('serverSave.run', () => {
 		expect(out).toBeUndefined();
 		expect(serverSave.status).toBe('error');
 		expect(serverSave.error).toBe('bad name');
+	});
+
+	it('keeps the error when an overlapping write fails and another succeeds', async () => {
+		let finish: (v: number) => void = () => {};
+		const slow = serverSave.run(() => new Promise<number>((res) => (finish = res)));
+		await serverSave.run(async () => {
+			throw new ApiError(422, 'rejected');
+		});
+		expect(serverSave.status).toBe('pending');
+		finish(1);
+		await slow;
+		expect(serverSave.status).toBe('error');
+		expect(serverSave.error).toBe('rejected');
+	});
+
+	it('starts clean on the next write after a failed batch', async () => {
+		await serverSave.run(async () => 1);
+		expect(serverSave.status).toBe('saved');
+		expect(serverSave.error).toBeNull();
 	});
 });

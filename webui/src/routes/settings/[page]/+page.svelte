@@ -95,9 +95,17 @@
 		const t = setInterval(() => (now = Date.now()), 5_000);
 		return () => clearInterval(t);
 	});
+	// The per-user store keeps no change time of its own: stamp one whenever
+	// its status, success time or error moves.
+	const userAt = $derived.by(() => {
+		void settings.saveStatus;
+		void settings.savedAt;
+		void settings.saveError;
+		return Date.now();
+	});
 	const save = $derived(
 		latestSave(
-			{ status: settings.saveStatus, savedAt: settings.savedAt, error: settings.saveError },
+			{ status: settings.saveStatus, savedAt: settings.savedAt, error: settings.saveError, at: userAt },
 			serverSave
 		)
 	);

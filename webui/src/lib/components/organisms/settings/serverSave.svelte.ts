@@ -20,24 +20,29 @@ class ServerSave implements SaveState {
 	error = $state<string | null>(null);
 	at = $state(0);
 	#inflight = 0;
+	/** Set once any write of the current overlapping batch fails. */
+	#failed: { message: string | null } | null = null;
 
 	async run<T>(write: () => Promise<T>): Promise<T | undefined> {
-		this.#inflight++;
+		if (this.#inflight++ === 0) this.#failed = null;
 		this.#set('pending');
+		let out: T | undefined;
 		try {
-			const out = await write();
-			if (--this.#inflight === 0) {
+			out = await write();
+		} catch (e) {
+			this.#failed = { message: saveErrorMessage(e) };
+		}
+		if (--this.#inflight === 0) {
+			if (this.#failed) {
+				this.error = this.#failed.message;
+				this.#set('error');
+			} else {
 				this.savedAt = Date.now();
 				this.error = null;
 				this.#set('saved');
 			}
-			return out;
-		} catch (e) {
-			this.#inflight--;
-			this.error = saveErrorMessage(e);
-			this.#set('error');
-			return undefined;
 		}
+		return out;
 	}
 
 	#set(status: SaveStatus) {
@@ -49,12 +54,12 @@ class ServerSave implements SaveState {
 export const serverSave = new ServerSave();
 
 /** The save state the indicator shows: anything in flight, else the latest outcome. */
-export function latestSave(user: Omit<SaveState, 'at'>, server: SaveState): Omit<SaveState, 'at'> {
+export function latestSave(user: SaveState, server: SaveState): SaveState {
 	if (user.status === 'pending') return user;
 	if (server.status === 'pending') return server;
 	if (server.status === 'idle') return user;
 	if (user.status === 'idle') return server;
-	return server.at >= (user.savedAt ?? 0) ? server : user;
+	return server.at >= user.at ? server : user;
 }
 
 /**
