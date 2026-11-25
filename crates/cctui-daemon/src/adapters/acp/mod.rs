@@ -9,6 +9,7 @@
 pub mod catalog;
 pub mod connection;
 pub mod elicitation;
+pub mod guard;
 pub mod modes;
 pub mod normalize;
 pub mod oneshot;

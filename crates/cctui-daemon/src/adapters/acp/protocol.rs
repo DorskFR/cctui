@@ -299,6 +299,16 @@ pub fn auto_allow(options: &[PermissionOption]) -> Option<Value> {
         .and_then(|o| permission_selected(options, &o.id))
 }
 
+/// A guard verdict is per step, so it never picks `reject_always`.
+#[must_use]
+pub fn guard_reject(options: &[PermissionOption], reason: &str) -> Value {
+    let outcome = options.iter().find(|o| o.kind == "reject_once").map_or_else(
+        || json!({ "outcome": "cancelled" }),
+        |o| json!({ "outcome": "selected", "optionId": o.id }),
+    );
+    json!({ "outcome": outcome, "_meta": { "reason": reason } })
+}
+
 /// The `session/request_permission` result for a yes/no answer.
 ///
 /// The once variant of the matching kind, then the always variant, then any
@@ -504,6 +514,24 @@ mod tests {
         assert_eq!(permission_response(allow_only, false)["outcome"]["outcome"], "cancelled");
         assert_eq!(permission_response(&options[..1], true)["outcome"]["optionId"], "always");
         assert_eq!(permission_response(&[], true)["outcome"]["outcome"], "cancelled");
+    }
+
+    #[test]
+    fn a_guard_rejection_is_reject_once_with_the_reason_never_reject_always() {
+        let options = parse_permission_options(&json!({
+            "options": [
+                { "optionId": "never", "name": "Never", "kind": "reject_always" },
+                { "optionId": "no", "name": "No", "kind": "reject_once" },
+            ]
+        }));
+        assert_eq!(
+            guard_reject(&options, "[Step 2] no"),
+            json!({
+                "outcome": { "outcome": "selected", "optionId": "no" },
+                "_meta": { "reason": "[Step 2] no" }
+            })
+        );
+        assert_eq!(guard_reject(&options[..1], "x")["outcome"], json!({ "outcome": "cancelled" }));
     }
 
     #[test]
