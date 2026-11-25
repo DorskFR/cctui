@@ -2848,6 +2848,8 @@
 	"voice_dictate_stop": "Arrêter et envoyer",
 	"voice_dictate_discard": "Abandonner l'enregistrement",
 	"voice_live_hint": "Conversation vocale en direct avec cette session",
+	"voice_live_item": "Voix en direct",
+	"voice_menu": "Plus d’options vocales",
 	"voice_live_connecting": "Connexion",
 	"voice_live_listening": "À l'écoute",
 	"voice_live_thinking": "Réflexion",
