@@ -14,12 +14,14 @@
 	import { errMessage } from '#lib/api.ts';
 	import { toasts } from '#lib/toast.svelte.ts';
 	import { m } from '#lib/paraglide/messages.js';
+	import { formatTypedCode } from './device-code.ts';
 
 	let code = $state(codeFromSearch(page.url.search));
 	let info = $state<DeviceAuthRequestInfo | null>(null);
 	let error = $state('');
 	let busy = $state(false);
 	let decided = $state<'approved' | 'denied' | null>(null);
+	const complete = $derived(isCompleteUserCode(code));
 	const facts = $derived(info ? requesterFacts(info, Date.now()) : []);
 
 	async function lookup() {
@@ -71,18 +73,29 @@
 			void lookup();
 		}}
 	>
-		<Cluster gap="var(--sp-2)" align="center">
+		<Stack gap="var(--sp-3)" align="center">
 			<Input
 				aria-label={m.device_code_label()}
 				placeholder="XXXX-XXXX"
+				mono
+				size="lg"
+				width="14ch"
+				maxlength={9}
+				autocomplete="off"
+				autocapitalize="characters"
+				spellcheck={false}
+				style="text-align: center; font-size: var(--fs-xl); letter-spacing: 0.1em;"
 				value={code}
-				oninput={(e) =>
-					(code = normalizeUserCode((e.currentTarget as HTMLInputElement).value))}
+				oninput={(e) => (code = formatTypedCode((e.currentTarget as HTMLInputElement).value))}
 			/>
-			<Button type="submit" disabled={busy || !isCompleteUserCode(code)}>
+			<Button
+				type="submit"
+				variant={complete ? 'primary' : 'default'}
+				disabled={busy || !complete}
+			>
 				{m.device_lookup()}
 			</Button>
-		</Cluster>
+		</Stack>
 	</form>
 
 	{#if prefilled && !info && !error}
