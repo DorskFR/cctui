@@ -53,6 +53,7 @@
 <span class="title" class:row>
 	<Text
 		data-journey="title"
+		tone="default"
 		weight="semibold"
 		size={row ? 'md' : 'lg'}
 		truncate
