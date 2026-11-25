@@ -1403,16 +1403,17 @@ The event's `payload`:
   "handle":         "jobs/cctui-worker-…",
   "namespace":      "cctui",      // absent when the dispatcher has none
   "status":         "queued",     // dispatched | deduplicated | redispatched | queued
-  "queue_position": 2             // only while queued: 1-based, per worker profile
+  "queue_position": 2             // only while the Job is suspended: 1-based, per worker profile
 }
 ```
 
-`queued` means the worker Job was created suspended behind its profile's
-`maxInflight`; `queue_position` counts that profile's suspended Jobs oldest
-first, the order they are resumed in. A re-send of the same dedup key or session
-id while the Job is still queued answers `queued` with its current position
-again instead of `deduplicated`, so a retrying caller can tell it is already
-waiting. Once the Job runs, a re-send answers `deduplicated` as before.
+`queued` means this dispatch created the worker Job, suspended behind its
+profile's `maxInflight`; its `REPLY_URL` is the one the worker calls back.
+`deduplicated` means this dispatch joined an existing run of the same dedup key
+or session id: nothing calls it back, the run reports to the dispatch that
+created it. While that Job is still suspended, `deduplicated` carries
+`queue_position` too. `queue_position` counts the profile's suspended Jobs
+oldest first, the order they are resumed in.
 
 ## Polling for the result
 
