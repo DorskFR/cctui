@@ -55,7 +55,7 @@
 				<Text size="sm" numeric>ui {__CLIENT_VERSION__}</Text>
 				{#if selfUpdate && version.data.latest_version}
 					<Button size="sm" variant="ghost" chip onclick={() => (updateOpen = true)}>
-						<Text size="sm" numeric tone="danger">↑ v{version.data.latest_version}</Text>
+						<Text size="sm" numeric tone="accent">{m.update_run_title({ version: version.data.latest_version })}</Text>
 					</Button>
 				{/if}
 			{/if}
