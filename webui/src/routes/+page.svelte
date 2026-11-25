@@ -26,7 +26,7 @@
 	);
 	const tileLabel = (key: MetricKey, sub: number | undefined) =>
 		key === 'live'
-			? m.home_stat_live()
+			? m.home_stat_working()
 			: key === 'needs_input'
 				? m.home_stat_needs_input()
 				: key === 'machines'
@@ -45,6 +45,7 @@
 					suffix={t.suffix}
 					warn={t.warn}
 					label={tileLabel(t.key, t.sub)}
+					href={t.href}
 				/>
 			</div>
 		{/each}

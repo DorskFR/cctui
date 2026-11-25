@@ -25,6 +25,7 @@ export interface MetricTileData {
 	warn?: boolean;
 	/** Second number folded into the label (archived sessions). */
 	sub?: number;
+	href?: string;
 }
 
 export function machinesOnline(rows: readonly MachineResourcesRow[]): { online: number; total: number } {
@@ -39,8 +40,8 @@ export function buildMetricTiles(
 	const needs = stats?.needs_input ?? 0;
 	const { online, total } = machinesOnline(machines);
 	return [
-		{ key: 'live', value: stats?.live ?? 0 },
-		{ key: 'needs_input', value: needs, warn: needs > 0 },
+		{ key: 'live', value: stats?.live ?? 0, href: '/sessions' },
+		{ key: 'needs_input', value: needs, warn: needs > 0, href: '/sessions' },
 		{ key: 'machines', value: online, suffix: `/${total}` },
 		{ key: 'sessions', value: stats?.total ?? 0, sub: stats?.archived ?? 0 }
 	];

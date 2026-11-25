@@ -6,17 +6,19 @@
 		label,
 		suffix,
 		warn = false,
-		compact = false
+		compact = false,
+		href
 	}: {
 		value: number | string;
 		label: string;
 		suffix?: string;
 		warn?: boolean;
 		compact?: boolean;
+		href?: string;
 	} = $props();
 </script>
 
-<Card padding={compact ? 'sm' : 'md'}>
+<Card padding={compact ? 'sm' : 'md'} as={href ? 'a' : 'div'} {href} tap={!!href}>
 	<div class="tile" class:compact>
 		<div class="num">
 			<Text

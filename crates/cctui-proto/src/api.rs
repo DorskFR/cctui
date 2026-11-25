@@ -972,6 +972,7 @@ pub struct ConversationSearchResponse {
 pub struct SessionStats {
     /// Includes archived.
     pub total: i64,
+    /// In the session list's Working bucket.
     pub live: i64,
     pub needs_input: i64,
     pub archived: i64,

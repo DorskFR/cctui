@@ -55,6 +55,11 @@ describe('buildMetricTiles', () => {
 		expect(tiles[3]).toMatchObject({ value: 12193, sub: 12076 });
 	});
 
+	it('links the session-bucket tiles to the sessions list', () => {
+		const tiles = buildMetricTiles(stats, []);
+		expect(tiles.map((t) => t.href)).toEqual(['/sessions', '/sessions', undefined, undefined]);
+	});
+
 	it('drops the warn tone when nothing needs input', () => {
 		const tiles = buildMetricTiles({ ...stats, needs_input: 0 }, []);
 		expect(tiles[1].warn).toBe(false);
