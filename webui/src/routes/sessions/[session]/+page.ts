@@ -3,6 +3,8 @@ import { ApiError } from '#lib/api.ts';
 import { endpoints } from '#lib/queries/endpoints.ts';
 import type { PageLoad } from './$types';
 
+export const prerender = false;
+
 /** A deleted session keeps its URL and lands on the error page; any other
  *  failure is left to the sessions page, which can retry. */
 export const load: PageLoad = async ({ params }) => {
