@@ -31,18 +31,21 @@ pub(crate) async fn outbound_patterns(
         .get(&hash)
         .filter(|hit| now.duration_since(hit.0) < SETTINGS_TTL)
         .map(|hit| hit.1.clone());
-    let user = match cached {
-        Some(user) => user,
-        None => {
-            let user = load_user_patterns(pool, &hash).await?;
-            if SETTINGS_CACHE.len() >= CACHE_SWEEP_AT {
-                SETTINGS_CACHE.retain(|_, (at, _)| now.duration_since(*at) < SETTINGS_TTL);
-            }
-            SETTINGS_CACHE.insert(hash, (now, user.clone()));
-            user
-        }
-    };
+    let user = if let Some(user) = cached { user } else { refresh(pool, hash, now).await? };
     Ok(user.map(compiled))
+}
+
+async fn refresh(
+    pool: &sqlx::PgPool,
+    hash: String,
+    now: Instant,
+) -> Result<Option<UserPatterns>, sqlx::Error> {
+    let user = load_user_patterns(pool, &hash).await?;
+    if SETTINGS_CACHE.len() >= CACHE_SWEEP_AT {
+        SETTINGS_CACHE.retain(|_, (at, _)| now.duration_since(*at) < SETTINGS_TTL);
+    }
+    SETTINGS_CACHE.insert(hash, (now, user.clone()));
+    Ok(user)
 }
 
 async fn load_user_patterns(
