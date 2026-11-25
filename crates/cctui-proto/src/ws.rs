@@ -417,6 +417,9 @@ pub struct SecretScrubConfig {
     pub enabled: bool,
     #[serde(default)]
     pub patterns: Vec<ScrubPattern>,
+    /// The daemon also scrubs the harness's local transcript files.
+    #[serde(default)]
+    pub local_transcripts: bool,
 }
 
 /// Validated server-side.
@@ -1509,6 +1512,18 @@ mod tests {
         let json = serde_json::to_string(&f).unwrap();
         assert!(json.contains(r#""type":"reconcile""#));
         let _back: DaemonFrameDown = serde_json::from_str(&json).unwrap();
+    }
+
+    #[test]
+    fn secret_scrub_config_local_transcripts_defaults_off() {
+        let old: SecretScrubConfig =
+            serde_json::from_str(r#"{"enabled":true,"patterns":[]}"#).unwrap();
+        assert!(old.enabled);
+        assert!(!old.local_transcripts);
+        let on: SecretScrubConfig = serde_json::from_str(r#"{"local_transcripts":true}"#).unwrap();
+        assert!(on.local_transcripts);
+        let json = serde_json::to_string(&on).unwrap();
+        assert!(json.contains(r#""local_transcripts":true"#), "{json}");
     }
 
     #[test]

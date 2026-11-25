@@ -81,6 +81,9 @@ pub fn harness_mode_to_adapter_token(harness_mode: Option<&str>) -> String {
 }
 
 const MAX_SCRUB_PATTERNS: usize = 100;
+
+/// Opt-in scrub targets beyond the stored sessions, both off unless chosen.
+pub const SCRUB_OPT_IN_KEYS: [&str; 2] = ["secretScrubOutbound", "secretScrubLocalTranscripts"];
 const MAX_SCRUB_NAME_CHARS: usize = 60;
 const MAX_SCRUB_REGEX_CHARS: usize = 400;
 
@@ -131,7 +134,7 @@ pub fn normalize_scrub_patterns(raw: Option<&Value>) -> Result<Vec<Value>, Strin
     Ok(out)
 }
 
-/// Clamp `data.secretScrubEnabled` / `data.secretScrubPatterns` in place on
+/// Clamp `data.secretScrubEnabled`, the opt-in flags and `data.secretScrubPatterns` in place on
 ///
 /// write, returning `Err(msg)` when a user regex does not compile so
 /// `put_settings` can reject the PUT with a 400.
@@ -140,6 +143,12 @@ pub fn clamp_secret_scrub(data: &mut Value) -> Result<(), String> {
     if obj.contains_key("secretScrubEnabled") {
         let on = obj.get("secretScrubEnabled").and_then(Value::as_bool).unwrap_or(true);
         obj.insert("secretScrubEnabled".to_owned(), Value::Bool(on));
+    }
+    for key in SCRUB_OPT_IN_KEYS {
+        if obj.contains_key(key) {
+            let on = obj.get(key).and_then(Value::as_bool).unwrap_or(false);
+            obj.insert(key.to_owned(), Value::Bool(on));
+        }
     }
     if obj.contains_key("secretScrubPatterns") {
         let patterns = normalize_scrub_patterns(obj.get("secretScrubPatterns"))?;
@@ -168,5 +177,13 @@ pub fn secret_scrub_of(data: &Value) -> cctui_proto::ws::SecretScrubConfig {
             })
         })
         .collect();
-    cctui_proto::ws::SecretScrubConfig { enabled, patterns }
+    let local_transcripts =
+        data.get("secretScrubLocalTranscripts").and_then(Value::as_bool).unwrap_or(false);
+    cctui_proto::ws::SecretScrubConfig { enabled, patterns, local_transcripts }
+}
+
+/// Whether the gateway scrubs secrets out of this user's outbound API requests.
+#[must_use]
+pub fn secret_scrub_outbound_of(data: &Value) -> bool {
+    data.get("secretScrubOutbound").and_then(Value::as_bool).unwrap_or(false)
 }

@@ -658,6 +658,7 @@ struct Observers {
     trace_session_id: Option<String>,
     tool_guard: Option<super::toolguard::ActiveGuard>,
     voice_session: Option<String>,
+    outbound_scrub: Option<Arc<cctui_crypto::redact::CompiledPatterns>>,
 }
 
 /// What was learned from the request body while preparing it.
@@ -979,6 +980,15 @@ async fn observers(
         tracing::warn!(account = %acct.id, error = %e, "tool policy unavailable, refusing unguarded");
         StatusCode::SERVICE_UNAVAILABLE
     })?;
+    let outbound_scrub = super::outbound_scrub::outbound_patterns(
+        state.proxy_pool(),
+        session_token,
+    )
+    .await
+    .map_err(|e| {
+        tracing::warn!(account = %acct.id, error = %e, "scrub setting unavailable, refusing");
+        StatusCode::SERVICE_UNAVAILABLE
+    })?;
     let voice_session = if voice_candidate && family == Family::Anthropic && state.any_voice_watch()
     {
         state.watched_session(session_id_for_token(state, session_token).await)
@@ -999,6 +1009,7 @@ async fn observers(
         trace_session_id,
         tool_guard,
         voice_session,
+        outbound_scrub,
     })
 }
 
@@ -1019,7 +1030,9 @@ async fn prepare_body(
     let Authenticated { session_token, acct } = auth;
     let Admission { effective_limits, model_gate } = admission;
     let trace = RequestTrace::of(obs.langfuse.as_ref());
-    if !must_buffer(trace, obs.fireworks, model_gate.is_some(), obs.voice_session.is_some()) {
+    if !must_buffer(trace, obs.fireworks, model_gate.is_some(), obs.voice_session.is_some())
+        && obs.outbound_scrub.is_none()
+    {
         let body_stream = req.into_body().into_data_stream();
         if trace == RequestTrace::Shape {
             let (tee, shape) = ShapeTee::new(body_stream.boxed());
@@ -1035,6 +1048,7 @@ async fn prepare_body(
     let bytes = axum::body::to_bytes(req.into_body(), MAX_BUFFERED_BODY)
         .await
         .map_err(|_| Err(StatusCode::PAYLOAD_TOO_LARGE))?;
+    let bytes = super::outbound_scrub::scrub_request_body(bytes, obs.outbound_scrub.as_deref());
     let summary = (trace == RequestTrace::Shape)
         .then(|| request_shape(&bytes))
         .flatten()

@@ -99,6 +99,8 @@ describe("Settings save → load round-trip through the blob", () => {
       },
       secretScrubEnabled: true,
       secretScrubPatterns: [{ name: "tok", regex: "sk-\\w+", enabled: true }],
+      secretScrubOutbound: true,
+      secretScrubLocalTranscripts: true,
       sessionEmojiPrefix: true,
       autoResumeOnConnectionLoss: true,
       dispatchAutoArchive: false,

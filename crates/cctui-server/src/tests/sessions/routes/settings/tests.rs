@@ -137,6 +137,38 @@ fn secret_scrub_is_on_when_the_user_never_chose() {
 }
 
 #[test]
+fn clamp_secret_scrub_opt_ins_default_false() {
+    let mut data = json!({
+        "secretScrubOutbound": "yes",
+        "secretScrubLocalTranscripts": null,
+    });
+    assert!(clamp_secret_scrub(&mut data).is_ok());
+    assert_eq!(data["secretScrubOutbound"], json!(false));
+    assert_eq!(data["secretScrubLocalTranscripts"], json!(false));
+
+    let mut on = json!({ "secretScrubOutbound": true, "secretScrubLocalTranscripts": true });
+    assert!(clamp_secret_scrub(&mut on).is_ok());
+    assert_eq!(on["secretScrubOutbound"], json!(true));
+    assert_eq!(on["secretScrubLocalTranscripts"], json!(true));
+
+    let mut absent = json!({ "secretScrubEnabled": true });
+    assert!(clamp_secret_scrub(&mut absent).is_ok());
+    assert!(absent.get("secretScrubOutbound").is_none());
+    assert!(absent.get("secretScrubLocalTranscripts").is_none());
+}
+
+#[test]
+fn secret_scrub_opt_ins_are_off_unless_chosen() {
+    use cctui_server_kernel::execution_settings::secret_scrub_outbound_of;
+    assert!(!secret_scrub_of(&json!({})).local_transcripts);
+    assert!(!secret_scrub_outbound_of(&json!({})));
+    assert!(!secret_scrub_outbound_of(&json!(null)));
+    let data = json!({ "secretScrubOutbound": true, "secretScrubLocalTranscripts": true });
+    assert!(secret_scrub_of(&data).local_transcripts);
+    assert!(secret_scrub_outbound_of(&data));
+}
+
+#[test]
 fn clamp_secret_scrub_drops_empty_patterns_key() {
     let mut data = json!({ "secretScrubPatterns": [{ "regex": "  " }] });
     assert!(clamp_secret_scrub(&mut data).is_ok());
