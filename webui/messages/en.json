@@ -1190,6 +1190,8 @@
 	"notifications_needs_answer": "Needs an answer",
 	"notif_center_title": "Notifications",
 	"notif_dismiss_blocking": "A session is still waiting on this. Dismiss it anyway? The session is told it expired.",
+	"notif_dismiss_blocking_title": "Dismiss a notice a session waits on?",
+	"notif_dismiss_anyway": "Dismiss anyway",
 	"notif_dismiss_failed": "Could not dismiss the notification",
 	"notif_load_failed": "Could not load notifications: {error}",
 	"notif_state": "{decision}",

@@ -14,6 +14,12 @@ const { goto } = vi.hoisted(() => ({ goto: vi.fn(async () => {}) }));
 vi.mock('$app/navigation', () => ({ goto }));
 
 import NotificationBell from './NotificationBell.svelte';
+import { m } from '#lib/paraglide/messages.js';
+
+const dialogButton = (label: string) =>
+	[...document.querySelectorAll<HTMLButtonElement>('dialog button')].find(
+		(b) => b.textContent?.trim() === label
+	);
 
 const NOW = new Date().toISOString();
 
@@ -217,8 +223,6 @@ describe('NotificationBell', () => {
 	});
 
 	it('dismisses a notice nobody waits on without asking', async () => {
-		const ask = vi.fn(() => true);
-		vi.stubGlobal('confirm', ask);
 		const dismiss = vi.fn(async () => resolved('a', 'dismissed'));
 		const store = setup({ dismiss });
 		await openPanel();
@@ -226,13 +230,11 @@ describe('NotificationBell', () => {
 		await vi.waitFor(() => expect(store.items.map((n) => n.id)).not.toContain('a'));
 		expect(dismiss).toHaveBeenCalledTimes(1);
 		expect(dismiss).toHaveBeenCalledWith('a', false);
-		expect(ask).not.toHaveBeenCalled();
+		expect(document.querySelector('dialog [data-tsu="ConfirmModal"]')).toBeNull();
 		expect(toasts.error).not.toHaveBeenCalled();
 	});
 
 	it('asks before expiring a notice a session still waits on', async () => {
-		const ask = vi.fn(() => true);
-		vi.stubGlobal('confirm', ask);
 		const dismiss = vi.fn(async (id: string, confirm?: boolean) => {
 			if (!confirm) throw new ApiError(409, 'a run is waiting on this');
 			return resolved(id, 'expired');
@@ -240,8 +242,10 @@ describe('NotificationBell', () => {
 		const store = setup({ dismiss });
 		await openPanel();
 		dismissButton('a').click();
+		await vi.waitFor(() => expect(dialogButton(m.notif_dismiss_anyway())).toBeTruthy());
+		expect(dismiss).toHaveBeenCalledTimes(1);
+		dialogButton(m.notif_dismiss_anyway())?.click();
 		await vi.waitFor(() => expect(dismiss).toHaveBeenCalledTimes(2));
-		expect(ask).toHaveBeenCalledTimes(1);
 		expect(dismiss.mock.calls.map((c) => c[1])).toEqual([false, true]);
 		await vi.waitFor(() => expect(store.items.map((n) => n.id)).not.toContain('a'));
 		expect(toasts.error).not.toHaveBeenCalled();
@@ -249,13 +253,13 @@ describe('NotificationBell', () => {
 	});
 
 	it('keeps a waited-on notice when the confirm is declined', async () => {
-		const ask = vi.fn(() => false);
-		vi.stubGlobal('confirm', ask);
 		const dismiss = vi.fn(async () => Promise.reject(new ApiError(409, 'waiting')));
 		const store = setup({ dismiss });
 		await openPanel();
 		dismissButton('a').click();
-		await vi.waitFor(() => expect(ask).toHaveBeenCalled());
+		await vi.waitFor(() => expect(dialogButton(m.common_cancel())).toBeTruthy());
+		dialogButton(m.common_cancel())?.click();
+		await tick();
 		expect(dismiss).toHaveBeenCalledTimes(1);
 		expect(store.items.map((n) => n.id)).toContain('a');
 		expect(toasts.error).not.toHaveBeenCalled();
