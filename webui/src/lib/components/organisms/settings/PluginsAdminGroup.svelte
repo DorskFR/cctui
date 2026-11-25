@@ -114,7 +114,7 @@
 				</div>
 			</Callout>
 		{/if}
-		<SettingRow label={m.settings_plugins_admin_label()} help={m.settings_plugins_admin_help()} server admin wide selfLabelled>
+		<SettingRow label={m.settings_plugins_admin_label()} help={m.settings_plugins_admin_help()} wide selfLabelled>
 			<div class="plugins">
 				{#if plugins.isError}
 					<EmptyState size="compact" tone="danger" icon="warning" title={m.settings_plugins_load_failed()} />
@@ -181,8 +181,6 @@
 		<SettingRow
 			label={m.settings_plugins_admin_catalog_label()}
 			help={m.settings_plugins_admin_catalog_help()}
-			server
-			admin
 			wide
 			selfLabelled
 		>
@@ -232,8 +230,6 @@
 		<SettingRow
 			label={m.settings_plugins_admin_manual_label()}
 			help={m.settings_plugins_admin_manual_help()}
-			server
-			admin
 			wide
 			selfLabelled
 		>
