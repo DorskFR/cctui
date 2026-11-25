@@ -4,7 +4,7 @@
 	import SettingGroup from '#lib/components/molecules/SettingGroup.svelte';
 	import SettingRow from '#lib/components/molecules/SettingRow.svelte';
 	import { eventRetention, setEventRetention } from '#lib/queries/index.ts';
-	import { SAVE_DEBOUNCE_MS, serverSave } from './serverSave.svelte.ts';
+	import { autoSave, serverSave } from './serverSave.svelte.ts';
 	import { sourceLabel } from './serverSettings.logic';
 	import { m } from '#lib/paraglide/messages.js';
 
@@ -42,12 +42,7 @@
 			confirming = true;
 		} else void save(reset ? null : to);
 	}
-	$effect(() => {
-		if (!dirty || !valid || shortens) return;
-		const next = Math.trunc(days);
-		const t = setTimeout(() => save(next), SAVE_DEBOUNCE_MS);
-		return () => clearTimeout(t);
-	});
+	autoSave(() => (dirty && valid && !shortens ? Math.trunc(days) : undefined), save);
 </script>
 
 <SettingGroup title={m.settings_event_retention_title()}>

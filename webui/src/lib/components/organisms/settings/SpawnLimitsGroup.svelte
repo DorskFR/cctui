@@ -6,7 +6,7 @@
 	import type { SettingSource } from '@bindings/SettingSource';
 	import type { SpawnDefaults } from '@bindings/SpawnDefaults';
 	import type { SpawnDefaultsInfo } from '@bindings/SpawnDefaultsInfo';
-	import { SAVE_DEBOUNCE_MS, serverSave } from './serverSave.svelte.ts';
+	import { autoSave, serverSave } from './serverSave.svelte.ts';
 	import { m } from '#lib/paraglide/messages.js';
 	import { limitLabel, parseSpawnDraft, sourceLabel } from './serverSettings.logic';
 
@@ -43,12 +43,7 @@
 		if (JSON.stringify(draft) === sent) apply(res);
 		else info = res;
 	}
-	$effect(() => {
-		if (!dirty || !parsed) return;
-		const next = parsed;
-		const t = setTimeout(() => save(next), SAVE_DEBOUNCE_MS);
-		return () => clearTimeout(t);
-	});
+	autoSave(() => (dirty && parsed ? parsed : undefined), save);
 
 	function effective(key: Field): string {
 		if (!info) return '';

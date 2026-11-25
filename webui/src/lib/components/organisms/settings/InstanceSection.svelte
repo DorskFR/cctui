@@ -13,7 +13,7 @@
 	import PasskeySignInGroup from './PasskeySignInGroup.svelte';
 	import { useVersion, useAllMachines, endpoints, qk } from '#lib/queries/index.ts';
 	import type { SelfUpdateTargetInfo } from '@bindings/SelfUpdateTargetInfo';
-	import { SAVE_DEBOUNCE_MS, serverSave } from './serverSave.svelte.ts';
+	import { autoSave, serverSave } from './serverSave.svelte.ts';
 	import { hasFeature } from '#lib/features.svelte.ts';
 	import { m } from '#lib/paraglide/messages.js';
 
@@ -45,11 +45,10 @@
 			instanceSending = null;
 		}
 	}
-	$effect(() => {
-		if (!instanceDirty) return;
-		const t = setTimeout(saveInstanceName, SAVE_DEBOUNCE_MS);
-		return () => clearTimeout(t);
-	});
+	autoSave(
+		() => (instanceDirty ? instanceDraft.trim() : undefined),
+		() => saveInstanceName()
+	);
 
 	// Self-update target: which enrolled machine + directory the "Update"
 	// button hands the deployment to. The server never learns how cctui is
@@ -80,22 +79,21 @@
 	);
 	const suValid = $derived(suMachine !== '' && suDir.trim() !== '');
 
-	async function saveSelfUpdateTarget(clear = false) {
-		const info = await serverSave.run(() =>
-			endpoints.setSelfUpdateTarget(
-				clear ? null : { machine_id: suMachine, working_dir: suDir.trim(), adapter_id: suAdapter }
-			)
-		);
+	type Target = { machine_id: string; working_dir: string; adapter_id: string };
+	async function saveSelfUpdateTarget(target: Target | null) {
+		const info = await serverSave.run(() => endpoints.setSelfUpdateTarget(target));
 		if (!info) return;
 		suTarget = info;
-		if (clear) applyTarget(info);
+		if (!target) applyTarget(info);
 		qc.invalidateQueries({ queryKey: qk.version });
 	}
-	$effect(() => {
-		if (!suDirty || !suValid) return;
-		const t = setTimeout(() => saveSelfUpdateTarget(), SAVE_DEBOUNCE_MS);
-		return () => clearTimeout(t);
-	});
+	autoSave<Target>(
+		() =>
+			suDirty && suValid
+				? { machine_id: suMachine, working_dir: suDir.trim(), adapter_id: suAdapter }
+				: undefined,
+		saveSelfUpdateTarget
+	);
 </script>
 
 <SettingSection id="instance-general" icon="⚙" title={m.settings_sec_general()}>
@@ -159,7 +157,7 @@
 								<Button
 									size="sm"
 									disabled={serverSave.status === 'pending'}
-									onclick={() => saveSelfUpdateTarget(true)}
+									onclick={() => saveSelfUpdateTarget(null)}
 								>
 									{m.settings_self_update_clear()}
 								</Button>

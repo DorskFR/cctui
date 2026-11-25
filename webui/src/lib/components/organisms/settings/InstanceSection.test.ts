@@ -89,6 +89,52 @@ describe('InstanceSection auto-save', () => {
 		});
 	});
 
+	it('restarts the wait on every keystroke and saves the settled directory', async () => {
+		await render();
+		const dir = [...document.body.querySelectorAll<HTMLInputElement>('input')].find((i) => i.value === '/srv');
+		if (!dir) throw new Error('no directory input');
+		for (const v of ['/o', '/op', '/opt', '/opt/c', '/opt/cctui']) {
+			type(dir, v);
+			await vi.advanceTimersByTimeAsync(300);
+		}
+		expect(api.setSelfUpdateTarget).not.toHaveBeenCalled();
+		await vi.advanceTimersByTimeAsync(400);
+		expect(api.setSelfUpdateTarget).toHaveBeenCalledTimes(1);
+		expect(api.setSelfUpdateTarget).toHaveBeenCalledWith({
+			machine_id: 'm1',
+			working_dir: '/opt/cctui',
+			adapter_id: 'claude-code'
+		});
+	});
+
+	it('saves only the settled instance name while typing', async () => {
+		await render();
+		const input = nameInput();
+		if (!input) throw new Error('no instance name input');
+		input.dispatchEvent(new FocusEvent('focus'));
+		for (const v of ['p', 'pr', 'pro', 'prod']) {
+			type(input, v);
+			await vi.advanceTimersByTimeAsync(300);
+		}
+		await vi.advanceTimersByTimeAsync(400);
+		expect(api.updateInstance).toHaveBeenCalledTimes(1);
+		expect(api.updateInstance).toHaveBeenCalledWith('prod');
+	});
+
+	it('sends a pending edit when the page goes away before the pause ends', async () => {
+		await render();
+		const dir = [...document.body.querySelectorAll<HTMLInputElement>('input')].find((i) => i.value === '/srv');
+		if (!dir) throw new Error('no directory input');
+		type(dir, '/opt');
+		if (comp) unmount(comp);
+		comp = null;
+		expect(api.setSelfUpdateTarget).toHaveBeenCalledWith({
+			machine_id: 'm1',
+			working_dir: '/opt',
+			adapter_id: 'claude-code'
+		});
+	});
+
 	it('does not save an empty directory', async () => {
 		await render();
 		const dir = [...document.body.querySelectorAll<HTMLInputElement>('input')].find((i) => i.value === '/srv');

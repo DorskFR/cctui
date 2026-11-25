@@ -8,7 +8,7 @@
 	import SettingRow from '#lib/components/molecules/SettingRow.svelte';
 	import { endpoints, qk, useVersion } from '#lib/queries/index.ts';
 	import { fmtSize, DEFAULT_UPLOAD_CAPS } from '#lib/attachments.ts';
-	import { SAVE_DEBOUNCE_MS, serverSave } from './serverSave.svelte.ts';
+	import { autoSave, serverSave } from './serverSave.svelte.ts';
 	import type { UploadCapsInfo } from '@bindings/UploadCapsInfo';
 	import { m } from '#lib/paraglide/messages.js';
 	import { sourceLabel } from './serverSettings.logic';
@@ -62,10 +62,11 @@
 		draft.max_files > 0 && draft.max_file_bytes > 0 && draft.max_total_bytes > 0
 	);
 
-	async function save(reset = false) {
+	type Caps = typeof draft;
+	async function save(caps: Caps | null) {
 		const sent = JSON.stringify(draft);
 		const res = await serverSave.run(async () => {
-			const next = await endpoints.setUploadCaps(reset ? null : draft);
+			const next = await endpoints.setUploadCaps(caps);
 			await qc.invalidateQueries({ queryKey: qk.version });
 			return next;
 		});
@@ -73,11 +74,7 @@
 		if (JSON.stringify(draft) === sent) apply(res);
 		else info = res;
 	}
-	$effect(() => {
-		if (!isAdmin || !info || !dirty || !valid) return;
-		const t = setTimeout(() => save(), SAVE_DEBOUNCE_MS);
-		return () => clearTimeout(t);
-	});
+	autoSave(() => (isAdmin && info && dirty && valid ? draft : undefined), save);
 </script>
 
 	<SettingGroup title={`${m.settings_nav_uploads()} · ${m.settings_uploads_group_now()}`}>
@@ -115,7 +112,7 @@
 					<Badge size="sm">{sourceLabel(info.source)}</Badge>
 				{/if}
 				{#if info?.source === 'settings'}
-					<Button variant="ghost" disabled={serverSave.status === 'pending'} onclick={() => save(true)}>
+					<Button variant="ghost" disabled={serverSave.status === 'pending'} onclick={() => save(null)}>
 						{m.settings_reset()}
 					</Button>
 				{/if}

@@ -56,3 +56,32 @@ export function latestSave(user: Omit<SaveState, 'at'>, server: SaveState): Omit
 	if (user.status === 'idle') return server;
 	return server.at >= (user.savedAt ?? 0) ? server : user;
 }
+
+/**
+ * Writes `next()` once it has stopped changing for `SAVE_DEBOUNCE_MS`.
+ * `next` must read the draft values themselves (not only a dirty flag) so
+ * every edit restarts the wait; `undefined` means nothing to save. A write
+ * still waiting when the component unmounts is sent right away.
+ */
+export function autoSave<T>(next: () => T | undefined, write: (value: T) => unknown): void {
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	let pending: (() => void) | null = null;
+	$effect(() => {
+		const value = next();
+		clearTimeout(timer);
+		if (value === undefined) {
+			pending = null;
+			return;
+		}
+		const send = () => {
+			pending = null;
+			void write(value);
+		};
+		pending = send;
+		timer = setTimeout(send, SAVE_DEBOUNCE_MS);
+	});
+	$effect(() => () => {
+		clearTimeout(timer);
+		pending?.();
+	});
+}

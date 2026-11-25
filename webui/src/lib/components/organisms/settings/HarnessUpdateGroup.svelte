@@ -14,7 +14,7 @@
 	import { DRAIN_RESTARTABLE, deniedHealth, versionSkew } from '#lib/harnessHealth.ts';
 	import { toasts } from '#lib/toast.svelte.ts';
 	import { m } from '#lib/paraglide/messages.js';
-	import { SAVE_DEBOUNCE_MS, serverSave } from './serverSave.svelte.ts';
+	import { autoSave, serverSave } from './serverSave.svelte.ts';
 
 	const DEFAULT_HARNESSES = ['claude-code', 'codex'];
 	const CODEX_SANDBOX_DOCS =
@@ -65,12 +65,10 @@
 		if (JSON.stringify(draft) === sent) apply(res);
 		else info = res;
 	}
-	$effect(() => {
-		if (!info || !dirty) return;
-		const next = draft;
-		const t = setTimeout(() => run(() => endpoints.setHarnessAutoupdate(next)), SAVE_DEBOUNCE_MS);
-		return () => clearTimeout(t);
-	});
+	autoSave(
+		() => (info && dirty ? draft : undefined),
+		(next) => run(() => endpoints.setHarnessAutoupdate(next))
+	);
 
 	function toggleHarness(h: string, on: boolean) {
 		harnesses = on ? [...new Set([...harnesses, h])] : harnesses.filter((x) => x !== h);
