@@ -32,4 +32,11 @@ describe('foldChildCreations', () => {
 		expect(items[0].type === 'fold' && items[0].machineId).toBeNull();
 		expect(items[1].type === 'fold' && items[1].machineId).toBe('m1');
 	});
+
+	it('keeps a fold key when a newer sibling arrives on top', () => {
+		const before = foldChildCreations([child(7), child(6)]);
+		const after = foldChildCreations([child(8), child(7), child(6)]);
+		expect(before[0].type === 'fold' && after[0].type === 'fold').toBe(true);
+		expect(after[0].type === 'fold' && after[0].key).toBe(before[0].type === 'fold' && before[0].key);
+	});
 });

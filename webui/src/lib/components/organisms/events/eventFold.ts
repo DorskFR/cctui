@@ -27,7 +27,7 @@ export function foldChildCreations(rows: EventRecord[], min = 2): FeedItem[] {
 			const machine = run[0].machine_id;
 			out.push({
 				type: 'fold',
-				key: `fold-${run[0].id}`,
+				key: `fold-${parentOf(run[0]) ?? ''}-${run[run.length - 1].id}`,
 				events: run,
 				machineId: run.every((e) => e.machine_id === machine) ? machine : null
 			});
