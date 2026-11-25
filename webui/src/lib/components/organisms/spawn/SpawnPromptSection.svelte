@@ -11,6 +11,7 @@
 	import { findInvite } from '#lib/cctuiverse.ts';
 	import { cctuiverseConfig, loadCctuiverseConfig } from '#lib/cctuiverseConfig.svelte.ts';
 	import { hasFeature } from '#lib/features.svelte.ts';
+	import { settingsHref } from '../settings/settings.logic';
 
 	let { sf }: { sf: SpawnForm } = $props();
 
@@ -65,6 +66,8 @@
 			oncreate={(name, spec) => createProfile(sf, name, spec)}
 			onsave={(id, name, spec) => saveProfile(sf, id, name, spec)}
 			ondelete={(id) => deleteProfile(sf, id)}
+			manageHref={settingsHref('sessions', 'launch')}
+			onmanage={sf.leave}
 		/>
 	{/if}
 {/if}

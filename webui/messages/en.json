@@ -2387,6 +2387,7 @@
 	"spawn_profile_model_aria": "Model",
 	"spawn_profile_name_aria": "Profile name",
 	"spawn_profile_name_taken": "A profile already has this name",
+	"spawn_profile_manage": "Manage profiles…",
 	"spawn_profile_new": "New profile",
 	"spawn_profile_save": "Save to profile",
 	"spawn_profile_toast_failed": "Could not update the profile: {error}",

@@ -23,7 +23,9 @@
 		badgeOf,
 		onselect,
 		onedit,
-		onnew
+		onnew,
+		manageHref,
+		onmanage
 	}: {
 		/** Already in display order. */
 		profiles: SessionProfile[];
@@ -37,9 +39,13 @@
 		chainOf: (spec: ProfileSpecForm) => string;
 		badgeOf: (spec: ProfileSpecForm) => BadgeLook;
 		onselect: (id: string) => void;
-		onedit: () => void;
-		onnew: () => void;
+		onedit?: () => void;
+		onnew?: () => void;
+		/** Picker only: the footer links to where profiles are edited instead of creating one here. */
+		manageHref?: string;
+		onmanage?: () => void;
 	} = $props();
+	const editable = $derived(!manageHref);
 
 	const uid = Math.random().toString(36).slice(2, 8);
 	const listId = `pp-list-${uid}`;
@@ -206,7 +212,7 @@
 				{:else}
 					<span class="placeholder">{m.spawn_profiles_aria()}</span>
 				{/if}
-				<span class="chevron" class:open aria-hidden="true"><Icon name="chevron-down" /></span>
+				<span class="chevron" class:open class:tooled={editable && !!current} aria-hidden="true"><Icon name="chevron-down" /></span>
 			</span>
 		{/snippet}
 		<div class="sheet" class:top={side === 'top'}>
@@ -230,20 +236,33 @@
 				{/each}
 			</div>
 			<div class="footer">
-				<Button
-					data-journey="new-profile"
-					variant="link"
-					size="sm"
-					disabled={busy}
-					onclick={() => {
-						open = false;
-						onnew();
-					}}>{m.spawn_profile_new()}</Button
-				>
+				{#if manageHref}
+					<Button
+						data-journey="manage-profiles"
+						variant="link"
+						size="sm"
+						href={manageHref}
+						onclick={() => {
+							open = false;
+							onmanage?.();
+						}}>{m.spawn_profile_manage()}</Button
+					>
+				{:else}
+					<Button
+						data-journey="new-profile"
+						variant="link"
+						size="sm"
+						disabled={busy}
+						onclick={() => {
+							open = false;
+							onnew?.();
+						}}>{m.spawn_profile_new()}</Button
+					>
+				{/if}
 			</div>
 		</div>
 	</Popover>
-	{#if current}
+	{#if current && editable}
 		<span class="tools">
 			<span class="cog">
 				<IconButton
@@ -303,10 +322,12 @@
 	.chevron {
 		display: inline-flex;
 		flex: none;
-		margin-inline-start: var(--tools-w);
 		color: color-mix(in srgb, var(--accent) 70%, var(--text-muted));
 		font-size: var(--control-icon-md);
 		transition: rotate var(--dur-fast) var(--ease-out);
+	}
+	.chevron.tooled {
+		margin-inline-start: var(--tools-w);
 	}
 	.chevron.open {
 		rotate: 180deg;
