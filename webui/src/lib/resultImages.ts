@@ -49,10 +49,10 @@ export function resultImageLabel(img: ResultImage): string {
 	return img.kind === 'unreadable' ? `[${label}, unreadable]` : `[${label}]`;
 }
 
-/** `null` unless `summary` is a stringified array of text and image blocks. */
+/** `null` unless `summary` is a stringified, non-empty array of text and image blocks. */
 export function parseResultImages(summary: string): ParsedResult | null {
 	const head = summary.trimStart();
-	if (!head.startsWith('[') || !head.includes('"image"')) return null;
+	if (!head.startsWith('[') || !head.includes('"type"')) return null;
 	let blocks: unknown;
 	try {
 		blocks = JSON.parse(head);
@@ -75,7 +75,7 @@ export function parseResultImages(summary: string): ParsedResult | null {
 			return null;
 		}
 	}
-	if (images.length === 0) return null;
+	if (texts.length === 0 && images.length === 0) return null;
 	const shown = images.filter((i) => i.kind !== 'unreadable');
 	const labels = (texts.length ? images.filter((i) => i.kind === 'unreadable') : images).map(
 		resultImageLabel

@@ -42,9 +42,21 @@ describe('parseResultImages', () => {
 
 	it('leaves anything else to render as is', () => {
 		expect(parseResultImages('plain output')).toBeNull();
-		expect(parseResultImages('[{"type":"text","text":"no image"}]')).toBeNull();
+		expect(parseResultImages('[]')).toBeNull();
+		expect(parseResultImages('["a","b"]')).toBeNull();
 		expect(parseResultImages('[{"type":"tool_reference"},{"type":"image"}]')).toBeNull();
 		expect(resultDisplayText('[not json "image"')).toBe('[not json "image"');
+	});
+
+	it('joins a text-only block array into plain text with real newlines', () => {
+		const summary = JSON.stringify([
+			{ text: 'Async agent launched.\nagentId: a1', type: 'text' },
+			{ type: 'text', text: 'second block' }
+		]);
+		const parsed = parseResultImages(summary);
+		expect(parsed?.text).toBe('Async agent launched.\nagentId: a1\n\nsecond block');
+		expect(parsed?.images).toEqual([]);
+		expect(resultDisplayText(summary)).toBe('Async agent launched.\nagentId: a1\n\nsecond block');
 	});
 
 	it('labels what cannot be drawn: unsafe types, redacted data, opaque blobs', () => {
@@ -130,6 +142,12 @@ describe('tool_result lines', () => {
 		expect(line.text).toBe('Screenshot saved');
 		expect(line.htmlCode).toBe('<code>Screenshot saved</code>');
 		expect(line.images).toHaveLength(1);
+	});
+
+	it('show a text-only block array as its joined text', () => {
+		const [line] = toLines(result('[{"type":"text","text":"line one\\nline two"}]'), ctx);
+		expect(line.text).toBe('line one\nline two');
+		expect(line.images).toBeUndefined();
 	});
 
 	it('keep a plain result unchanged', () => {

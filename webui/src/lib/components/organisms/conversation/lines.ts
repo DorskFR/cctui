@@ -448,7 +448,7 @@ function buildLine(
         toolUseId: e.tool_use_id ?? undefined,
         text,
         htmlCode: ctx.renderCode(text, ""),
-        ...(parsed ? { images: parsed.images } : {}),
+        ...(parsed?.images.length ? { images: parsed.images } : {}),
       };
     }
     case "context_reset":
