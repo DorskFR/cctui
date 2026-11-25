@@ -182,7 +182,6 @@ describe('single-row toolbar', () => {
 		let bar = await render({ ontoggleAuto });
 		const sw = bar.querySelector('[data-journey="auto-approve"]') as HTMLElement;
 		expect(sw.getAttribute('role')).toBe('switch');
-		expect(sw.getAttribute('aria-label')).toBeTruthy();
 		expect(bar.textContent).toContain('Auto-approve: off');
 		expect(bar.textContent).not.toContain('⚡');
 		sw.click();
@@ -262,7 +261,6 @@ describe('drawer toolbar sizing', () => {
 	});
 
 	it('keeps auto-approve and pins named and right-aligned', () => {
-		expect(toolbarSource).toContain('aria-label={m.conversation_auto_approve_aria()}');
 		expect(toolbarSource).toContain('title={m.conversation_auto_approve_title()}');
 		expect(toolbarSource).toContain('label={m.conversation_pins_aria()}');
 		// Shape-independent: the hit stepper left this rule, so `margin-left` is no

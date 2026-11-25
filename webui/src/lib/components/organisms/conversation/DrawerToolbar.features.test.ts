@@ -55,7 +55,7 @@ async function render() {
 	return document.querySelector('.toolbar') as HTMLElement;
 }
 
-const autoApprove = (bar: HTMLElement) => bar.querySelector('[aria-label^="Auto-approve"]');
+const autoApprove = (bar: HTMLElement) => bar.querySelector('[data-journey="auto-approve"]');
 const panels = (bar: HTMLElement) => bar.querySelector('[data-journey="panels"]');
 const context = (bar: HTMLElement) => bar.querySelector('[data-journey="session-context"]');
 

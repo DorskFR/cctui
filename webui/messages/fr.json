@@ -395,7 +395,6 @@
 	"conversation_attachment_load_failed": "Impossible de charger {name}",
 	"conversation_attachment_open": "Ouvrir {name}",
 	"conversation_attachment_unavailable": "{name} n’est plus disponible : le serveur ne la stocke plus et elle n’est pas sur la machine",
-	"conversation_auto_approve_aria": "Approbation auto des permissions d'outils — outils uniquement, les plans demandent toujours",
 	"conversation_auto_approve_on": "Approbation auto : activée",
 	"conversation_auto_approve_off": "Approbation auto : désactivée",
 	"conversation_panels": "Panneaux",

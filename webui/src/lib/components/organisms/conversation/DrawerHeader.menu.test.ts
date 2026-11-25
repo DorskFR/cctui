@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import header from './DrawerHeader.svelte?raw';
 import menu from './DrawerMenu.svelte?raw';
 import toolbar from './DrawerToolbar.svelte?raw';
+import panels from './toolbarPanels.ts?raw';
 import keys from './headerKeys.ts?raw';
 import pane from '../ConversationPane.svelte?raw';
 import meta from './HeaderMeta.svelte?raw';
@@ -55,7 +56,7 @@ describe('drawer header ⋯ menu', () => {
 		expect(entries.length).toBeGreaterThanOrEqual(6);
 		for (const e of entries) expect(e, e.slice(0, 40)).toMatch(/\bicon:/);
 		expect(items()).toContain("icon: 'recycle' as const");
-		expect(header).toMatch(/followupItem = \$derived<MenuItem \| null>\([\s\S]*?icon: 'arrow-right'/);
+		expect(menu).toMatch(/followupItem = \$derived<MenuItem \| null>\([\s\S]*?icon: 'arrow-right'/);
 	});
 
 	it('anchors the tour on the menu trigger', () => {
@@ -69,7 +70,8 @@ describe('drawer header ⋯ menu', () => {
 		expect(head).not.toContain('terminal');
 		expect(bar).toContain('{terminalOpen}');
 		expect(bar).toContain('ontoggleTerminal=');
-		expect(toolbar).toContain('data-journey="terminal"');
+		expect(panels).toContain("'data-journey': 'terminal'");
+		expect(toolbar).toContain('panelItems(');
 	});
 
 	it('offers find-in-conversation inline and in the collapsed menu, never both', () => {

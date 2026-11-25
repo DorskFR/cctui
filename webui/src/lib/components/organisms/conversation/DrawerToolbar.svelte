@@ -134,7 +134,6 @@
 					size="sm"
 					labelVisible
 					label={autoApprove ? m.conversation_auto_approve_on() : m.conversation_auto_approve_off()}
-					aria-label={m.conversation_auto_approve_aria()}
 					data-journey="auto-approve"
 					bind:checked={() => autoApprove, () => ontoggleAuto()}
 				/>

@@ -395,7 +395,6 @@
 	"conversation_attachment_load_failed": "Could not load {name}",
 	"conversation_attachment_open": "Open {name}",
 	"conversation_attachment_unavailable": "{name} is no longer available: the server no longer stores it and it is not on the machine",
-	"conversation_auto_approve_aria": "Auto-approve tool-use permissions — tool use only, plans still ask",
 	"conversation_auto_approve_on": "Auto-approve: on",
 	"conversation_auto_approve_off": "Auto-approve: off",
 	"conversation_panels": "Panels",
