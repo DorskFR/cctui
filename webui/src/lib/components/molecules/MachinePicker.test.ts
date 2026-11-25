@@ -28,7 +28,7 @@ describe('MachinePicker', () => {
 	it('tints the whole trigger by default', () => {
 		const picker = render();
 		expect(picker.classList.contains('field')).toBe(false);
-		expect(picker.getAttribute('style')).toContain('--mh:120');
+		expect(picker.getAttribute('style')).toMatch(/--mh:\s*120/);
 		expect(picker.querySelector('.pill')).toBeNull();
 	});
 
@@ -37,7 +37,7 @@ describe('MachinePicker', () => {
 		expect(picker.classList.contains('field')).toBe(true);
 		expect(picker.getAttribute('style') ?? '').not.toContain('--mh');
 		const pill = picker.querySelector<HTMLElement>('.pill');
-		expect(pill?.getAttribute('style')).toContain('--mh:120');
+		expect(pill?.getAttribute('style')).toMatch(/--mh:\s*120/);
 		expect(pill?.textContent).toContain('dev1');
 		expect(picker.querySelector('select')?.getAttribute('aria-label')).toBe('Machine');
 	});
