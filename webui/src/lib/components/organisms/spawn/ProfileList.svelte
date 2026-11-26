@@ -5,7 +5,6 @@
 	import ProfileRow from './ProfileRow.svelte';
 	import ProfileForm from './ProfileForm.svelte';
 	import ProfilePicker from './ProfilePicker.svelte';
-	import KitFields from './KitFields.svelte';
 	import { harnessModelsFallback } from '#lib/domainTables.ts';
 	import { EMPTY_SPEC, sortProfiles, specChain, specOf, type ProfileSpecForm } from './profiles';
 	import { badgeLook } from './accountBadge';
@@ -22,9 +21,7 @@
 		busy = false,
 		oncreate,
 		onsave,
-		ondelete,
-		manageHref,
-		onmanage
+		ondelete
 	}: {
 		profiles: SessionProfile[];
 		selectedId: string | null;
@@ -38,9 +35,6 @@
 		oncreate: (name: string, spec: ProfileSpecForm) => Promise<boolean>;
 		onsave: (id: string, name: string, spec: ProfileSpecForm) => void;
 		ondelete: (id: string) => void;
-		/** Pick only: editing and creating happen at this link. */
-		manageHref?: string;
-		onmanage?: () => void;
 	} = $props();
 
 	type FormState = { mode: 'edit'; id: string } | { mode: 'create' } | null;
@@ -130,24 +124,7 @@
 </script>
 
 <div class="list" data-journey="profiles">
-	{#if manageHref}
-		{#if profiles.length > 0}
-			<ProfilePicker
-				profiles={sorted}
-				{selectedId}
-				bind:open={listOpen}
-				{busy}
-				{specFor}
-				{chainOf}
-				{badgeOf}
-				onselect={select}
-				{manageHref}
-				{onmanage}
-			/>
-		{:else if oneOff}
-			<KitFields bind:draft={oneOff} {accounts} {pools} {usage} {machineId} />
-		{/if}
-	{:else if profiles.length === 0}
+	{#if profiles.length === 0}
 		{#if oneOff}
 			<div class="form standalone" data-journey="profile-form" data-mode="create">
 				<ProfileForm

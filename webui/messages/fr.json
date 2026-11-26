@@ -3425,6 +3425,5 @@
 			}
 		}
 	],
-	"sessions_row_tokens_title": "{total} tokens : {input} en entrée, {output} en sortie, {cache} en cache",
-	"spawn_profile_manage": "Gérer les profils…"
+	"sessions_row_tokens_title": "{total} tokens : {input} en entrée, {output} en sortie, {cache} en cache"
 }

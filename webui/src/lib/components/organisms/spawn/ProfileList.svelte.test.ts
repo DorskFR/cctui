@@ -57,7 +57,6 @@ const codexQuick: SessionProfile = {
 const oncreate = vi.fn<(name: string, spec: ProfileSpecForm) => Promise<boolean>>();
 const onsave = vi.fn();
 const ondelete = vi.fn();
-const onmanage = vi.fn();
 let held: { selectedId: string | null; oneOff: ProfileSpecForm | null };
 let component: ReturnType<typeof mount> | undefined;
 
@@ -65,7 +64,6 @@ beforeEach(() => {
 	oncreate.mockReset().mockResolvedValue(true);
 	onsave.mockReset();
 	ondelete.mockReset();
-	onmanage.mockReset();
 });
 afterEach(async () => {
 	if (component) await unmount(component);
@@ -73,7 +71,7 @@ afterEach(async () => {
 	document.body.replaceChildren();
 });
 
-function render(manageHref?: string, target: Element = document.body) {
+function render(target: Element = document.body) {
 	component = mount(Host, {
 		target,
 		props: {
@@ -82,8 +80,6 @@ function render(manageHref?: string, target: Element = document.body) {
 			oncreate,
 			onsave,
 			ondelete,
-			manageHref,
-			onmanage,
 			onready: (s) => (held = s)
 		}
 	});
@@ -123,19 +119,13 @@ const mode = (v: string) => {
 	return el;
 };
 
-describe('ProfileList as a picker (the spawn form)', () => {
-	it('has no editing control and links its footer to where profiles are managed', () => {
-		render('/settings/sessions#launch');
-		expect(() => button('Adjust profile')).toThrow();
+describe('ProfileList picker', () => {
+	it('carries the cog on the card and New profile in the list footer', () => {
+		render();
+		expect(button('Adjust profile')).toBeTruthy();
 		const panel = openPicker();
-		expect(panel.querySelector('[data-journey="new-profile"]')).toBeNull();
-		const link = panel.querySelector<HTMLAnchorElement>('a[data-journey="manage-profiles"]');
-		expect(link?.getAttribute('href')).toBe('/settings/sessions#launch');
-		link?.addEventListener('click', (e) => e.preventDefault());
-		link?.click();
-		flushSync();
-		expect(onmanage).toHaveBeenCalledTimes(1);
-		expect(profileForm()).toBeNull();
+		expect(panel.querySelector('[data-journey="new-profile"]')).not.toBeNull();
+		expect(panel.querySelector('[data-journey="manage-profiles"]')).toBeNull();
 	});
 });
 
@@ -152,7 +142,7 @@ describe('ProfileList picker placement', () => {
 			label.getBoundingClientRect = () => rect(...labelAbove);
 			area.append(label);
 		}
-		render('/settings/sessions#launch', area);
+		render(area);
 		const card = document.querySelector<HTMLElement>('.card');
 		if (!card) throw new Error('picker card not found');
 		card.getBoundingClientRect = () => rect(cardTop, cardTop + 60);
@@ -180,7 +170,7 @@ describe('ProfileList picker placement', () => {
 	});
 });
 
-describe('ProfileList as the editor (Settings)', () => {
+describe('ProfileList in the launch form', () => {
 	it('the cog toggles an edit form for the current profile', () => {
 		render();
 		button('Adjust profile').click();

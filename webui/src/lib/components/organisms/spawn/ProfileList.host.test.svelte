@@ -11,8 +11,6 @@
 		oncreate,
 		onsave,
 		ondelete,
-		manageHref,
-		onmanage,
 		onready
 	}: {
 		profiles: SessionProfile[];
@@ -20,8 +18,6 @@
 		oncreate: (name: string, spec: ProfileSpecForm) => Promise<boolean>;
 		onsave: (id: string, name: string, spec: ProfileSpecForm) => void;
 		ondelete: (id: string) => void;
-		manageHref?: string;
-		onmanage?: () => void;
 		onready: (s: { selectedId: string | null; oneOff: ProfileSpecForm | null }) => void;
 	} = $props();
 
@@ -42,6 +38,4 @@
 	{oncreate}
 	{onsave}
 	{ondelete}
-	{manageHref}
-	{onmanage}
 />
