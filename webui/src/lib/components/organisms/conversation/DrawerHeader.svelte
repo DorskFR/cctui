@@ -135,8 +135,6 @@
 			stopping = false;
 		}
 	}
-	// A narrow drawer gives the title its own line.
-	const titleOwnLine = $derived(collapsed && !compact);
 
 	let headEl = $state<HTMLElement>();
 	const composer = new ComposerFocus();
@@ -155,10 +153,6 @@
 
 <svelte:window onkeydown={onWinKey} />
 
-{#snippet title()}
-	<DrawerTitle {session} {compact} {showLabels} {labels} {renaming} bind:name={newName} onsubmit={doRename} onrename={startRename} />
-{/snippet}
-
 <div class="dhead" class:compact class:typing={!compact && composer.collapse} bind:this={headEl} data-journey="header">
 	<div class="dbar" bind:clientWidth={barWidth}>
 	<Toolbar density={collapsed ? 'compact' : 'default'}>
@@ -174,11 +168,7 @@
 			{onAccountClick}
 		/>
 		<RebindTrail sessionId={session.id} />
-		{#if titleOwnLine}
-			<span class="grow"></span>
-		{:else}
-			{@render title()}
-		{/if}
+		<DrawerTitle {session} {compact} {showLabels} {labels} {renaming} bind:name={newName} onsubmit={doRename} onrename={startRename} />
 		{#if renaming}
 			<IconButton {box} variant="ghost" icon="check" label={m.common_save()} onclick={doRename} />
 		{/if}
@@ -227,9 +217,6 @@
 		/>
 	</Toolbar>
 	</div>
-	{#if titleOwnLine}
-		<div class="trow">{@render title()}</div>
-	{/if}
 	{#if showLabels && session.labels.length > 0 && !compact}
 		<div class="hlabels">
 			<HeaderLabels {session} handlers={labels} />
@@ -274,10 +261,6 @@
 	.dbar {
 		min-width: 0;
 	}
-	.grow {
-		flex: 1;
-	}
-	.trow,
 	.hlabels {
 		display: flex;
 		min-width: 0;

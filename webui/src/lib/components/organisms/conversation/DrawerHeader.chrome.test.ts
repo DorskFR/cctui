@@ -69,10 +69,11 @@ describe('drawer header control chrome', () => {
 		expect(markup.indexOf('icon="archive"')).toBeLessThan(markup.indexOf('icon="stop"'));
 	});
 
-	it('moves the title to its own line when the bar collapses, never in a tile', () => {
-		expect(header).toContain('const titleOwnLine = $derived(collapsed && !compact)');
-		expect(markup).toMatch(/\{#if titleOwnLine\}\s*<div class="trow">\{@render title\(\)\}<\/div>/);
+	it('keeps the title in the one action row at every width', () => {
+		expect(header).not.toContain('titleOwnLine');
+		expect(markup).not.toContain('class="trow"');
 		expect(markup.split('<DrawerTitle')).toHaveLength(2);
+		expect(markup.indexOf('<DrawerTitle')).toBeLessThan(markup.indexOf('</Toolbar>'));
 	});
 
 	it('leaves text size to Settings, not the drawer header', () => {
