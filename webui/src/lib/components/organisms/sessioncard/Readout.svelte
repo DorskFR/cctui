@@ -36,7 +36,7 @@
 		<Text tone="muted" size="xs" style="white-space:nowrap">
 			<span class="full">{modelShort(s.model)}</span><span class="fam">{modelFamily(s.model)}</span
 			><span class="abbr">{modelAbbrev(s.model)}</span
-			>{#if s.effort}<span class="effort"> · {s.effort}</span>{/if}
+			>{#if s.effort}<span class="effort">{` · ${s.effort}`}</span>{/if}
 		</Text>
 	</span>
 {/if}

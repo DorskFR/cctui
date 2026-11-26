@@ -176,7 +176,7 @@
 {#snippet modelText(model: string)}
 	<span class="ellipsis"
 		><span class="m-full">{model}</span><span class="m-short">{modelShort(model)}</span
-		>{#if session.effort}<span class="m-effort"> · {session.effort}</span>{/if}</span
+		>{#if session.effort}<span class="m-effort">{` · ${session.effort}`}</span>{/if}</span
 	>
 {/snippet}
 
