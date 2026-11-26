@@ -57,7 +57,7 @@
 	<PageHead title={m.webhooks_title()}>
 		<Button variant="primary" onclick={() => (editor = { hook: null })}>{m.webhooks_new()}</Button>
 	</PageHead>
-	<Text size="sm" tone="faint">{m.webhooks_subtitle()}</Text>
+	<Text size="sm" tone="faint" measure>{m.webhooks_subtitle()}</Text>
 
 	{#if hooks.isLoading}
 		<div class="msg"><Spinner /></div>
@@ -122,10 +122,6 @@
 		display: flex;
 		flex-direction: column;
 		gap: var(--sp-3);
-		padding: var(--sp-4);
-		max-width: 60rem;
-		width: 100%;
-		margin: 0 auto;
 	}
 	.list {
 		display: flex;

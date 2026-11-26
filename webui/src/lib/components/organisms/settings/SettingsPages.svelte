@@ -87,7 +87,7 @@
 	<div class="pg" class:on={current === 'instance'} data-settings-page="instance" data-journey="page" data-journey-key="instance">
 		<InstanceSection {isAdmin} />
 		<UsersAccessSection {isAdmin} active={current === 'instance'} />
-		<SettingSection id="instance-machines" icon="▣" title={m.settings_sec_instance_machines()} admin>
+		<SettingSection id="instance-machines" icon="▣" title={m.settings_sec_instance_machines()}>
 			{#if hasFeature('machine_spawn')}
 				<MachineAdaptersGroup isAdmin />
 			{/if}
@@ -95,7 +95,7 @@
 				<HarnessUpdateGroup />
 			{/if}
 		</SettingSection>
-		<SettingSection id="instance-limits" icon="⇪" title={m.settings_sec_limits()} description={m.settings_limits_desc()} admin>
+		<SettingSection id="instance-limits" icon="⇪" title={m.settings_sec_limits()} description={m.settings_limits_desc()}>
 			{#if hasFeature('child_sessions')}
 				<SpawnLimitsGroup />
 			{/if}
@@ -104,16 +104,16 @@
 			{/if}
 			<EventRetentionGroup />
 		</SettingSection>
-		<SettingSection id="instance-gateway" icon="⇆" title={m.settings_sec_gateway()} admin>
+		<SettingSection id="instance-gateway" icon="⇆" title={m.settings_sec_gateway()}>
 			<UpstreamHostsGroup />
 		</SettingSection>
 		{#if hasFeature('voice')}
-			<SettingSection id="instance-integrations" icon="⚭" title={m.settings_sec_integrations()} admin>
+			<SettingSection id="instance-integrations" icon="⚭" title={m.settings_sec_integrations()}>
 				<SpeechGroup />
 			</SettingSection>
 		{/if}
 		{#if hasFeature('plugins')}
-			<SettingSection id="instance-plugins" icon="⧉" title={m.settings_nav_plugins()} admin>
+			<SettingSection id="instance-plugins" icon="⧉" title={m.settings_nav_plugins()}>
 				<PluginsAdminGroup {isAdmin} />
 			</SettingSection>
 		{/if}

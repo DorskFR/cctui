@@ -23,7 +23,6 @@
 	/* Injected background material: a one-line strip until opened, never a
 	   full-size bubble. */
 	.ctx {
-		border: 1px solid color-mix(in srgb, var(--role-context) 35%, transparent);
 		border-left: 2px solid color-mix(in srgb, var(--role-context) 60%, transparent);
 		border-radius: var(--r-md);
 		background: color-mix(in srgb, var(--role-context) 8%, var(--bg-elevated));

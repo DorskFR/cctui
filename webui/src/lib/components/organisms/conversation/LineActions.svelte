@@ -1,7 +1,5 @@
 <script lang="ts">
-	// Per-message action cluster at the right of the meta row: pin, save-as-image,
-	// copy-as-Markdown, quote-reply, bookmark. Excluded from the saved image.
-	import { Button, Icon, IconButton } from '@dorsk/tsumikit';
+	import { Icon, IconButton, Menu, type MenuItem } from '@dorsk/tsumikit';
 	import { bubbleSelection } from './lineActions';
 	import type { Line } from './types';
 	import { m } from '#lib/paraglide/messages.js';
@@ -23,7 +21,8 @@
 		pinnable: boolean;
 		pinned?: boolean;
 		onpin?: (ln: Line) => void;
-		onsaveimage: (e: MouseEvent, ln: Line) => void;
+		/** `from` is any node inside the line to capture. */
+		onsaveimage: (from: Element, ln: Line) => void;
 		oncopymarkdown: (ln: Line) => void;
 		/** Omit to hide the bookmark action. */
 		onbookmark?: (ln: Line) => void;
@@ -36,6 +35,44 @@
 		speaking?: boolean;
 	} = $props();
 
+	let root = $state<HTMLElement>();
+
+	const items: MenuItem[] = $derived([
+		...(pinnable
+			? [
+					{
+						label: pinned ? m.conversation_unpin_label() : m.conversation_pin_label(),
+						icon: 'pin' as const,
+						pressed: pinned,
+						onselect: () => onpin?.(ln)
+					}
+				]
+			: []),
+		...(onspeak && !speaking
+			? [{ label: m.voice_line_speak(), icon: 'play' as const, onselect: () => onspeak?.(ln) }]
+			: []),
+		{
+			label: m.conversation_copy_markdown_label(),
+			icon: 'markdown' as const,
+			onselect: () => oncopymarkdown(ln)
+		},
+		{
+			label: m.conversation_save_image_label(),
+			icon: 'image' as const,
+			onselect: () => root && onsaveimage(root, ln)
+		},
+		...(onbookmark
+			? [
+					{
+						label: m.bookmarks_line_label(),
+						icon: 'bookmark' as const,
+						pressed: bookmarked,
+						onselect: () => onbookmark?.(ln)
+					}
+				]
+			: [])
+	]);
+
 	// Clicking collapses the selection, so it is read on pointerdown.
 	let picked: string | null = null;
 	function grabSelection(e: Event) {
@@ -44,39 +81,19 @@
 	}
 </script>
 
-<span class="line-actions" class:has-pin={pinned} data-journey="line-actions">
-	{#if pinnable}
-		<Button
-			variant="ghost"
-			iconInline
-			aria-pressed={pinned}
-			aria-label={pinned ? m.conversation_unpin_label() : m.conversation_pin_label()}
-			title={pinned ? m.conversation_unpin_title() : m.conversation_pin_title()}
-			style={pinned ? '--accent: var(--warn)' : undefined}
-			onclick={() => onpin?.(ln)}
-		>
-			<Icon name="pin" size={16} filled={pinned} />
-		</Button>
+<span class="line-actions" bind:this={root} data-journey="line-actions">
+	{#if onspeak && speaking}
+		<IconButton
+			inline
+			glyphSize={16}
+			icon="stop"
+			pressed
+			style="--accent: var(--role-assistant)"
+			label={m.voice_line_speaking()}
+			title={m.voice_line_speaking()}
+			onclick={() => onspeak?.(ln)}
+		/>
 	{/if}
-	<!-- Copy-as-Markdown uses the same markdown glyph as the
-	     conversation-level copy; save-as-image uses a
-	     plain image icon and sits right next to it. -->
-	<IconButton
-		inline
-		glyphSize={16}
-		icon="image"
-		label={m.conversation_save_image_label()}
-		title={m.conversation_save_image_title()}
-		onclick={(e) => onsaveimage(e, ln)}
-	/>
-	<IconButton
-		inline
-		glyphSize={16}
-		icon="markdown"
-		label={m.conversation_copy_markdown_label()}
-		title={m.conversation_copy_markdown_title()}
-		onclick={() => oncopymarkdown(ln)}
-	/>
 	{#if onquote}
 		<IconButton
 			inline
@@ -93,36 +110,13 @@
 			}}
 		/>
 	{/if}
-	{#if onspeak}
-		<IconButton
-			inline
-			glyphSize={16}
-			icon={speaking ? 'stop' : 'play'}
-			pressed={speaking}
-			style={speaking ? '--accent: var(--role-assistant)' : undefined}
-			label={speaking ? m.voice_line_speaking() : m.voice_line_speak()}
-			title={speaking ? m.voice_line_speaking() : m.voice_line_speak()}
-			onclick={() => onspeak?.(ln)}
-		/>
-	{/if}
-	{#if onbookmark}
-		<IconButton
-			inline
-			glyphSize={16}
-			icon="bookmark"
-			filled={bookmarked}
-			pressed={bookmarked}
-			style={bookmarked ? '--accent: var(--role-assistant)' : undefined}
-			label={m.bookmarks_line_label()}
-			title={bookmarked ? m.bookmarks_line_saved_title() : m.bookmarks_line_title()}
-			onclick={() => onbookmark?.(ln)}
-		/>
-	{/if}
+	<Menu label={m.conversation_line_actions()} {items} placement="bottom-end" box="sm" title={m.conversation_line_actions()}>
+		{#snippet trigger()}<Icon name="more" size={16} />{/snippet}
+	</Menu>
 </span>
 
 <style>
 	.line-actions {
-		margin-left: auto;
 		display: inline-flex;
 		align-items: center;
 		gap: var(--sp-1);

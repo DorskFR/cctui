@@ -152,8 +152,11 @@ test.describe('plugins page (admin)', () => {
 		expect(state.calls).toContain('GET /api/v1/admin/plugins/catalog');
 		expect(catalogPosts).toEqual([{ catalog: 'catalogged' }]);
 
-		page.once('dialog', (d) => d.accept());
 		await row(page, 'fromurl').locator('[data-journey="plugin-admin-uninstall"]').click();
+		const confirm = page.getByRole('dialog');
+		await expect(confirm).toBeVisible();
+		expect(state.calls).not.toContain('DELETE /api/v1/admin/plugins/fromurl');
+		await confirm.getByRole('button', { name: /^Uninstall / }).click();
 		await expect(row(page, 'fromurl')).toHaveCount(0);
 		expect(state.calls).toContain('DELETE /api/v1/admin/plugins/fromurl');
 

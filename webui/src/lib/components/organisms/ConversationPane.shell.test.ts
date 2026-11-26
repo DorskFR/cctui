@@ -3,6 +3,8 @@ import drawer from './ConversationDrawer.svelte?raw';
 import pane from './ConversationPane.svelte?raw';
 import header from './conversation/DrawerHeader.svelte?raw';
 import forkbar from './conversation/ForkSelectBar.svelte?raw';
+import overlays from './conversation/PaneOverlays.svelte?raw';
+import model from './conversation/paneModel.svelte.ts?raw';
 
 describe('ConversationDrawer is only the panel', () => {
 	it('delegates every conversation internal to the pane', () => {
@@ -35,7 +37,8 @@ describe('ConversationPane chrome', () => {
 		expect(css).toMatch(/\.conv-pane \{[^}]*position: relative;/);
 		expect(forkbar).toContain('.fork-select-bar.contained');
 		expect(forkbar).toContain('position: absolute');
-		expect(pane).toContain("contained={chrome === 'tile'}");
+		expect(pane).toContain('<PaneOverlays {p} {canFork} contained={tile} />');
+		expect(overlays).toContain('<ForkSelectBar\n\t\t{contained}');
 	});
 
 	it('drops the back control and adds maximize when the shell asks for them', () => {
@@ -50,7 +53,7 @@ describe('ConversationPane chrome', () => {
 	});
 
 	it('holds the session open for the notifier while it is mounted', () => {
-		expect(pane).toContain('notify.holdOpen(id)');
+		expect(model).toContain('notify.holdOpen(this.id)');
 	});
 
 	it('adds no :global override', () => {

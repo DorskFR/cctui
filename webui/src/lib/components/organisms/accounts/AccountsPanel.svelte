@@ -8,18 +8,16 @@
 		useRedirectChips,
 		useRedirectActions,
 		useUsers,
-		type OAuthAccount,
-		type AccountProvider
+		type OAuthAccount
 	} from '#lib/queries/index.ts';
 	import { toasts } from '#lib/toast.svelte.ts';
 	import { hasFeature } from '#lib/features.svelte.ts';
-	import { providerLabel } from '#lib/providers.ts';
 	import AccountCard from '#lib/components/organisms/AccountCard.svelte';
 	import AccountsBoard from './AccountsBoard.svelte';
 	import AccountEditorModal from './AccountEditorModal.svelte';
 	import { availableKinds, ownsAccount } from './account-editor.logic';
 	import { accountHref } from './account-page/account-nav.logic';
-	import { Button } from '@dorsk/tsumikit';
+	import { Button, ConfirmModal } from '@dorsk/tsumikit';
 	import PageHead from '#lib/components/molecules/PageHead.svelte';
 	import { m } from '#lib/paraglide/messages.js';
 
@@ -70,20 +68,17 @@
 	};
 	const clearRedirect = (ruleId: string) => guard(redirectActions.remove(ruleId));
 
+	let deleting = $state<OAuthAccount | null>(null);
+	let confirmingDelete = $state(false);
 	function removeAccount(a: OAuthAccount) {
-		if (!confirm(m.accounts_confirm_delete_account({ name: a.name }))) return;
-		guard(actions.remove(a.id).then(() => toasts.ok(m.accounts_deleted())));
+		deleting = a;
+		confirmingDelete = true;
+	}
+	function deleteAccount() {
+		const a = deleting;
+		if (a) guard(actions.remove(a.id).then(() => toasts.ok(m.accounts_deleted())));
 	}
 
-	function removeProvider(a: OAuthAccount, p: AccountProvider) {
-		if (
-			!confirm(
-				m.accounts_confirm_remove_provider({ provider: providerLabel(p.provider), name: a.name })
-			)
-		)
-			return;
-		guard(actions.removeProvider(a.id, p.id).then(() => toasts.ok(m.accounts_provider_removed())));
-	}
 
 	const isManaged = (a: OAuthAccount) => a.providers.length > 0 && a.providers.every((p) => p.managed);
 </script>
@@ -128,13 +123,24 @@
 				onaddprovider={() => editor?.openAddProvider(a)}
 				oneditprovider={(p) => goto(accountHref(a.id, p.id))}
 				onreauthprovider={(p) => editor?.reauth(a, p)}
-				onremoveprovider={(p) => removeProvider(a, p)}
 			/>
 		{/snippet}
 	</AccountsBoard>
 </div>
 
 <AccountEditorModal bind:this={editor} {rows} {isAdmin} {activeUsers} />
+
+{#if deleting}
+	<ConfirmModal
+		bind:open={confirmingDelete}
+		tone="danger"
+		title={m.accounts_delete_account()}
+		message={m.accounts_confirm_delete_account({ name: deleting.name })}
+		confirmLabel={m.accounts_delete_account()}
+		cancelLabel={m.common_cancel()}
+		onconfirm={deleteAccount}
+	/>
+{/if}
 
 <style>
 	.panel {

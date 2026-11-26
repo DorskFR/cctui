@@ -1,7 +1,6 @@
 <script lang="ts">
-	// Conversation toolbar, one row at every width: message filters on the left,
-	// auto-approve, terminal, plugin panes and pins right-aligned. Narrow drawers
-	// drop every label and keep the icons.
+	// Message filters on the left; auto-approve, the panels menu, context and
+	// pins right-aligned. Narrow bars drop the optional labels and wrap.
 	import {
 		MSG_CATEGORIES,
 		QUICK_FILTERS,
@@ -12,7 +11,9 @@
 	} from './filters';
 	import FilterMenu from './FilterMenu.svelte';
 	import { quickFilterLabel, type MsgCategory, type QuickFilterId, type ViewOpts } from './types';
-	import { Icon, Popover, Toggle } from '@dorsk/tsumikit';
+	import { Icon, Menu, Popover, Switch, Toggle } from '@dorsk/tsumikit';
+	import { panelItems } from './toolbarPanels';
+	import { ComposerFocus } from './composerFocus.svelte';
 	import PinsPanel from './PinsPanel.svelte';
 	import SessionContextChip from './SessionContextChip.svelte';
 	import type { MessagePin } from '@bindings/MessagePin';
@@ -56,11 +57,16 @@
 	// One pinned height for every control, so glyph fonts can't size them.
 	const CTL = 'height:var(--bar-ctl-h);box-sizing:border-box;padding-block:0;line-height:1';
 
-	const QUICK_TINT: Record<QuickFilterId, string> = {
-		assistant: 'var(--role-assistant)',
-		user: 'var(--role-user)',
-		tools: 'var(--role-tool)'
-	};
+	let hostEl = $state<HTMLElement>();
+	const composer = new ComposerFocus();
+	$effect(() => (hostEl ? composer.attach(hostEl) : undefined));
+
+	const panels = $derived(
+		panelItems(
+			ontoggleTerminal && hasFeature('terminal') ? { open: terminalOpen, toggle: ontoggleTerminal } : null,
+			hasFeature('plugins') ? plugins : []
+		)
+	);
 
 	const offCount = $derived(MSG_CATEGORIES.filter((c) => !view.msgFilter[c]).length);
 
@@ -83,10 +89,10 @@
 	}
 </script>
 
+<div class="tbhost" class:typing={composer.collapse} bind:this={hostEl}>
 <div class="toolbar">
-	<!-- Quick category toggles + the full per-category picker. A quick chip is
-	     "on" only when every category it covers is on; a partly-on group gets a
-	     dashed border instead. -->
+	<!-- A quick chip is on only when every category it covers is on; a partly-on
+	     group gets a dashed border. -->
 	<div class="tagbar row" data-journey="filters" role="group" aria-label={m.conversation_msg_filter_aria()}>
 		{#each QUICK_FILTERS as q (q.id)}
 			<Toggle
@@ -94,10 +100,12 @@
 				data-journey="quick"
 				data-journey-key={q.id}
 				pressed={quickOn(view.msgFilter, q.id)}
-				style={`${CTL};--accent: ${QUICK_TINT[q.id]}${quickPartial(view.msgFilter, q.id) ? ';border-style:dashed' : ''}`}
+				tone="neutral"
+				style={`${CTL}${quickPartial(view.msgFilter, q.id) ? ';border-style:dashed' : ''}`}
 				title={quickTitle(q.id)}
 				onclick={() => toggleQuick(q.id)}
 			>
+				{#if quickOn(view.msgFilter, q.id)}<Icon name="check" size={12} />{/if}
 				{quickFilterLabel(q.id)}
 			</Toggle>
 		{/each}
@@ -126,41 +134,31 @@
 	</div>
 	<div class="behbar row" role="group" aria-label={m.conversation_behavior_aria()}>
 		{#if hasFeature('auto_approve')}
-			<Toggle
-				pressed={autoApprove}
-				tone="warn"
-				style={CTL}
-				title={m.conversation_auto_approve_title()}
-				aria-label={m.conversation_auto_approve_aria()}
-				onclick={ontoggleAuto}
-				><span class="glyph" aria-hidden="true">⚡</span><span class="wide"
-					>{m.conversation_auto_approve_btn()}</span
-				></Toggle
-			>
+			<span class="auto" title={m.conversation_auto_approve_title()}>
+				<Switch
+					size="sm"
+					labelVisible
+					label={autoApprove ? m.conversation_auto_approve_on() : m.conversation_auto_approve_off()}
+					data-journey="auto-approve"
+					bind:checked={() => autoApprove, () => ontoggleAuto()}
+				/>
+			</span>
 		{/if}
-		{#if ontoggleTerminal && hasFeature('terminal')}
-			<Toggle
-				pressed={terminalOpen}
+		{#if panels.length}
+			<Menu
+				label={m.conversation_panels()}
+				items={panels}
+				placement="bottom-end"
+				variant="toggle"
+				pressed={panels.some((i) => i.pressed)}
 				style={CTL}
-				title={m.conversation_terminal_title()}
-				aria-label={m.drawer_terminal_label()}
-				data-journey="terminal"
-				onclick={ontoggleTerminal}
-				><Icon name="tv" size={12} /><span class="wide">{m.drawer_terminal_label()}</span></Toggle
+				data-journey="panels"
 			>
+				{#snippet trigger()}
+					<Icon name="layout-grid" size={12} /><span class="wide">{m.conversation_panels()}</span>
+				{/snippet}
+			</Menu>
 		{/if}
-		{#each hasFeature('plugins') ? plugins : [] as p (p.id)}
-			<Toggle
-				pressed={p.open}
-				style={CTL}
-				title={m.drawer_plugin_toggle({ name: p.label })}
-				aria-label={p.label}
-				data-journey="plugin"
-				data-plugin={p.id}
-				onclick={p.onselect}
-				><Icon name={p.icon} size={12} /><span class="wide">{p.label}</span></Toggle
-			>
-		{/each}
 		{#if sessionId && hasFeature('context')}
 			<SessionContextChip {sessionId} canAttach={contextAttachable} style={CTL} />
 		{/if}
@@ -180,17 +178,23 @@
 		{/if}
 	</div>
 </div>
+</div>
 
 <style>
+	.tbhost {
+		container: drawer-toolbar / inline-size;
+	}
+	.tbhost.typing {
+		display: none;
+	}
 	.toolbar {
 		display: flex;
 		flex-wrap: nowrap;
 		align-items: center;
 		gap: var(--sp-2) var(--sp-3);
 		padding: var(--sp-2) var(--sp-3);
-		border-bottom: 1px solid var(--border);
+		background: var(--bg-elevated);
 		font-size: var(--fs-xs);
-		container: drawer-toolbar / inline-size;
 		/* Px, not rem: the text-size control must not shift the bar under the cursor. */
 		--bar-ctl-h: 24px;
 		--fs-xs: 12px;
@@ -205,12 +209,11 @@
 		flex-wrap: nowrap;
 		align-items: center;
 	}
-	.glyph {
+	.auto {
 		display: inline-flex;
 		align-items: center;
-		justify-content: center;
-		min-width: 1em;
-		line-height: 1;
+		height: var(--bar-ctl-h);
+		white-space: nowrap;
 	}
 	/* Overflow is absorbed by the filters group, never by auto-approve or pins. */
 	.tagbar {
@@ -221,8 +224,6 @@
 	.behbar {
 		flex: none;
 		margin-left: auto;
-		padding-left: var(--sp-3);
-		border-left: 1px solid var(--border);
 	}
 	.narrow {
 		display: none;
@@ -235,9 +236,11 @@
 		.narrow {
 			display: inline;
 		}
-		.behbar {
-			padding-left: 0;
-			border-left: none;
+	}
+	/* A phone wraps the behaviour group under the filters instead of clipping it. */
+	@container drawer-toolbar (max-width: 32rem) {
+		.toolbar {
+			flex-wrap: wrap;
 		}
 	}
 </style>

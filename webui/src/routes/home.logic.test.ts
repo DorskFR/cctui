@@ -3,7 +3,7 @@ import { describe, it, expect } from 'vitest';
 import type { MachineResourcesRow } from '@bindings/MachineResourcesRow';
 import type { MachineLiveness } from '@bindings/MachineLiveness';
 import type { SessionStats } from '@bindings/SessionStats';
-import { asUsage, buildMetricTiles, machinesOnline } from './home.logic';
+import { asUsage, buildMetricTiles, machinesOnline, needsInputHref } from './home.logic';
 
 const machine = (id: string, liveness: MachineLiveness): MachineResourcesRow => ({
 	machine_id: id,
@@ -55,9 +55,14 @@ describe('buildMetricTiles', () => {
 		expect(tiles[3]).toMatchObject({ value: 12193, sub: 12076 });
 	});
 
-	it('links the session-bucket tiles to the sessions list', () => {
+	it('links every tile to where its count is managed', () => {
 		const tiles = buildMetricTiles(stats, []);
-		expect(tiles.map((t) => t.href)).toEqual(['/sessions', '/sessions', undefined, undefined]);
+		expect(tiles.map((t) => t.href)).toEqual([
+			'/sessions',
+			'/sessions',
+			'/settings/accounts#machines',
+			'/sessions'
+		]);
 	});
 
 	it('drops the warn tone when nothing needs input', () => {
@@ -69,5 +74,20 @@ describe('buildMetricTiles', () => {
 		const tiles = buildMetricTiles(undefined, []);
 		expect(tiles.every((t) => t.value === 0)).toBe(true);
 		expect(tiles[2].suffix).toBe('/0');
+	});
+});
+
+describe('needsInputHref', () => {
+	it('opens the one waiting session directly', () => {
+		expect(needsInputHref([{ id: 'a', attention: 'needs_input' }, { id: 'b', attention: null }])).toBe(
+			'/sessions/a'
+		);
+	});
+	it('falls back to the list when several are waiting', () => {
+		const both = [
+			{ id: 'a', attention: 'needs_input' as const },
+			{ id: 'b', attention: 'needs_input' as const }
+		];
+		expect(needsInputHref(both)).toBe('/sessions');
 	});
 });

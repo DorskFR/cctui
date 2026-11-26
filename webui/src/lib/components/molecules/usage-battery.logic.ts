@@ -79,16 +79,6 @@ export function headlinePct(windows: UsageWindow[]): number | null {
 	return barPct(worst);
 }
 
-/** The window whose pace is worst (highest ratio), for the battery's glyph. */
-export function worstPace(windows: (UsageWindow | null)[]): UsageWindow | null {
-	let worst: UsageWindow | null = null;
-	for (const w of windows) {
-		if (!w?.pace) continue;
-		if (!worst?.pace || w.pace.ratio > worst.pace.ratio) worst = w;
-	}
-	return worst;
-}
-
 /** One battery per provider that reported at least one window, in account
  *  order, so the header can render and group them. */
 export interface BatteryEntry {
@@ -113,20 +103,6 @@ export function batteryEntries(rows: AccountUsageEntry[] | null | undefined): Ba
 			bars: batteryBars(r.windows),
 			windows: r.windows
 		}));
-}
-
-/** The single battery shown on narrow screens: for each bar the fullest
- *  window across all providers, so the worst headroom is what shows. */
-export function aggregateBars(entries: BatteryEntry[]): BatteryBars {
-	const fullest = (pick: (b: BatteryBars) => UsageWindow | null): UsageWindow | null => {
-		let best: UsageWindow | null = null;
-		for (const e of entries) {
-			const w = pick(e.bars);
-			if (w && (!best || w.utilization > best.utilization)) best = w;
-		}
-		return best;
-	};
-	return { fiveHour: fullest((b) => b.fiveHour), weekly: fullest((b) => b.weekly) };
 }
 
 /** Merge a pushed usage row into the batch cache, keeping each entry's identity

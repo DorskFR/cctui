@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
-	import { NotificationCenter } from '@dorsk/tsumikit';
+	import { ConfirmModal, NotificationCenter } from '@dorsk/tsumikit';
 	import { errMessage } from '#lib/api.ts';
 	import {
 		DETAILS,
@@ -63,12 +63,23 @@
 		}
 	}
 
+	let blockingId = $state<string | null>(null);
+	let confirmingBlocking = $state(false);
+
 	async function ondismiss(id: string) {
-		let out = await store.dismiss(id);
+		const out = await store.dismiss(id);
 		if (out === 'blocking') {
-			if (!confirm(m.notif_dismiss_blocking())) return;
-			out = await store.dismiss(id, true);
+			blockingId = id;
+			confirmingBlocking = true;
+			return;
 		}
+		if (out !== 'dismissed') toasts.error(m.notif_dismiss_failed());
+	}
+
+	async function dismissBlocking() {
+		const id = blockingId;
+		if (!id) return;
+		const out = await store.dismiss(id, true);
 		if (out !== 'dismissed') toasts.error(m.notif_dismiss_failed());
 	}
 
@@ -103,4 +114,14 @@
 	{onvisible}
 	{onitemopen}
 	{ondismiss}
+/>
+
+<ConfirmModal
+	bind:open={confirmingBlocking}
+	tone="danger"
+	title={m.notif_dismiss_blocking_title()}
+	message={m.notif_dismiss_blocking()}
+	confirmLabel={m.notif_dismiss_anyway()}
+	cancelLabel={m.common_cancel()}
+	onconfirm={dismissBlocking}
 />

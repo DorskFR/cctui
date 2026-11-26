@@ -129,8 +129,11 @@ test('412px touch: icon buttons hit 44px tall, reach half the shortfall to the s
 
 test('412px touch: tapping the centre of each line-action icon hits that icon', async ({ page }) => {
 	await openDrawer(page, 412);
-	const cluster = page.locator('[data-journey="line-actions"]').first();
-	await cluster.scrollIntoViewIfNeeded();
+	const line = page.locator('[data-journey="line"]').filter({ has: page.locator('[data-journey="line-actions"]') }).first();
+	await line.scrollIntoViewIfNeeded();
+	await line.tap({ position: { x: 4, y: 4 } });
+	const cluster = line.locator('[data-journey="line-actions"]');
+	await expect(cluster).toBeVisible();
 	const buttons = cluster.locator('button');
 	const count = await buttons.count();
 	expect(count).toBeGreaterThan(1);

@@ -65,7 +65,6 @@
 		min-width: 0;
 		padding: var(--sp-1) var(--sp-2);
 		background: var(--bg);
-		border: 1px solid var(--border);
 		border-radius: var(--r-sm);
 	}
 </style>

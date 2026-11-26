@@ -6,7 +6,7 @@
 	import type { SettingSource } from '@bindings/SettingSource';
 	import type { SpawnDefaults } from '@bindings/SpawnDefaults';
 	import type { SpawnDefaultsInfo } from '@bindings/SpawnDefaultsInfo';
-	import { toasts } from '#lib/toast.svelte.ts';
+	import { autoSave, serverSave } from './serverSave.svelte.ts';
 	import { m } from '#lib/paraglide/messages.js';
 	import { limitLabel, parseSpawnDraft, sourceLabel } from './serverSettings.logic';
 
@@ -19,8 +19,6 @@
 
 	let info = $state<SpawnDefaultsInfo | null>(null);
 	let draft = $state<Record<Field, string>>({ max_children: '', max_depth: '', max_tree_budget_usd: '' });
-	let saving = $state(false);
-
 	function apply(next: SpawnDefaultsInfo) {
 		info = next;
 		for (const { key } of FIELDS) draft[key] = next.settings[key]?.toString() ?? '';
@@ -39,16 +37,13 @@
 	);
 
 	async function save(next: SpawnDefaults) {
-		saving = true;
-		try {
-			apply(await endpoints.setSpawnDefaults(next));
-			toasts.ok(m.settings_spawn_limits_saved());
-		} catch (e) {
-			toasts.error(e instanceof Error ? e.message : String(e));
-		} finally {
-			saving = false;
-		}
+		const sent = JSON.stringify(draft);
+		const res = await serverSave.run(() => endpoints.setSpawnDefaults(next));
+		if (!res) return;
+		if (JSON.stringify(draft) === sent) apply(res);
+		else info = res;
 	}
+	autoSave(() => (dirty && parsed ? parsed : undefined), save);
 
 	function effective(key: Field): string {
 		if (!info) return '';
@@ -64,7 +59,7 @@
 
 <div id="spawn-limits">
 	<SettingGroup title={m.settings_spawn_limits_label()}>
-		<SettingRow label={m.settings_spawn_limits_label()} help={m.settings_spawn_limits_help()} server admin wide selfLabelled>
+		<SettingRow label={m.settings_spawn_limits_label()} help={m.settings_spawn_limits_help()} wide selfLabelled>
 			<div class="fields">
 				{#each FIELDS as f (f.key)}
 					<div class="field">
@@ -75,12 +70,12 @@
 							placeholder={fallback(f.key)}
 							aria-label={f.label()}
 						/>
-						<Text size="xs" tone="faint" variant="code">{effective(f.key)}</Text>
+						<Text size="xs" tone="faint" numeric>{effective(f.key)}</Text>
 						{#if info?.sources[f.key] === 'settings'}
 							<Button
 								size="sm"
 								variant="ghost"
-								disabled={saving}
+								disabled={serverSave.status === 'pending'}
 								title={m.settings_upstreams_reset_help()}
 								onclick={() => info && save({ ...info.settings, [f.key]: null })}
 							>
@@ -92,11 +87,6 @@
 				{#if !parsed}
 					<Text size="xs" tone="danger">{m.settings_spawn_limits_invalid()}</Text>
 				{/if}
-				<div>
-					<Button disabled={!dirty || !parsed || saving} onclick={() => parsed && save(parsed)}>
-						{m.settings_admin_instance_save()}
-					</Button>
-				</div>
 			</div>
 		</SettingRow>
 	</SettingGroup>

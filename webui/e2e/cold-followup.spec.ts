@@ -198,6 +198,9 @@ test.describe('desktop', () => {
 		await expect(items.nth(1)).toContainText('Follow-up with options');
 		await items.nth(1).click();
 		await expect(page.locator('dialog[open]').getByLabel('Archive the source session after launch')).toBeChecked();
+		// The follow-up form replaces the conversation; closing it must not close the form.
+		await expect(drawer(page)).toHaveCount(0);
+		await expect(page.locator('dialog[open]')).toHaveCount(1);
 		expect(stub.followups).toHaveLength(0);
 	});
 

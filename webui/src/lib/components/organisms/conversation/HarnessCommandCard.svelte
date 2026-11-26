@@ -43,7 +43,6 @@
 		margin: 0;
 		padding: var(--sp-2);
 		background: var(--bg);
-		border: 1px solid var(--border);
 		border-radius: var(--r-sm);
 		font-family: var(--font-mono);
 		white-space: pre-wrap;

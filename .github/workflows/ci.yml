@@ -663,6 +663,7 @@ jobs:
             base="$head^"
           fi
           bash scripts/no-css-global.sh "$base...$head"
+          bash scripts/no-native-confirm.test.sh && bash scripts/no-native-confirm.sh "$base...$head"
 
   comment-refs:
     name: comment-refs

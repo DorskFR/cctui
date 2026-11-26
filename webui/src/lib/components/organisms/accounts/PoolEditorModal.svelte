@@ -4,7 +4,7 @@
 	import { useAccountPoolActions, type OAuthAccount } from '#lib/queries/index.ts';
 	import type { AccountPoolView } from '@bindings/AccountPoolView';
 	import { toasts } from '#lib/toast.svelte.ts';
-	import { Button, Cluster, Field, IconButton, Input, Modal, Select, Switch, Text } from '@dorsk/tsumikit';
+	import { Button, Cluster, ConfirmModal, Field, IconButton, Input, Modal, Select, Switch, Text } from '@dorsk/tsumikit';
 	import { m } from '#lib/paraglide/messages.js';
 
 	// `pool` null creates a fresh one. Member order IS the ladder under the
@@ -92,8 +92,9 @@
 		}
 	}
 
+	let confirmingDelete = $state(false);
 	async function remove() {
-		if (!pool || !confirm(m.pools_delete_confirm())) return;
+		if (!pool) return;
 		try {
 			await actions.remove(pool.id);
 			toasts.ok(m.pools_deleted());
@@ -187,7 +188,7 @@
 	{#snippet footer()}
 		<Cluster justify="space-between" align="center" gap="var(--sp-2)">
 			{#if pool}
-				<Button variant="danger" onclick={remove}>{m.pools_delete()}</Button>
+				<Button variant="danger" onclick={() => (confirmingDelete = true)}>{m.pools_delete()}</Button>
 			{:else}
 				<span></span>
 			{/if}
@@ -197,6 +198,16 @@
 		</Cluster>
 	{/snippet}
 </Modal>
+
+<ConfirmModal
+	bind:open={confirmingDelete}
+	tone="danger"
+	title={m.pools_delete()}
+	message={m.pools_delete_confirm()}
+	confirmLabel={m.pools_delete()}
+	cancelLabel={m.common_cancel()}
+	onconfirm={remove}
+/>
 
 <style>
 	.editor {

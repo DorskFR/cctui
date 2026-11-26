@@ -27,14 +27,49 @@ describe('drawer header meta row', () => {
 		expect(script).not.toContain('getComputedStyle');
 	});
 
-	it('drops langfuse below 40rem, and the model badge, its editor and Σ below 26rem', () => {
+	it('drops the cost below 40rem, and the model badge, its editor and the token total below 26rem', () => {
 		const wide = css.slice(css.indexOf('@container drawer-head (max-width: 40rem)'));
-		expect(wide.slice(0, wide.indexOf('\n\t}'))).toContain('.langfuse,');
+		expect(wide.slice(0, wide.indexOf('\n\t}'))).toContain('.cost,');
 		const narrow = css.slice(css.indexOf('@container drawer-head (max-width: 26rem)'));
 		const body = narrow.slice(0, narrow.indexOf('\n\t}'));
 		expect(body).toContain('.model,');
 		expect(body).toContain('.model-edit');
 		expect(body).toContain('.tokens');
+	});
+
+	it('spells the token total in words instead of Σ ↑ ↓ ⚡ glyphs', () => {
+		expect(trail).not.toContain('<TokenUsage');
+		expect(trail).toContain('m.drawer_meta_tokens({ tokens: compact(totals.total) })');
+		expect(trail).toContain('title={m.drawer_meta_tokens_title(');
+		for (const msgs of [en, fr]) expect(JSON.parse(msgs).drawer_meta_tokens).toContain('{tokens}');
+	});
+
+	it('shows one cost, named by its source, never in the success colour', () => {
+		expect(header).not.toContain('tone="success"');
+		expect(header).not.toContain('<LangfuseChip');
+		expect(script).toContain('const cost = $derived(headerCost(totals.cost, totals.total, lf.data));');
+		expect(trail).toMatch(/\{#if cost\.source === 'langfuse' \|\| cost\.source === 'harness'\}\s*<span class="cost">\{@render costText\(\)\}/);
+		const snippet = markup.slice(markup.indexOf('{#snippet costText()}'), markup.indexOf('{/snippet}', markup.indexOf('{#snippet costText()}')));
+		expect(snippet).toContain('m.drawer_cost_plan()');
+		expect(snippet).toContain('m.drawer_cost_source_langfuse()');
+		expect(snippet).toContain('m.drawer_cost_source_harness()');
+		for (const msgs of [en, fr]) expect(JSON.parse(msgs).drawer_cost_plan).toBeTruthy();
+	});
+
+	it('keeps mono for the branch and hook rules only; figures use tabular sans', () => {
+		const monos = markup.match(/<Badge[^>]*\bmono\b|variant="code"/g) ?? [];
+		expect(monos).toHaveLength(2);
+		expect(markup).toContain('<Badge mono title={m.sessions_branch_title({ branch })}');
+		expect(markup).toContain('<Text variant="code" size="xs" tone="muted">{describeRule(rule)}</Text>');
+		expect(popover).toContain('<Text numeric size="xs" tone="muted">{row.v}</Text>');
+	});
+
+	it('marks the model chip and branch with icons, not ✎ ⑂ 💥 glyphs', () => {
+		for (const g of ['✎', '⑂', '💥']) expect(markup, g).not.toContain(g);
+		const snippet = markup.slice(markup.indexOf('{#snippet modelMeta'), markup.indexOf('{/snippet}', markup.indexOf('{#snippet modelMeta')));
+		expect(snippet).toContain('<Icon name="edit" size={12} />');
+		expect(snippet).toContain('<Icon name="fork" size={12} />');
+		expect(markup).toContain('<Icon name="git-branch" size={12} label={m.sessions_branch_label()} />');
 	});
 
 	it('declares the model-edit base rule before the query that hides it', () => {
@@ -58,7 +93,7 @@ describe('drawer header meta row', () => {
 		expect(popover).toContain('m.drawer_details_cache_write()');
 		expect(popover).toContain('m.drawer_details_total()');
 		expect(popover).toContain('m.drawer_details_cost()');
-		expect(popover).toContain('<LangfuseChip');
+		expect(popover).toContain('{@render costText()}');
 		const snippet = markup.slice(markup.indexOf('{#snippet modelMeta'), markup.indexOf('{#snippet modelMeta') + 2000);
 		expect(snippet).toContain('<ModelPicker');
 		expect(snippet).toContain('onclick={applyModelChange}');
@@ -91,7 +126,7 @@ describe('drawer header meta row', () => {
 
 	it('only shows the Langfuse rows when the sink reported calls', () => {
 		expect(popover).toContain('{#if calls > 0}');
-		expect(script).toContain('detailsOpen && langfuseAvailable');
+		expect(script).toContain('() => langfuseAvailable');
 	});
 
 	it('adds no horizontal overflow escape hatch', () => {

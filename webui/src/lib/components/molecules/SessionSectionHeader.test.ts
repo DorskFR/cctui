@@ -4,11 +4,12 @@ import { flushSync, mount, tick, unmount, type ComponentProps } from 'svelte';
 import SessionSectionHeader from './SessionSectionHeader.svelte';
 
 let comp: ReturnType<typeof mount> | null = null;
-afterEach(() => {
+function reset() {
 	if (comp) unmount(comp);
 	comp = null;
 	document.body.innerHTML = '';
-});
+}
+afterEach(reset);
 
 type Props = ComponentProps<typeof SessionSectionHeader>;
 
@@ -45,6 +46,27 @@ describe('SessionSectionHeader', () => {
 		expect(btn?.getAttribute('title')).toContain('Completed');
 		btn?.click();
 		expect(onarchive).toHaveBeenCalledTimes(1);
+	});
+
+	it('pluralises the session count it renders', () => {
+		const wide = vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockReturnValue(1200);
+		try {
+			render({ count: 1 });
+			expect(document.body.textContent).toMatch(/\b1 session\b/);
+			reset();
+			render({ count: 3 });
+			expect(document.body.textContent).toMatch(/\b3 sessions\b/);
+		} finally {
+			wide.mockRestore();
+		}
+	});
+
+	it('keeps the controls pinned visible while the section is hidden', () => {
+		render({ hidden: false });
+		expect(document.querySelector('.acts')?.classList.contains('pinned')).toBe(false);
+		reset();
+		render({ hidden: true });
+		expect(document.querySelector('.acts')?.classList.contains('pinned')).toBe(true);
 	});
 
 	it('disables the archive control for an empty section', () => {

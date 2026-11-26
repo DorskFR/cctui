@@ -87,7 +87,6 @@
 	/* Uniform role tints — all via --role-* tokens. */
 	.bubble.user {
 		background: color-mix(in srgb, var(--role-user) 14%, var(--bg-elevated));
-		border-color: color-mix(in srgb, var(--role-user) 45%, transparent);
 	}
 	.bubble.assistant {
 		border-left: 2px solid color-mix(in srgb, var(--role-assistant) 55%, transparent);
@@ -97,26 +96,21 @@
 	   they don't read as something the human typed. */
 	.bubble.system {
 		background: color-mix(in srgb, var(--role-system) 12%, var(--bg-elevated));
-		border-color: color-mix(in srgb, var(--role-system) 40%, transparent);
 	}
 	.bubble.peer {
 		background: color-mix(in srgb, var(--role-peer) 12%, var(--bg-elevated));
-		border-color: color-mix(in srgb, var(--role-peer) 40%, transparent);
 	}
 	.bubble.poll {
 		background: color-mix(in srgb, var(--role-poll) 12%, var(--bg-elevated));
-		border-color: color-mix(in srgb, var(--role-poll) 40%, transparent);
 	}
 	/* Optimistic reply: muted/amber until the agent acknowledges, then it
 	   settles into the regular green user tint above. */
 	.bubble.user.pending {
 		background: color-mix(in srgb, var(--warn) 10%, var(--bg-elevated));
-		border-color: color-mix(in srgb, var(--warn) 35%, transparent);
 		opacity: 0.85;
 	}
 	.bubble.user.queued {
 		background: color-mix(in srgb, var(--role-queued) 12%, var(--bg-elevated));
-		border-color: color-mix(in srgb, var(--role-queued) 40%, transparent);
 	}
 	.bubble.user.cancelled {
 		opacity: 0.6;

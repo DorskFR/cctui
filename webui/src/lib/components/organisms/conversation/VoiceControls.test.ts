@@ -205,8 +205,8 @@ describe('VoiceControls clicks are not holds', () => {
 });
 
 describe('VoiceControls without voice mode', () => {
-	it('shows the mic but no voice-mode toggle when no live handler is given', () => {
-		const toggle = () => document.querySelector('[aria-label="Live voice conversation with this session"]');
+	it('shows the mic but no voice-mode menu when no live handler is given', () => {
+		const toggle = () => document.querySelector('button[aria-label="More voice options"]');
 		expect(toggle()).not.toBeNull();
 		if (comp) unmount(comp);
 		document.body.innerHTML = '';
@@ -214,5 +214,36 @@ describe('VoiceControls without voice mode', () => {
 		flushSync();
 		expect(mic()).not.toBeNull();
 		expect(toggle()).toBeNull();
+	});
+});
+
+describe('VoiceControls live voice entry', () => {
+	async function openMenu() {
+		const panel = [...document.querySelectorAll('[popover]')].at(-1) as HTMLElement;
+		panel.dispatchEvent(Object.assign(new Event('toggle'), { newState: 'open' }));
+		flushSync();
+		await Promise.resolve();
+		flushSync();
+	}
+	const liveRow = () =>
+		[...document.querySelectorAll<HTMLElement>('[role="menuitemcheckbox"]')].find((r) =>
+			r.textContent?.includes('Live voice')
+		) ?? null;
+
+	it('offers one mic, with live voice in its caret menu rather than a second button', async () => {
+		const ontogglelive = vi.fn();
+		if (comp) unmount(comp);
+		document.body.innerHTML = '';
+		comp = mount(VoiceControls, { target: document.body, props: { live: true, ontogglelive, ondictated } });
+		flushSync();
+		const bar = document.querySelector('[data-journey="voice-controls"]') as HTMLElement;
+		expect([...bar.querySelectorAll('button')].map((b) => b.getAttribute('aria-label'))).toEqual([
+			mic().getAttribute('aria-label'),
+			'More voice options'
+		]);
+		await openMenu();
+		expect(liveRow()?.getAttribute('aria-checked')).toBe('true');
+		liveRow()?.click();
+		expect(ontogglelive).toHaveBeenCalledTimes(1);
 	});
 });

@@ -156,7 +156,7 @@ export class ConversationStream {
 		this.live = buffered;
 		this.lastAgentAt = buffered.reduce<number | null>(agentActivityAt, null);
 		this.answering = false;
-		this.working = false;
+		this.working = buffered.reduce(workingAfter, false);
 		this.todos = null;
 		this.#liveTodos = false;
 		this.#resetActivity();

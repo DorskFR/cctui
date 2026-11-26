@@ -8,6 +8,7 @@
 	import { useStorageLifecycleActions } from '#lib/queries/storageAdmin.ts';
 	import { toasts } from '#lib/toast.svelte.ts';
 	import { m } from '#lib/paraglide/messages.js';
+	import { autoSave, serverSave } from './serverSave.svelte.ts';
 	import {
 		MAX_DAYS,
 		MAX_TRIM_KB,
@@ -57,17 +58,19 @@
 		}
 	}
 
-	async function save() {
+	async function save(next = rules) {
+		if (busy !== null) return;
 		busy = 'save';
 		try {
-			await actions.save(rules);
-			toasts.ok(m.settings_server_storage_saved());
-		} catch (e) {
-			toasts.error(errMessage(e));
+			await serverSave.run(() => actions.save(next));
 		} finally {
 			busy = null;
 		}
 	}
+	// Switching every rule off loses nothing, so it saves on its own; rules that
+	// rewrite stored output wait for a preview and an explicit Apply.
+	const destructive = $derived(enablesAnything(rules));
+	autoSave(() => (!destructive && saveable ? rules : undefined), save);
 </script>
 
 <SettingGroup title={m.settings_server_storage_lifecycle_group()}>
@@ -81,7 +84,7 @@
 		</Badge>
 	</SettingRow>
 
-	<SettingRow label={m.settings_server_storage_trim_label()} help={m.settings_server_storage_trim_help()} server admin>
+	<SettingRow label={m.settings_server_storage_trim_label()} help={m.settings_server_storage_trim_help()}>
 		<Switch bind:checked={trimOn} label={m.settings_server_storage_trim_label()} />
 	</SettingRow>
 	{#if trimOn}
@@ -110,7 +113,7 @@
 		</SettingRow>
 	{/if}
 
-	<SettingRow label={m.settings_server_storage_drop_label()} help={m.settings_server_storage_drop_help()} server admin>
+	<SettingRow label={m.settings_server_storage_drop_label()} help={m.settings_server_storage_drop_help()}>
 		<Switch bind:checked={dropOn} label={m.settings_server_storage_drop_label()} />
 	</SettingRow>
 	{#if dropOn}
@@ -140,7 +143,7 @@
 	>
 		<div class="actions">
 			{#if shown}
-				<Text size="sm" variant="code" data-testid="storage-preview">
+				<Text size="sm" numeric data-testid="storage-preview">
 					{m.settings_server_storage_preview_result({
 						bytes: fmtBytes(shown.bytes_freed),
 						trimmed: n(shown.rows_trimmed),
@@ -156,9 +159,11 @@
 			>
 				{m.settings_server_storage_preview_button()}
 			</Button>
-			<Button disabled={!saveable || busy !== null} loading={busy === 'save'} onclick={save}>
-				{m.settings_admin_instance_save()}
-			</Button>
+			{#if destructive}
+				<Button variant="danger" disabled={!saveable || busy !== null} loading={busy === 'save'} onclick={() => save()}>
+					{m.settings_server_storage_apply()}
+				</Button>
+			{/if}
 		</div>
 	</SettingRow>
 
@@ -180,7 +185,7 @@
 					<Badge size="sm" tone="info">{m.settings_server_storage_last_run_running()}</Badge>
 				{/if}
 				<Timestamp value={run.finished_at ?? run.started_at} mode="relative" size="xs" tone="faint" />
-				<Text size="sm" variant="code">{fmtBytes(run.bytes_freed)}</Text>
+				<Text size="sm" numeric>{fmtBytes(run.bytes_freed)}</Text>
 			</div>
 		{/if}
 	</SettingRow>
@@ -189,7 +194,7 @@
 		help={m.settings_server_storage_freed_help()}
 		selfLabelled
 	>
-		<Text size="sm" variant="code" data-testid="storage-freed">{fmtBytes(info.bytes_freed_total)}</Text>
+		<Text size="sm" numeric data-testid="storage-freed">{fmtBytes(info.bytes_freed_total)}</Text>
 	</SettingRow>
 </SettingGroup>
 {#if run?.error}

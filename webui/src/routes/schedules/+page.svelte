@@ -46,7 +46,7 @@
 	<PageHead title={m.schedules_title()}>
 		<Button variant="primary" onclick={() => (editor = { preset: null })}>{m.schedules_new()}</Button>
 	</PageHead>
-	<Text size="sm" tone="faint">{m.schedules_subtitle()}</Text>
+	<Text size="sm" tone="faint" measure>{m.schedules_subtitle()}</Text>
 
 	{#if presets.isLoading}
 		<div class="msg"><Spinner /></div>
@@ -95,10 +95,6 @@
 		display: flex;
 		flex-direction: column;
 		gap: var(--sp-3);
-		padding: var(--sp-4);
-		max-width: 60rem;
-		width: 100%;
-		margin: 0 auto;
 	}
 	.list {
 		display: flex;

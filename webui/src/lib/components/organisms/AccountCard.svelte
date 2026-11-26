@@ -35,7 +35,6 @@
 		onaddprovider,
 		oneditprovider,
 		onreauthprovider,
-		onremoveprovider,
 		onsetredirect,
 		onclearredirect
 	}: {
@@ -63,7 +62,6 @@
 		onaddprovider?: () => void;
 		oneditprovider?: (p: AccountProvider) => void;
 		onreauthprovider?: (p: AccountProvider) => void;
-		onremoveprovider?: (p: AccountProvider) => void;
 		onsetredirect?: (targetId: string, untilHours: number | null, families: string[]) => void;
 		onclearredirect?: (ruleId: string) => void;
 	} = $props();
@@ -288,11 +286,9 @@
 				provider={p}
 				usageEnabled={enabled}
 				canManage={canEditProvider(p, owned) && !compact}
-				canRemove={canEditProvider(p, owned) && !compact}
 				dense={compact}
 				onedit={() => oneditprovider?.(p)}
 				onreauth={() => onreauthprovider?.(p)}
-				onremove={() => onremoveprovider?.(p)}
 			/>
 		{:else}
 			<div class="none"><Text tone="faint" size="sm">{m.accounts_no_credentials()}</Text></div>
@@ -315,7 +311,7 @@
 		{/if}
 		<span class="spacer"></span>
 		<Text as="span" size="xs" tone="faint">
-			{m.accounts_created()} <Timestamp value={a.created_at} mode="short-iso" mono tone="inherit" />
+			{m.accounts_created()} <Timestamp value={a.created_at} mode="short-iso" tone="inherit" />
 		</Text>
 	</footer>
 	{/if}
@@ -332,7 +328,6 @@
 		display: flex;
 		flex-direction: column;
 		min-width: 0;
-		border: 1px solid var(--border);
 		border-radius: var(--r-lg);
 		background: var(--bg-elevated);
 		overflow: hidden;
@@ -348,7 +343,7 @@
 		align-items: center;
 		gap: var(--sp-2) var(--sp-3);
 		padding: var(--sp-3) var(--sp-4);
-		border-bottom: 1px solid var(--border);
+		background: var(--bg-elevated-2);
 		min-width: 0;
 	}
 	.handle {
@@ -426,7 +421,7 @@
 		align-items: center;
 		gap: var(--sp-2);
 		padding: var(--sp-2) var(--sp-4);
-		border-bottom: 1px solid var(--border);
+		background: var(--bg-elevated-2);
 	}
 	.columns {
 		display: grid;
@@ -440,12 +435,11 @@
 		align-items: center;
 		gap: var(--sp-4);
 		padding: var(--sp-2) var(--sp-4);
-		background: var(--bg);
-		border-top: 1px solid var(--border);
+		background: var(--bg-elevated-2);
 	}
 	.sharing {
 		padding: var(--sp-3) var(--sp-4);
-		border-top: 1px solid var(--border);
+		background: var(--bg-elevated-2);
 	}
 	@container acct-row (max-width: 66rem) {
 		.columns {

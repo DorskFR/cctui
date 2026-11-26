@@ -40,6 +40,7 @@ vi.mock('#lib/clipboard.ts', () => ({ copyText: vi.fn(async () => undefined) }))
 vi.mock('@tanstack/svelte-query', () => ({ useQueryClient: () => ({ invalidateQueries }) }));
 
 import PluginsAdminGroup from './PluginsAdminGroup.svelte';
+import { m } from '#lib/paraglide/messages.js';
 
 let comp: ReturnType<typeof mount> | null = null;
 afterEach(() => {
@@ -189,15 +190,22 @@ describe('PluginsAdminGroup', () => {
 
 	it('uninstalls after confirmation only', async () => {
 		render([installed]);
-		const confirm = vi.fn(() => false);
-		vi.stubGlobal('confirm', confirm);
+		const uninstall = m.settings_plugins_admin_uninstall({ name: installed.name });
+		const confirmButton = () =>
+			[...document.querySelectorAll<HTMLButtonElement>('dialog button')].find(
+				(b) => b.textContent?.trim() === uninstall
+			);
 		document.querySelector<HTMLElement>('[data-journey="plugin-admin-uninstall"]')?.click();
+		flushSync();
+		expect(endpoints.uninstallPlugin).not.toHaveBeenCalled();
+		[...document.querySelectorAll<HTMLButtonElement>('dialog button')]
+			.find((b) => b.textContent?.trim() === m.common_cancel())
+			?.click();
 		await tick();
 		expect(endpoints.uninstallPlugin).not.toHaveBeenCalled();
-		confirm.mockReturnValue(true);
 		document.querySelector<HTMLElement>('[data-journey="plugin-admin-uninstall"]')?.click();
-		await tick();
-		expect(endpoints.uninstallPlugin).toHaveBeenCalledWith('yubisashi');
-		vi.unstubAllGlobals();
+		flushSync();
+		confirmButton()?.click();
+		await vi.waitFor(() => expect(endpoints.uninstallPlugin).toHaveBeenCalledWith('yubisashi'));
 	});
 });

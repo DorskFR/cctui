@@ -148,9 +148,16 @@
 		color: var(--accent);
 	}
 	.toc-sub {
-		display: block;
+		display: flex;
+		align-items: center;
+		min-height: 1.5rem;
 		padding: var(--sp-1) var(--sp-3) var(--sp-1) calc(var(--sp-3) + 1.25rem + var(--sp-2));
 		border-radius: var(--r-sm);
+	}
+	@media (pointer: coarse) {
+		.toc-sub {
+			min-height: 2.75rem;
+		}
 	}
 	.toc-sub:hover {
 		background: var(--bg-elevated);

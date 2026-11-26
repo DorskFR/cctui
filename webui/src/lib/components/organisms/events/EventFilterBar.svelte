@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { Select, Toggle } from '@dorsk/tsumikit';
+	import { Select, Text, Toggle } from '@dorsk/tsumikit';
 	import { useMachineResources } from '#lib/queries/index.ts';
 	import { DEFAULT_FILTERS, type EventFilters, type EventFamily, type EventSeverity } from '#lib/events.ts';
 	import { m } from '#lib/paraglide/messages.js';
@@ -25,17 +25,20 @@
 		{ id: 'error', label: m.events_severity_error }
 	];
 	const shownFamilies = $derived(admin ? families : families.filter((f) => f.id !== 'system'));
+	const uid = $props.id();
 </script>
 
 <div class="bar" role="group" aria-label={m.events_filters_aria()}>
-	<span class="group" role="group" aria-label={m.events_filter_family_aria()}>
+	<span class="group" role="group" aria-labelledby="{uid}-kind">
+		<span class="lbl" id="{uid}-kind"><Text size="xs" tone="faint">{m.events_filter_kind()}</Text></span>
 		{#each shownFamilies as f (f.id)}
 			<Toggle pill size="sm" pressed={filters.family === f.id} onclick={() => (filters = { ...filters, family: f.id })}>
 				{f.label()}
 			</Toggle>
 		{/each}
 	</span>
-	<span class="group" role="group" aria-label={m.events_filter_severity_aria()}>
+	<span class="group" role="group" aria-labelledby="{uid}-severity">
+		<span class="lbl" id="{uid}-severity"><Text size="xs" tone="faint">{m.events_filter_severity()}</Text></span>
 		{#each severities as s (s.id)}
 			<Toggle pill size="sm" pressed={filters.severity === s.id} onclick={() => (filters = { ...filters, severity: s.id })}>
 				{s.label()}
@@ -60,11 +63,14 @@
 		display: flex;
 		flex-wrap: wrap;
 		align-items: center;
-		gap: var(--sp-2) var(--sp-3);
+		gap: var(--sp-2) var(--sp-6);
 	}
 	.group {
 		display: inline-flex;
 		align-items: center;
 		gap: var(--sp-1);
+	}
+	.lbl {
+		margin-inline-end: var(--sp-1);
 	}
 </style>

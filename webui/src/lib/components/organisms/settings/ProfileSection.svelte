@@ -35,7 +35,7 @@
 			<Text size="sm">{me.data?.user_name ?? '—'}</Text>
 		</SettingRow>
 		<SettingRow label={m.settings_profile_role_label()} selfLabelled>
-			<Text size="sm" variant="code">{me.data?.role ?? '—'}</Text>
+			<Text size="sm">{me.data?.role ?? '—'}</Text>
 		</SettingRow>
 		<SettingRow label={m.settings_profile_id_label()} selfLabelled>
 			<Text size="sm" variant="code" tone="faint">{me.data?.user_id ?? '—'}</Text>

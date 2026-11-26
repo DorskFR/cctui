@@ -46,16 +46,16 @@
 	>
 		<div class="ver">
 			{#if version.data}
-				<Text size="sm" variant="code">srv {version.data.version}</Text>
+				<Text size="sm" numeric>srv {version.data.version}</Text>
 				{#if releaseChannel(version.data.version) === 'beta'}
 					<span title={m.release_channel_beta_title()}>
-						<Text size="sm" tone="accent" variant="code" weight="bold">{m.release_channel_beta()}</Text>
+						<Text size="sm" tone="accent" weight="bold">{m.release_channel_beta()}</Text>
 					</span>
 				{/if}
-				<Text size="sm" variant="code">ui {__CLIENT_VERSION__}</Text>
+				<Text size="sm" numeric>ui {__CLIENT_VERSION__}</Text>
 				{#if selfUpdate && version.data.latest_version}
 					<Button size="sm" variant="ghost" chip onclick={() => (updateOpen = true)}>
-						<Text size="sm" variant="code" tone="danger">↑ v{version.data.latest_version}</Text>
+						<Text size="sm" numeric tone="accent">{m.update_run_title({ version: version.data.latest_version })}</Text>
 					</Button>
 				{/if}
 			{/if}

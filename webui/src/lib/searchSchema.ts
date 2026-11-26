@@ -16,10 +16,6 @@ export const SERVER_FIELDS = new Set([
 	'dir'
 ]);
 
-/** The free-text search bar placeholder, in the active locale. A function (not a
- *  const) so it re-reads the locale each render. */
-export const sessionSearchPlaceholder = (): string => m.search_bar_placeholder();
-
 export type FetchValues = (field: string, q: string) => Promise<string[]>;
 
 function providerFor(field: string, fetchValues: FetchValues) {

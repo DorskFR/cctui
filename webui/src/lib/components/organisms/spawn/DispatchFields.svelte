@@ -1,4 +1,5 @@
 <script lang="ts">
+	import type { Snippet } from 'svelte';
 	// The "Dispatch (k8s)" branch of the spawn form:
 	// dispatcher + adapter selection and the fields forwarded to the dispatcher as
 	// `payload` (name, identity, repo, ticket, prompt, prompt file, model, timeout,
@@ -33,7 +34,8 @@
 		form = $bindable(),
 		dispatcherIds,
 		accounts,
-		onsubmit
+		onsubmit,
+		promptTools
 	}: {
 		form: Form;
 		dispatcherIds: string[];
@@ -41,6 +43,7 @@
 		accounts: OAuthAccount[];
 		// Submit the spawn form from the prompt textarea (Ctrl/⌘+Enter).
 		onsubmit?: () => void;
+		promptTools?: Snippet;
 	} = $props();
 
 	// `#` session-mention popover on the prompt (see SessionMention).
@@ -147,8 +150,7 @@
 
 <Field for="sp-prompt-d">
 	{#snippet hint()}
-		<Kbd keys="mod+enter" />
-		{m.spawn_submit_hint_dispatch()}
+		<span class="chord-hint"><Kbd keys="mod+enter" /> {m.spawn_submit_hint_dispatch()}</span>
 	{/snippet}
 	<div class="prompt-head">
 		<PromptHistoryMenu
@@ -158,6 +160,7 @@
 			}}
 		/>
 		<label class="prompt-label" for="sp-prompt-d">{m.dispatch_prompt_label()}</label>
+		{#if promptTools}<span class="prompt-tools">{@render promptTools()}</span>{/if}
 	</div>
 	<SessionMention bind:value={form.prompt} el={promptEl} sessions={mentionSessions}>
 		<Textarea
@@ -213,7 +216,7 @@
 	</div>
 	<div class="grow">
 		<Field label={m.dispatch_timeout_label()} for="sp-timeout">
-			<Input id="sp-timeout" mono inputmode="numeric" placeholder={m.dispatch_timeout_placeholder()} bind:value={form.timeout} />
+			<Input id="sp-timeout" inputmode="numeric" style="font-variant-numeric: tabular-nums" placeholder={m.dispatch_timeout_placeholder()} bind:value={form.timeout} />
 		</Field>
 	</div>
 </div>
@@ -306,7 +309,17 @@
 		flex-direction: column;
 		gap: var(--sp-2);
 		padding: var(--sp-2);
-		border: 1px solid var(--border);
 		border-radius: var(--r-md);
+		background: var(--bg-elevated-2);
+	}
+	@media (pointer: coarse) {
+		.chord-hint {
+			display: none;
+		}
+	}
+	.prompt-tools {
+		display: inline-flex;
+		align-items: center;
+		margin-inline-start: auto;
 	}
 </style>

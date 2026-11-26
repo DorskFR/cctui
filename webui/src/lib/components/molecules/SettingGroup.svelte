@@ -1,5 +1,5 @@
 <script lang="ts">
-	// A bordered box of SettingRows, with an optional small-caps header naming
+	// An elevated box of SettingRows, with an optional small-caps header naming
 	// the sub-topic (List · New session · Conversation …). Rows draw their own
 	// hairlines; the box only supplies the surface, the header and the corner
 	// radius. `data-setting-group` lets the page filter hide an emptied box.
@@ -21,14 +21,12 @@
 <style>
 	.group {
 		background: var(--bg-elevated);
-		border: 1px solid var(--border);
 		border-radius: var(--r-lg);
 		overflow: hidden;
 	}
 	.group-h {
 		padding: var(--sp-2) var(--sp-4);
-		background: var(--bg);
-		border-bottom: 1px solid var(--border);
+		background: var(--bg-elevated-2);
 		letter-spacing: 0.06em;
 		text-transform: uppercase;
 	}

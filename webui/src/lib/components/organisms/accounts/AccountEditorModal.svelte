@@ -11,7 +11,6 @@
 	import { toasts } from '#lib/toast.svelte.ts';
 	import { safeHref } from '#lib/safeHref.ts';
 	import { isStaticCredential, providerKindOptions, type ProviderKind } from '#lib/providers.ts';
-	import AccountAvatar from '#lib/components/molecules/AccountAvatar.svelte';
 	import { isValidAccountEmoji } from '#lib/components/molecules/avatar.ts';
 	import { Button, Disclosure, EmojiPicker, Field, Input, Link, Modal, Select, Text } from '@dorsk/tsumikit';
 	import { m } from '#lib/paraglide/messages.js';
@@ -270,7 +269,6 @@
 					</Field>
 					<Field label={m.account_emoji_label()}>
 						<div class="emoji-field">
-							<AccountAvatar {emoji} {name} id={name} size={24} />
 							<EmojiPicker
 								value={emoji}
 								onselect={(v) => (emoji = v)}
@@ -278,13 +276,11 @@
 								searchLabel={m.emoji_picker_search()}
 								emptyLabel={m.emoji_picker_empty()}
 							/>
-							<Input
-								bind:value={emoji}
-								placeholder={m.account_emoji_placeholder()}
-								maxlength={16}
-								aria-label={m.account_emoji_label()}
-								style="max-width: 8rem"
-							/>
+							{#if emoji}
+								<Button size="sm" variant="ghost" onclick={() => (emoji = '')}>
+									{m.account_emoji_clear()}
+								</Button>
+							{/if}
 						</div>
 						{#if !isValidAccountEmoji(emoji)}
 							<Text tone="danger" size="xs">{m.account_emoji_invalid()}</Text>

@@ -1,8 +1,6 @@
 <script lang="ts">
-	// The drawer is now only the side panel: everything inside it is
-	// ConversationPane, which the tiles view mounts without a panel around it.
 	import type { SessionListItem } from '@bindings/SessionListItem';
-	import { Button, ResizablePanel, Text } from '@dorsk/tsumikit';
+	import { Button, ResizablePanel, Scrim, Text } from '@dorsk/tsumikit';
 	import ConversationPane from './ConversationPane.svelte';
 	import { drafts, VIEW_OPTS } from '#lib/drafts.ts';
 	import { parseViewOpts } from './conversation/filters';
@@ -42,10 +40,18 @@
 </script>
 
 <div class="drawer-host">
+	<Scrim
+		{onclose}
+		hideBelow="959px"
+		label={m.common_close()}
+		z={0}
+		style="background: rgb(0 0 0 / 40%)"
+	/>
 	<ResizablePanel
 		mode="overlay"
 		side="right"
 		open
+		scrim={false}
 		{onclose}
 		label={m.settings_group_conversation()}
 		width={paneWidth ?? DRAWER_DEFAULT_PX}
@@ -97,7 +103,9 @@
 		color: var(--text-muted);
 	}
 	/* Zero-size stacking-context host so the fixed panel and scrim paint on
-	   the drawer layer instead of inside the page's own stacking order. */
+	   the drawer layer instead of inside the page's own stacking order. The
+	   scrim sits at z 0 in it: the panel's isolated layout is z auto, so any
+	   higher scrim would cover the panel. */
 	.drawer-host {
 		position: relative;
 		z-index: var(--z-drawer);

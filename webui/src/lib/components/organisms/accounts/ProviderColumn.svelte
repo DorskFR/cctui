@@ -15,21 +15,17 @@
 		provider,
 		usageEnabled = true,
 		canManage = false,
-		canRemove = false,
 		dense = false,
 		onedit,
-		onreauth,
-		onremove
+		onreauth
 	}: {
 		provider: AccountProvider;
 		usageEnabled?: boolean;
 		canManage?: boolean;
-		canRemove?: boolean;
 		/** Gauges only: the header popover has no room for models, counters or the reset button. */
 		dense?: boolean;
 		onedit?: () => void;
 		onreauth?: () => void;
-		onremove?: () => void;
 	} = $props();
 
 	const p = $derived(provider);
@@ -85,16 +81,6 @@
 				<Button size="sm" variant="primary" onclick={onreauth}>{m.providers_reauthenticate()}</Button>
 			{/if}
 			<IconButton icon="settings" label={m.providers_edit()} inline size={14} onclick={onedit} />
-			{#if canRemove}
-				<IconButton
-					icon="x"
-					label={m.providers_remove_aria({ provider: providerLabel(p.provider) })}
-					inline
-					hoverDanger
-					size={13}
-					onclick={onremove}
-				/>
-			{/if}
 		{/if}
 	</div>
 
@@ -128,16 +114,12 @@
 		flex-direction: column;
 		gap: var(--sp-2);
 		padding: var(--sp-3) var(--sp-4);
-		border-right: 1px solid var(--border);
 		min-width: 0;
 		overflow: hidden;
 	}
 	.column.dense {
 		gap: var(--sp-1);
 		padding: var(--sp-2) var(--sp-3);
-	}
-	.column:last-child {
-		border-right: 0;
 	}
 	.head {
 		display: flex;
@@ -160,7 +142,6 @@
 	}
 	.reauth {
 		padding: var(--sp-1) var(--sp-2);
-		border: 1px solid var(--danger);
 		border-radius: var(--r-sm);
 		background: color-mix(in srgb, var(--danger) 12%, transparent);
 		color: var(--danger);

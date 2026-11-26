@@ -2,7 +2,7 @@
 	// A single rendered conversation message. Pure presentation: the meta row
 	// (role badge, tool name, time, delivery state, actions), the bubble and the
 	// footers, delegating retry/edit/save/copy to callbacks.
-	import { Badge, Checkbox, Link, Timestamp, Tooltip } from '@dorsk/tsumikit';
+	import { Badge, Checkbox, Icon, Link, Tooltip } from '@dorsk/tsumikit';
 	import ContextBlock from './ContextBlock.svelte';
 	import HarnessCommandCard from './HarnessCommandCard.svelte';
 	import LineActions from './LineActions.svelte';
@@ -20,6 +20,7 @@
 	import PluginMessageActions from '#lib/components/molecules/PluginMessageActions.svelte';
 	import type { PluginActionButton } from '#lib/plugins/types.ts';
 	import type { Line } from './types';
+	import { fullTime, isoTime, shortTime } from './lineTime';
 	import { m } from '#lib/paraglide/messages.js';
 	import { settings } from '#lib/settings.svelte.ts';
 	import { sessionHref } from '#lib/sessionFailureToast.ts';
@@ -56,7 +57,7 @@
 		sessionId?: string | null;
 		onretry: (ts: number) => void;
 		onedit: (text: string, ts: number) => void;
-		onsaveimage: (e: MouseEvent, ln: Line) => void;
+		onsaveimage: (from: Element, ln: Line) => void;
 		oncopymarkdown: (ln: Line) => void;
 		// Subset-fork affordances: only assistant lines carry the
 		// `messageId` anchor shared by the line and the on-disk transcript.
@@ -134,9 +135,11 @@
 	class="line {ln.role}"
 	class:tinted={settings.roleTintedBackground}
 	class:pinned
+	class:bookmarked
 	data-seq={ln.seq}
 	data-journey="line"
 	data-journey-key={ln.role}
+	tabindex="-1"
 	class:mcp={ln.mcp}
 	class:pending={ln.pending}
 	class:failed={!!ln.failed}
@@ -157,26 +160,24 @@
 		{/if}
 		{#if ln.role === 'assistant' && ln.turn !== undefined}
 			<Tooltip text={`turn ${ln.turn}`}>
-				{#snippet trigger()}<Badge size="xs" uppercase color="var(--bc)">{ln.role}</Badge>{/snippet}
+				{#snippet trigger()}<span class="role">{ln.role}</span>{/snippet}
 			</Tooltip>
 		{:else if ln.context}
-			<Badge size="xs" uppercase color="var(--bc)">{contextLabel}</Badge>
+			<span class="role">{contextLabel}</span>
 		{:else if ln.voice}
-			<Badge size="xs" uppercase color="var(--bc)">{m.voice_live_toggle()}</Badge>
+			<span class="role">{m.voice_live_toggle()}</span>
 		{:else if ln.inbox !== undefined}
-			<Badge size="xs" uppercase color="var(--bc)">{m.conversation_inbox_batch_badge()}</Badge>
+			<span class="role">{m.conversation_inbox_batch_badge()}</span>
 			<span class="who">· {m.conversation_inbox_batch_count({ count: ln.inbox })}</span>
 		{:else}
-			<Badge size="xs" uppercase color="var(--bc)"
-				>{ln.mcp ? 'mcp' : ln.role === 'result' ? 'result' : ln.role}</Badge
-			>
+			<span class="role">{ln.mcp ? 'mcp' : ln.role}</span>
 		{/if}
 		{#if ln.dictated}
 			<span
 				class="dictated"
 				role="img"
 				aria-label={m.voice_user_dictated()}
-				title={m.voice_user_dictated()}>🎙</span
+				title={m.voice_user_dictated()}><Icon name="mic" size={12} /></span
 			>
 		{/if}
 		{#if ln.context?.session}
@@ -192,7 +193,7 @@
 			</span>
 		{/if}
 		{#if ln.role === 'tool' || ln.role === 'result'}
-			<span class="who tool-name">{ln.role === 'result' ? '↳ ' : ''}{ln.tool ?? 'tool'}</span>
+			<span class="who tool-name">{ln.tool ?? 'tool'}</span>
 		{/if}
 		{#if ln.role === 'peer' && ln.peerRoom}
 			<Badge size="xs" color="var(--bc)">{m.rooms_line_from_room({ room: ln.peerRoom })}</Badge>
@@ -203,25 +204,32 @@
 		{#if ln.role === 'peer' && ln.peerFrom}
 			<span class="who peer-from" title={ln.peerFrom}>· {ln.peerFrom}</span>
 		{/if}
-		{#if ln.role === 'marker'}
-			<span class="marker-ts"><Timestamp value={ln.ts} mode="time" tone="faint" size="xs" /></span>
-		{:else}
-			<Timestamp value={ln.ts} mode="time" tone="faint" size="xs" />
-		{/if}
+		<time class="ts" class:marker-ts={ln.role === 'marker'} datetime={isoTime(ln.ts)} title={fullTime(ln.ts)}
+			>{shortTime(ln.ts)}</time
+		>
 		<LineDelivery {ln} {archived} {queueWaiting} {onretry} {onedit} />
-		<LineActions
-			{ln}
-			{pinnable}
-			{pinned}
-			{onpin}
-			{onsaveimage}
-			{oncopymarkdown}
-			{onbookmark}
-			{bookmarked}
-			onquote={quotable ? onquote : undefined}
-			onspeak={ln.role === 'assistant' && ln.text ? onspeak : undefined}
-			{speaking}
-		/>
+		{#if bookmarked}
+			<span class="bm-mark">
+				<Link href="/bookmarks" tone="inherit" underline="none" title={m.bookmarks_line_saved_title()} aria-label={m.bookmarks_line_saved_title()}
+					><Icon name="bookmark" size={14} filled /></Link
+				>
+			</span>
+		{/if}
+		<span class="acts" class:keep={speaking}>
+			<LineActions
+				{ln}
+				{pinnable}
+				{pinned}
+				{onpin}
+				{onsaveimage}
+				{oncopymarkdown}
+				{onbookmark}
+				{bookmarked}
+				onquote={quotable ? onquote : undefined}
+				onspeak={ln.role === 'assistant' && ln.text ? onspeak : undefined}
+				{speaking}
+			/>
+		</span>
 	</div>
 	{#if ln.role === 'thinking'}
 		<ThinkingBubble html={ln.html} redacted={ln.redacted} noReply={ln.noReply} />
@@ -284,8 +292,6 @@
 		flex-direction: column;
 		gap: 2px;
 		max-width: 100%;
-		/* Role tint, inherited by the badge below. Set on the line (not on the
-		   badge itself) so one :global rule serves every role. */
 		--bc: var(--text-muted);
 	}
 	.line.user {
@@ -327,14 +333,49 @@
 		font-size: var(--fs-xs);
 		color: var(--text-faint);
 	}
+	.line:focus {
+		outline: none;
+	}
+	.acts {
+		flex: none;
+		margin-left: auto;
+		display: inline-flex;
+	}
+	.bm-mark {
+		flex: none;
+		margin-left: auto;
+		display: inline-flex;
+		color: var(--role-assistant);
+	}
+	.bm-mark + .acts {
+		margin-left: 0;
+	}
+	/* Touch has no hover: a tap focuses the line, which reveals only its own actions. */
+	@media (hover: hover) {
+		.line:not(:hover, :focus-within) .acts:not(.keep) {
+			opacity: 0;
+		}
+	}
+	@media (hover: none) {
+		.line:not(:focus-within) .acts:not(.keep) {
+			display: none;
+		}
+	}
 	.fork-check {
 		display: inline-flex;
 		align-items: center;
 	}
 	.dictated {
-		font-size: var(--fs-xs);
-		line-height: 1;
+		display: inline-flex;
 		opacity: 0.75;
+	}
+	.role {
+		flex: none;
+		text-transform: uppercase;
+		letter-spacing: 0.06em;
+		font-size: var(--fs-2xs);
+		font-weight: var(--fw-medium);
+		color: color-mix(in srgb, var(--bc) 60%, var(--text-faint));
 	}
 	.who {
 		text-transform: uppercase;
@@ -342,7 +383,7 @@
 		font-weight: var(--fw-medium);
 	}
 	.peer-from {
-		font-family: var(--font-mono);
+		font-variant-numeric: tabular-nums;
 		color: var(--role-peer);
 		text-transform: none;
 		letter-spacing: 0;
@@ -352,7 +393,7 @@
 		max-width: 40%;
 	}
 	.context-from {
-		font-family: var(--font-mono);
+		font-variant-numeric: tabular-nums;
 		color: var(--role-context);
 		text-transform: none;
 		letter-spacing: 0;
@@ -363,13 +404,21 @@
 	}
 	.tool-name {
 		font-family: var(--font-mono);
-		color: var(--text-muted);
+		color: var(--text);
+		font-weight: var(--fw-semibold);
 		text-transform: none;
 		letter-spacing: 0;
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
-		max-width: 60%;
+		flex: 0 1 auto;
+		min-width: 0;
+	}
+	.ts {
+		flex: none;
+		white-space: nowrap;
+		font-variant-numeric: tabular-nums;
+		color: var(--text-faint);
 	}
 	/* Pinned line marker: a warm rail down its left edge. */
 	.line.pinned {
@@ -381,7 +430,6 @@
 	   deliberately the quietest bubble in the log. */
 	.line.marker .bubble {
 		background: none;
-		border-color: var(--border);
 		color: var(--text-faint);
 		font-size: var(--fs-xs);
 	}

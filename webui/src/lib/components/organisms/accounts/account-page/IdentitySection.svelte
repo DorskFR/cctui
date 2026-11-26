@@ -4,7 +4,6 @@
 	import { useAccountActions, type OAuthAccount, type UpdateAccount } from '#lib/queries/index.ts';
 	import { toasts } from '#lib/toast.svelte.ts';
 	import { hasFeature } from '#lib/features.svelte.ts';
-	import AccountAvatar from '#lib/components/molecules/AccountAvatar.svelte';
 	import { isValidAccountEmoji } from '#lib/components/molecules/avatar.ts';
 	import { Button, Card, EmojiPicker, Field, Input, Text } from '@dorsk/tsumikit';
 	import { m } from '#lib/paraglide/messages.js';
@@ -53,12 +52,6 @@
 </script>
 
 <Card title={m.account_section_identity()} subtitle={m.account_section_identity_help()}>
-	{#snippet actions()}
-		<Button size="sm" variant="primary" disabled={!dirty || saving} onclick={save}>
-			{m.common_save()}
-		</Button>
-	{/snippet}
-
 	<div class="body">
 		<Field label={m.accounts_field_name()}>
 			<Input bind:value={name} placeholder={m.accounts_field_name_placeholder()} />
@@ -66,7 +59,6 @@
 
 		<Field label={m.account_emoji_label()}>
 			<div class="emoji">
-				<AccountAvatar {emoji} {name} id={account.id} size={24} />
 				<EmojiPicker
 					value={emoji}
 					onselect={(v) => (emoji = v)}
@@ -74,16 +66,11 @@
 					searchLabel={m.emoji_picker_search()}
 					emptyLabel={m.emoji_picker_empty()}
 				/>
-				<Input
-					bind:value={emoji}
-					placeholder={m.account_emoji_placeholder()}
-					maxlength={16}
-					aria-label={m.account_emoji_label()}
-					style="max-width: 8rem"
-				/>
-				<Button control onclick={() => (emoji = '')} disabled={!emoji}>
-					{m.account_emoji_clear()}
-				</Button>
+				{#if emoji}
+					<Button size="sm" variant="ghost" onclick={() => (emoji = '')}>
+						{m.account_emoji_clear()}
+					</Button>
+				{/if}
 			</div>
 			{#if !emojiOk}
 				<Text tone="danger" size="xs">{m.account_emoji_invalid()}</Text>
@@ -98,7 +85,6 @@
 					type="number"
 					min="0.1"
 					step="0.1"
-					mono
 					width="6rem"
 					bind:value={weight}
 					aria-label={m.accounts_field_pool_weight()}
@@ -111,6 +97,17 @@
 				<Text as="div" size="sm">{owner}</Text>
 			</Field>
 		{/if}
+
+		<div class="save">
+			<Button
+				variant={dirty ? 'primary' : 'default'}
+				disabled={!dirty || saving}
+				loading={saving}
+				onclick={save}
+			>
+				{m.common_save()}
+			</Button>
+		</div>
 	</div>
 </Card>
 
@@ -125,5 +122,9 @@
 		align-items: center;
 		gap: var(--sp-2);
 		flex-wrap: wrap;
+	}
+	.save {
+		display: flex;
+		justify-content: flex-end;
 	}
 </style>

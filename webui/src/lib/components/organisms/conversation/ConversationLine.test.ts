@@ -15,7 +15,7 @@ afterEach(() => {
 	document.body.innerHTML = '';
 });
 
-async function render(ln: Line, sessionId: string | null = null) {
+async function render(ln: Line, sessionId: string | null = null, extra: Record<string, unknown> = {}) {
 	comp = mount(ConversationLine, {
 		target: document.body,
 		props: {
@@ -25,7 +25,8 @@ async function render(ln: Line, sessionId: string | null = null) {
 			onretry: vi.fn(),
 			onedit: vi.fn(),
 			onsaveimage: vi.fn(),
-			oncopymarkdown: vi.fn()
+			oncopymarkdown: vi.fn(),
+			...extra
 		}
 	});
 	await flush();
@@ -45,6 +46,21 @@ describe('role badge and tint', () => {
 		const el = await render(line());
 		expect(el.classList.contains('user')).toBe(true);
 		expect(el.textContent).toContain('user');
+	});
+
+	it('labels the role as plain text, not a filled badge', async () => {
+		const el = await render(line({ role: 'tool', tool: 'Bash' }));
+		const role = el.querySelector('.lmeta .role');
+		expect(role?.textContent).toBe('tool');
+		expect(el.querySelector('.lmeta [data-tsu="Badge"]')).toBeNull();
+		expect(el.querySelector('.lmeta .tool-name')?.textContent).toBe('Bash');
+	});
+
+	it('mutes the role and makes the tool name the strong element', () => {
+		const css = lineSource.slice(lineSource.indexOf('<style>'));
+		expect(css).toMatch(/\.role \{[^}]*text-transform: uppercase;[^}]*color: color-mix\(in srgb, var\(--bc\) 60%, var\(--text-faint\)\);/);
+		expect(css).not.toMatch(/\.role \{[^}]*background/);
+		expect(css).toMatch(/\.tool-name \{[^}]*color: var\(--text\);\s*font-weight: var\(--fw-semibold\);/);
 	});
 
 	it('badges a peer line PEER, not USER', async () => {
@@ -268,7 +284,8 @@ describe('dictated message', () => {
 		const el = await render(line({ dictated: true, html: '<p>fix the bug</p>', text: 'fix the bug' }));
 		expect(el.querySelector('[data-testid="voice-message"]')).toBeNull();
 		const mic = el.querySelector('.lmeta .dictated');
-		expect(mic?.textContent).toBe('🎙');
+		expect(mic?.querySelector('svg[data-tsu="Icon"]')).not.toBeNull();
+		expect(mic?.textContent).not.toContain('🎙');
 		expect(mic?.getAttribute('aria-label')).toContain('Dictated');
 		expect(el.querySelector('.bubble')?.textContent).toContain('fix the bug');
 	});
@@ -284,7 +301,7 @@ describe('voice message', () => {
 		const el = await render(line({ voice: true, html: '<p>what time is it</p>', text: 'what time is it' }));
 		const msg = el.querySelector('[data-testid="voice-message"]');
 		expect(msg).not.toBeNull();
-		expect(msg?.querySelector('[role="img"]')?.textContent).toBe('🎙');
+		expect(msg?.querySelector('[role="img"] svg[data-tsu="Icon"]')).not.toBeNull();
 		expect(msg?.querySelector('.bubble.user')?.textContent).toBe('what time is it');
 		const meta = el.querySelector('.lmeta')?.textContent?.toLowerCase() ?? '';
 		expect(meta).toContain('voice');
@@ -296,7 +313,7 @@ describe('voice message', () => {
 		const el = await render(line());
 		expect(el.querySelector('[data-testid="voice-message"]')).toBeNull();
 		expect(el.querySelector('.bubble.user')?.textContent).toBe('hello');
-		expect(el.textContent).not.toContain('🎙');
+		expect(el.querySelector('.dictated, .voice-message')).toBeNull();
 	});
 });
 
@@ -352,5 +369,56 @@ describe('images in CctuiAgent / CctuiSend results', () => {
 		const marker = '![x](cctui-img://11111111-2222-3333-4444-555555555555)';
 		el = await render(result('Bash', marker), 'ses_parent');
 		expect(el.querySelector('.result-images')).toBeNull();
+	});
+});
+
+describe('meta row on a narrow screen', () => {
+	it('prints a short 24-hour time with the full instant in its title', async () => {
+		const el = await render(line({ ts: new Date(2026, 10, 26, 21, 48, 57).getTime() }));
+		const t = el.querySelector('.lmeta time.ts') as HTMLTimeElement;
+		expect(t.textContent).toMatch(/^21.48$/);
+		expect(t.getAttribute('datetime')).toMatch(/^2026-11-26T/);
+		expect(t.title).toContain('48');
+	});
+
+	it('never wraps the time and lets only the tool name shrink', () => {
+		const css = lineSource.slice(lineSource.indexOf('<style>'));
+		expect(css).toMatch(/\.ts \{\s*flex: none;\s*white-space: nowrap;/);
+		expect(css).toMatch(/\.acts \{\s*flex: none;/);
+		expect(css).toMatch(/\.tool-name \{[^}]*flex: 0 1 auto;\s*min-width: 0;/);
+		expect(css).not.toMatch(/\.tool-name \{[^}]*max-width/);
+	});
+});
+
+describe('meta row type', () => {
+	it('keeps mono for the tool name only, not for sender or session names', () => {
+		const css = lineSource.slice(lineSource.indexOf('<style>'));
+		expect(css).toMatch(/\.tool-name \{\s*font-family: var\(--font-mono\);/);
+		expect(css).not.toMatch(/\.peer-from \{[^}]*font-mono/);
+		expect(css).not.toMatch(/\.context-from \{[^}]*font-mono/);
+	});
+});
+
+describe('result line meta', () => {
+	it('names the tool without an arrow glyph, the RESULT label already says what it is', async () => {
+		const el = await render(line({ role: 'result', tool: 'Bash' }));
+		expect(el.querySelector('.lmeta .tool-name')?.textContent).toBe('Bash');
+		expect(el.querySelector('.lmeta .role')?.textContent).toBe('result');
+	});
+});
+
+describe('bookmarked line', () => {
+	it('keeps a visible bookmark mark outside the hover-gated actions', async () => {
+		const el = await render(line(), null, { bookmarked: true, onbookmark: vi.fn() });
+		const mark = el.querySelector('.lmeta .bm-mark a') as HTMLAnchorElement;
+		expect(el.classList.contains('bookmarked')).toBe(true);
+		expect(mark.getAttribute('href')).toBe('/bookmarks');
+		expect(mark.getAttribute('aria-label')).toBe('Already bookmarked — open it in Bookmarks');
+		expect(mark.closest('.acts')).toBeNull();
+	});
+
+	it('shows no mark on a line that is not bookmarked', async () => {
+		const el = await render(line(), null, { bookmarked: false, onbookmark: vi.fn() });
+		expect(el.querySelector('.bm-mark')).toBeNull();
 	});
 });

@@ -83,3 +83,16 @@ describe('KitFields account pick follows the harness', () => {
 		expect(draft.pool_id).toBeNull();
 	});
 });
+
+describe('KitFields harness choice', () => {
+	it('is a segmented control whose checked segment follows the draft', () => {
+		const draft = render({ harness: 'codex' });
+		const group = document.querySelector('[data-tsu="SegmentedControl"]');
+		expect(group?.getAttribute('aria-label')).toBeTruthy();
+		expect(harnessCard('Codex').getAttribute('aria-checked')).toBe('true');
+		harnessCard('Claude Code').click();
+		flushSync();
+		expect(draft.harness).toBe('claude-code');
+		expect(harnessCard('Claude Code').getAttribute('aria-checked')).toBe('true');
+	});
+});

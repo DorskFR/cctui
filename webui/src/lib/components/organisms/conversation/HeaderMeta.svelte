@@ -1,8 +1,7 @@
 <script lang="ts">
-	// Drawer header meta row: status badge, thread links, cwd, branch, context meter, token usage, langfuse
-	// chip, the in-place codex model editor or the claude "fork to change model"
-	// chip, and the adapter logo, which is the trigger of the popover holding
-	// what a narrow row dropped.
+	// Drawer header meta row: status, thread links, cwd, branch, context meter,
+	// token total, cost, model chip and the adapter logo, which opens the full
+	// session details.
 	import type { SessionListItem } from '@bindings/SessionListItem';
 	import { compact, modelShort, statusBadgeTone, usd } from '#lib/format.ts';
 	import { tokenUsageLayout, bustReasonKey } from '#lib/components/molecules/TokenUsage.logic.ts';
@@ -11,8 +10,8 @@
 	import AdapterIcon from '#lib/components/atoms/AdapterIcon.svelte';
 	import ThreadMenu from './ThreadMenu.svelte';
 	import ContextMeter from './ContextMeter.svelte';
-	import TokenUsage from '#lib/components/molecules/TokenUsage.svelte';
-	import LangfuseChip from '#lib/components/molecules/LangfuseChip.svelte';
+	import { headerCost } from './headerCost';
+	import { langfuseCostLabel } from '#lib/spend.ts';
 	import { Badge, Icon, IconButton, Popover, Select, Switch, Text, WorkingDir } from '@dorsk/tsumikit';
 	import { harnessModelsFallback } from '#lib/domainTables.ts';
 	import { harnessCapabilities } from '#lib/harnesses.ts';
@@ -74,16 +73,19 @@
 	});
 	const branch = $derived(branchOf(session));
 
-	// The details panel is the only place the full readout lives, so its Langfuse
-	// figures are fetched on open rather than with the header.
 	let detailsOpen = $state(false);
 	const caps = useCapabilities();
 	const langfuseAvailable = $derived(hasFeature('observability') && !!caps.data?.langfuse?.available);
 	const lf = useSessionLangfuse(
 		() => session.id,
-		() => detailsOpen && langfuseAvailable
+		() => langfuseAvailable
 	);
 	const calls = $derived(Number(lf.data?.trace_count ?? 0));
+	const cost = $derived(headerCost(totals.cost, totals.total, lf.data));
+	const lfLink = $derived.by(() => {
+		const c = caps.data?.langfuse;
+		return c?.public_host && c.project_id ? `${c.public_host}/project/${c.project_id}/sessions/${session.id}` : null;
+	});
 
 	const toolGuard = useToolGuard(
 		() => session.id,
@@ -178,6 +180,25 @@
 	>
 {/snippet}
 
+{#snippet costText()}
+	{#if cost.source === 'plan'}
+		<Text size="xs" tone="faint">{m.drawer_cost_plan()}</Text>
+	{:else if cost.source === 'langfuse'}
+		{@const label = m.drawer_cost_with_source({ cost: langfuseCostLabel(cost.usd), source: m.drawer_cost_source_langfuse() })}
+		{#if lfLink}
+			<a class="lf-link" href={lfLink} target="_blank" rel="noopener noreferrer"
+				><Text numeric nowrap size="xs" tone="muted" weight="semibold">{label}</Text></a
+			>
+		{:else}
+			<Text numeric nowrap size="xs" tone="muted" weight="semibold">{label}</Text>
+		{/if}
+	{:else if cost.source === 'harness'}
+		<Text numeric nowrap size="xs" tone="muted" weight="semibold"
+			>{m.drawer_cost_with_source({ cost: usd(cost.usd), source: m.drawer_cost_source_harness() })}</Text
+		>
+	{/if}
+{/snippet}
+
 {#snippet modelMeta(idPrefix: string)}
 	{#if canSetModel && !archived}
 		{#if modelEditing}
@@ -211,27 +232,25 @@
 			<span class="model">
 				<Badge
 					as="button"
-					mono
 					title={m.drawer_change_model_title()}
 					onclick={openModelEditor}
-					style="min-width:0;max-width:100%"
-					>{@render modelText(session.model ?? m.drawer_default_model())} ✎</Badge
+					style="display:inline-flex;align-items:center;gap:0.25em;min-width:0;max-width:100%"
+					>{@render modelText(session.model ?? m.drawer_default_model())}<Icon name="edit" size={12} /></Badge
 				>
 			</span>
 		{/if}
 	{:else if (session.model || session.effort) && !onfork}
 		<span class="model">
-			<Badge mono style="min-width:0;max-width:100%">{@render modelText(session.model ?? '')}</Badge>
+			<Badge style="min-width:0;max-width:100%">{@render modelText(session.model ?? '')}</Badge>
 		</span>
 	{:else if session.model || session.effort}
 		<span class="model">
 			<Badge
 				as="button"
-				mono
 				title={m.drawer_no_inplace_model_title()}
 				onclick={onfork}
-				style="min-width:0;max-width:100%"
-				>{@render modelText(session.model ?? '')} ⑂</Badge
+				style="display:inline-flex;align-items:center;gap:0.25em;min-width:0;max-width:100%"
+				>{@render modelText(session.model ?? '')}<Icon name="fork" size={12} /></Badge
 			>
 		</span>
 	{/if}
@@ -255,7 +274,7 @@
 	{#if branch}
 		<span class="branch">
 			<Badge mono title={m.sessions_branch_title({ branch })} style="display:inline-flex;align-items:center;gap:0.25em;min-width:0;max-width:100%">
-				<Icon name="fork" size={12} label={m.sessions_branch_label()} />
+				<Icon name="git-branch" size={12} label={m.sessions_branch_label()} />
 				<span class="ellipsis">{branch}</span>
 			</Badge>
 		</span>
@@ -274,8 +293,22 @@
 	{/if}
 	<div class="meta-trail">
 	<span class="ctx"><ContextMeter {session} {archived} /></span>
-	<span class="tokens"><TokenUsage usage={session.token_usage} /></span>
-	<span class="langfuse"><LangfuseChip id={session.id} /></span>
+	<span class="tokens"
+		><Text
+			numeric
+			nowrap
+			size="xs"
+			tone="muted"
+			title={m.drawer_meta_tokens_title({
+				in: compact(Number(usage.tokens_in)),
+				out: compact(Number(usage.tokens_out)),
+				cache: compact(totals.cacheTotal)
+			})}>{m.drawer_meta_tokens({ tokens: compact(totals.total) })}</Text
+		></span
+	>
+	{#if cost.source === 'langfuse' || cost.source === 'harness'}
+		<span class="cost">{@render costText()}</span>
+	{/if}
 	{@render modelMeta('drawer')}
 	<Popover
 		label={m.drawer_meta_details()}
@@ -300,26 +333,25 @@
 					{ k: m.drawer_details_cache_write(), v: compact(Number(usage.cache_creation_tokens)) }
 				] as row (row.k)}
 					<span class="mp-key"><Text size="xs" tone="faint">{row.k}</Text></span>
-					<span class="mp-num"><Text variant="code" size="xs" tone="muted">{row.v}</Text></span>
+					<span class="mp-num"><Text numeric size="xs" tone="muted">{row.v}</Text></span>
 				{/each}
 				<span class="mp-key"><Text size="xs" tone="muted" weight="semibold">{m.drawer_details_total()}</Text></span>
 				<span class="mp-num"
-					><Text variant="code" size="xs" tone="accent" weight="semibold"
+					><Text numeric size="xs" weight="semibold"
 						>{compact(totals.total)}</Text
 					></span
 				>
-				<span class="mp-key"><Text size="xs" tone="muted" weight="semibold">{m.drawer_details_cost()}</Text></span>
-				<span class="mp-num"
-					><Text variant="code" size="xs" tone="success" weight="semibold">{usd(totals.cost)}</Text
-					></span
-				>
+				{#if cost.source !== 'none'}
+					<span class="mp-key"><Text size="xs" tone="muted" weight="semibold">{m.drawer_details_cost()}</Text></span>
+					<span class="mp-num">{@render costText()}</span>
+				{/if}
 			</div>
 			{#if bust}
 				<div class="mp-row">
 					<span class="mp-key"><Text size="xs" tone="faint">{m.drawer_details_bust()}</Text></span>
 					<span class="mp-val"
 						><Text size="xs" tone="danger"
-							>💥 {m.sessions_token_bust_hint({
+							>{m.sessions_token_bust_hint({
 								tokens: compact(Number(bust.lost_tokens)),
 								cost: usd(Number(bust.lost_usd)),
 								reason: bustReason
@@ -331,11 +363,7 @@
 			{#if calls > 0}
 				<div class="mp-row">
 					<span class="mp-key"><Text size="xs" tone="faint">{m.drawer_details_calls()}</Text></span>
-					<span class="mp-num"><Text variant="code" size="xs" tone="muted">{calls}</Text></span>
-				</div>
-				<div class="mp-row">
-					<span class="mp-key"><Text size="xs" tone="faint">{m.drawer_details_langfuse()}</Text></span>
-					<span class="mp-val"><LangfuseChip id={session.id} /></span>
+					<span class="mp-num"><Text numeric size="xs" tone="muted">{calls}</Text></span>
 				</div>
 			{/if}
 			{#if hooks.kind !== 'none'}
@@ -422,7 +450,7 @@
 		flex: 0 1 auto;
 		min-width: 0;
 	}
-	.langfuse,
+	.cost,
 	.ctx,
 	.tokens {
 		display: contents;
@@ -437,7 +465,7 @@
 		.branch {
 			max-width: 8rem;
 		}
-		.langfuse,
+		.cost,
 		.m-effort,
 		.m-full {
 			display: none;
@@ -498,8 +526,14 @@
 		min-width: 0;
 		text-align: right;
 	}
+	.lf-link {
+		text-decoration: none;
+	}
+	.lf-link:hover {
+		text-decoration: underline;
+	}
 	.mp-sep {
-		border-top: 1px solid var(--border);
+		height: var(--sp-1);
 	}
 	.mp-hooks {
 		margin: 0;

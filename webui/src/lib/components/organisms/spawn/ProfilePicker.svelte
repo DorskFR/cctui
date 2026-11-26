@@ -23,7 +23,9 @@
 		badgeOf,
 		onselect,
 		onedit,
-		onnew
+		onnew,
+		manageHref,
+		onmanage
 	}: {
 		/** Already in display order. */
 		profiles: SessionProfile[];
@@ -37,9 +39,13 @@
 		chainOf: (spec: ProfileSpecForm) => string;
 		badgeOf: (spec: ProfileSpecForm) => BadgeLook;
 		onselect: (id: string) => void;
-		onedit: () => void;
-		onnew: () => void;
+		onedit?: () => void;
+		onnew?: () => void;
+		/** Picker only: the footer links to where profiles are edited instead of creating one here. */
+		manageHref?: string;
+		onmanage?: () => void;
 	} = $props();
+	const editable = $derived(!manageHref);
 
 	const uid = Math.random().toString(36).slice(2, 8);
 	const listId = `pp-list-${uid}`;
@@ -54,6 +60,8 @@
 	let active = $state(-1);
 	let typed = '';
 	let typedAt = 0;
+	let placement = $state<'bottom-start' | 'top-start'>('bottom-start');
+	let sheetMax = $state<number | null>(null);
 
 	const selectedIndex = $derived(profiles.findIndex((p) => p.id === selectedId));
 	const current = $derived(selectedIndex >= 0 ? profiles[selectedIndex] : undefined);
@@ -133,7 +141,24 @@
 		} else onselect(profiles[hit].id);
 	}
 
+	// The kit places the panel against the viewport; keep it inside the form's
+	// scroll area so it never spills over the dialog or dock footer.
+	function fitToScrollArea() {
+		const card = cardEl;
+		if (!card || open) return;
+		const area = scrollArea(card);
+		const box = card.getBoundingClientRect();
+		const top = area ? area.getBoundingClientRect().top : 0;
+		const bottom = area ? area.getBoundingClientRect().bottom : innerHeight;
+		const below = bottom - box.bottom - 8;
+		const above = box.top - top - 8;
+		const down = below >= 256 || below >= above;
+		placement = down ? 'bottom-start' : 'top-start';
+		sheetMax = Math.max(Math.round(down ? below : above), 160);
+	}
+
 	function onkeydowncapture(e: KeyboardEvent) {
+		if (e.target === triggerEl() && !open) fitToScrollArea();
 		if (e.target !== triggerEl()) return;
 		const action = pickerKeyAction(e, {
 			open,
@@ -169,17 +194,32 @@
 				break;
 		}
 	}
+
+	function scrollArea(el: HTMLElement): HTMLElement | null {
+		for (let p = el.parentElement; p; p = p.parentElement) {
+			const y = getComputedStyle(p).overflowY;
+			if (y === 'auto' || y === 'scroll') return p;
+		}
+		return null;
+	}
 </script>
 
 <!-- svelte-ignore a11y_no_static_element_interactions -->
-<div class="card" bind:this={cardEl} {onkeydowncapture}>
+<div
+	class="card"
+	bind:this={cardEl}
+	data-placement={placement}
+	style:--sheet-max={sheetMax === null ? undefined : `${sheetMax}px`}
+	{onkeydowncapture}
+	onpointerdowncapture={fitToScrollArea}
+>
 	<Popover
 		bind:open
 		bare
 		hitArea="compact"
 		gap={0}
 		label={m.spawn_profiles_aria()}
-		placement="bottom-start"
+		{placement}
 		role="group"
 		haspopup="listbox"
 		style={TRIGGER_STYLE}
@@ -206,7 +246,7 @@
 				{:else}
 					<span class="placeholder">{m.spawn_profiles_aria()}</span>
 				{/if}
-				<span class="chevron" class:open aria-hidden="true"><Icon name="chevron-down" /></span>
+				<span class="chevron" class:open class:tooled={editable && !!current} aria-hidden="true"><Icon name="chevron-down" /></span>
 			</span>
 		{/snippet}
 		<div class="sheet" class:top={side === 'top'}>
@@ -230,20 +270,33 @@
 				{/each}
 			</div>
 			<div class="footer">
-				<Button
-					data-journey="new-profile"
-					variant="link"
-					size="sm"
-					disabled={busy}
-					onclick={() => {
-						open = false;
-						onnew();
-					}}>{m.spawn_profile_new()}</Button
-				>
+				{#if manageHref}
+					<Button
+						data-journey="manage-profiles"
+						variant="link"
+						size="sm"
+						href={manageHref}
+						onclick={() => {
+							open = false;
+							onmanage?.();
+						}}>{m.spawn_profile_manage()}</Button
+					>
+				{:else}
+					<Button
+						data-journey="new-profile"
+						variant="link"
+						size="sm"
+						disabled={busy}
+						onclick={() => {
+							open = false;
+							onnew?.();
+						}}>{m.spawn_profile_new()}</Button
+					>
+				{/if}
 			</div>
 		</div>
 	</Popover>
-	{#if current}
+	{#if current && editable}
 		<span class="tools">
 			<span class="cog">
 				<IconButton
@@ -303,10 +356,12 @@
 	.chevron {
 		display: inline-flex;
 		flex: none;
-		margin-inline-start: var(--tools-w);
 		color: color-mix(in srgb, var(--accent) 70%, var(--text-muted));
 		font-size: var(--control-icon-md);
 		transition: rotate var(--dur-fast) var(--ease-out);
+	}
+	.chevron.tooled {
+		margin-inline-start: var(--tools-w);
 	}
 	.chevron.open {
 		rotate: 180deg;
@@ -338,7 +393,7 @@
 		flex-direction: column;
 		gap: var(--sp-1);
 		box-sizing: border-box;
-		max-height: min(70vh, 28rem);
+		max-height: min(70vh, 28rem, var(--sheet-max, 28rem));
 		padding: var(--sp-1);
 		border: var(--edge-width) solid var(--accent);
 		border-top: none;

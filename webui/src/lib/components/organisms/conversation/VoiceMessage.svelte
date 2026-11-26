@@ -1,5 +1,6 @@
 <script lang="ts">
 	// A user turn spoken in live voice: the mic, then what was heard.
+	import { Icon } from '@dorsk/tsumikit';
 	import MessageBubble from './MessageBubble.svelte';
 	import { m } from '#lib/paraglide/messages.js';
 
@@ -23,7 +24,7 @@
 </script>
 
 <div class="voice-message" data-testid="voice-message">
-	<span class="mic" role="img" aria-label={m.voice_user_spoken()} title={m.voice_user_spoken()}>🎙</span>
+	<span class="mic" role="img" aria-label={m.voice_user_spoken()} title={m.voice_user_spoken()}><Icon name="mic" size={14} /></span>
 	<div class="body">
 		<MessageBubble role="user" {html} {text} {tinted} {pending} {queued} {failed} {cancelled} />
 	</div>
@@ -46,8 +47,7 @@
 		border-radius: 50%;
 		border: 1px solid var(--role-user);
 		background: color-mix(in srgb, var(--role-user) 14%, var(--bg-elevated));
-		font-size: var(--fs-sm);
-		line-height: 1;
+		color: var(--role-user);
 	}
 	.body {
 		flex: 1;

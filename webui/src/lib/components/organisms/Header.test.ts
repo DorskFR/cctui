@@ -50,6 +50,7 @@ vi.mock('#lib/toast.svelte.ts', () => ({
 vi.stubGlobal('__CLIENT_VERSION__', '0.11.0');
 
 import { notify } from '#lib/notify.svelte.ts';
+import { setCapabilitiesForTest } from '#lib/features.svelte.ts';
 import Header from './Header.svelte';
 
 let comp: ReturnType<typeof mount> | null = null;
@@ -58,11 +59,15 @@ function cleanup() {
 	comp = null;
 	document.body.innerHTML = '';
 }
-afterEach(cleanup);
+afterEach(() => {
+	cleanup();
+	setCapabilitiesForTest(null);
+});
 
 beforeEach(() => {
 	goto.mockClear();
 	versionData.latest_version = null;
+	versionData.version = '0.11.0';
 	sessionsData.sessions = [];
 	notify.enabled = false;
 });
@@ -89,7 +94,8 @@ describe('the system bar carries no ? button', () => {
 	it('has no standalone guides button in the tail', () => {
 		render();
 		const tail = document.querySelector('.tail') as HTMLElement;
-		expect(tail.textContent).not.toContain('?');
+		const controls = [...tail.querySelectorAll('button, a')].map((el) => el.textContent?.trim());
+		expect(controls).not.toContain('?');
 		expect(tail.querySelector('a[href="/settings/guides"]')).toBeNull();
 	});
 
@@ -123,6 +129,22 @@ describe('the system bar carries no ? button', () => {
 	});
 });
 
+describe('appearance', () => {
+	it('keeps the theme and text size pickers out of the bar', () => {
+		render();
+		const hd = document.querySelector('header.hd') as HTMLElement;
+		expect(hd.querySelector('[data-tsu="ThemePicker"], [data-tsu="FontScalePicker"]')).toBeNull();
+		expect(hd.querySelector('.prefs')).toBeNull();
+	});
+
+	it('opens Settings › Interface › Theme from the account menu', async () => {
+		render();
+		await openUserMenu();
+		rowByText('Appearance…')?.click();
+		expect(goto).toHaveBeenCalledWith('/settings/interface#theme');
+	});
+});
+
 describe('notifications', () => {
 	it('keep no indicator on the pill; the toggle lives in the user menu', async () => {
 		notify.enabled = false;
@@ -133,15 +155,53 @@ describe('notifications', () => {
 	});
 });
 
-describe('the version block shows ui and srv only', () => {
-	it('renders ui and srv only, with the update state left to the avatar dot', () => {
+describe('versions stay out of the bar', () => {
+	it('prints no ui/srv version in the header', () => {
+		render();
+		const hd = document.querySelector('header.hd') as HTMLElement;
+		expect(hd.querySelector('.vers')).toBeNull();
+		expect(hd.textContent).not.toContain('srv v');
+		expect(hd.querySelector('.reload')).toBeNull();
+	});
+
+	it('shows a reload chip only when the ui and server builds differ', () => {
+		versionData.version = '0.12.0';
+		render();
+		const chip = document.querySelector('header.hd .reload') as HTMLElement;
+		expect(chip).not.toBeNull();
+		expect(chip.title).toContain('ui v0.11.0 · srv v0.12.0');
+	});
+
+	it('keeps the version in the account menu', async () => {
+		render();
+		await openUserMenu();
+		expect(rowByText('v0.11.0')).not.toBeNull();
+	});
+
+	it('leaves an available update to the avatar dot', () => {
 		versionData.latest_version = '0.12.0';
 		render();
-		const vers = document.querySelector('.vers') as HTMLElement;
-		expect(vers.textContent).toContain('ui v');
-		expect(vers.textContent).toContain('srv v0.11.0');
-		expect(vers.textContent).not.toContain('v0.12.0');
 		expect(document.querySelector('.pill [data-tsu="Avatar"] [data-tsu="Dot"]')).not.toBeNull();
+	});
+
+	it('offers the update from the account menu when self-update is on', async () => {
+		versionData.latest_version = '0.12.0';
+		render();
+		await openUserMenu();
+		const row = rowByText('Newer version available: v0.12.0') as HTMLButtonElement;
+		expect(row).not.toBeNull();
+		expect(row.disabled).toBe(false);
+	});
+
+	it('still announces an update when self-update is off, as a plain row', async () => {
+		setCapabilitiesForTest({ features: [], switchable: ['self_update'] });
+		versionData.latest_version = '0.12.0';
+		render();
+		expect(document.querySelector('.pill [data-tsu="Avatar"] [data-tsu="Dot"]')).not.toBeNull();
+		await openUserMenu();
+		const row = rowByText('Newer version available: v0.12.0') as HTMLButtonElement;
+		expect(row).not.toBeNull();
+		expect(row.disabled).toBe(true);
 	});
 
 	it('drops the alert dot when there is no update', () => {

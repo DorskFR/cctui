@@ -2,7 +2,6 @@
 import { describe, expect, it } from 'vitest';
 import type { AccountUsageEntry, UsagePace, UsageWindow } from '#lib/queries/index.ts';
 import {
-	aggregateBars,
 	barPct,
 	batteryBars,
 	batteryEntries,
@@ -10,8 +9,7 @@ import {
 	headroomTone,
 	paceState,
 	patchUsageEntries,
-	wallInMs,
-	worstPace
+	wallInMs
 } from './usage-battery.logic';
 
 const pace = (ratio: number, wall: string | null = null): UsagePace => ({
@@ -114,16 +112,7 @@ describe('batteryBars / barPct', () => {
 	});
 });
 
-describe('worstPace', () => {
-	it('picks the window burning hardest, ignoring ones without a pace', () => {
-		expect(worstPace([win('session', 10, pace(0.4)), win('weekly_all', 20, pace(1.9))])?.key).toBe(
-			'weekly_all'
-		);
-		expect(worstPace([win('session', 10), null])).toBeNull();
-	});
-});
-
-describe('batteryEntries / aggregateBars', () => {
+describe('batteryEntries', () => {
 	const rows = [
 		entry('p1', 'A', [win('session', 10), win('weekly_all', 20)]),
 		entry('p2', 'A', [win('session', 80)]),
@@ -134,18 +123,6 @@ describe('batteryEntries / aggregateBars', () => {
 	it('keeps only pinned providers that reported a window', () => {
 		expect(batteryEntries(rows).map((e) => e.providerId)).toEqual(['p1', 'p2']);
 		expect(batteryEntries(null)).toEqual([]);
-	});
-
-	it('aggregates each bar to the fullest window across providers', () => {
-		const agg = aggregateBars(batteryEntries(rows));
-		expect(barPct(agg.fiveHour)).toBe(80);
-		expect(barPct(agg.weekly)).toBe(20);
-	});
-
-	it('has nothing to aggregate when no provider is pinned', () => {
-		const agg = aggregateBars([]);
-		expect(agg.fiveHour).toBeNull();
-		expect(agg.weekly).toBeNull();
 	});
 });
 

@@ -1,7 +1,7 @@
 <script lang="ts">
 	// The live voice strip above the composer: what the loop is doing, the
 	// mic level, the last thing it heard, mute and leave.
-	import { Badge, IconButton, Meter, Text } from '@dorsk/tsumikit';
+	import { Badge, Icon, IconButton, Meter, Text } from '@dorsk/tsumikit';
 	import type { LiveVoice } from '#lib/voice/liveVoice.svelte.ts';
 	import { m } from '#lib/paraglide/messages.js';
 
@@ -40,10 +40,10 @@
 		<Meter label={m.voice_live_level()} value={voice.muted ? 0 : voice.level} max={1} size="sm" format={() => ''} />
 	</div>
 	{#if voice.transcript && !landed}
-		<span class="transcript"><Text size="sm" tone="muted">🎙 {voice.transcript}</Text></span>
+		<span class="transcript"><Icon name="mic" size={14} /><Text size="sm" tone="muted">{voice.transcript}</Text></span>
 	{/if}
 	<IconButton
-		emoji={voice.muted ? '🔇' : '🎙'}
+		icon={voice.muted ? 'mic-off' : 'mic'}
 		box="sm"
 		variant="ghost"
 		pressed={voice.muted}

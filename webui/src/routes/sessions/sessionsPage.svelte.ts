@@ -1,4 +1,5 @@
 import { untrack } from "svelte";
+import { goto } from "$app/navigation";
 import {
   createInfiniteQuery,
   type CreateInfiniteQueryResult,
@@ -112,8 +113,6 @@ export interface SessionsPageDeps {
   invalidateSessions: () => void;
   refetchLive: () => Promise<unknown>;
   dockLayout: () => DockLayout;
-  clearUrlSession: () => void;
-  confirm: (message: string) => boolean;
   spawnSlot: {
     currentKey: () => string;
     read: (key: string) => SpawnSlotPayload | null;
@@ -569,13 +568,11 @@ export class SessionsPage {
       if (req === this.#openReq) this.#open = row;
     } catch (e) {
       if (req !== this.#openReq) return;
-      // Archived/ended sessions resolve from the DB, so a 404 means the
-      // session was actually DELETED — only then toast + drop the id.
-      // Transient errors leave the URL intact so a retry/refresh can recover.
+      // A full navigation runs the session route's load, whose 404 renders
+      // the error page under the same URL.
       if (e instanceof ApiError && e.status === 404) {
-        this.#d.toasts.error(m.sessions_toast_not_found());
         this.#open = null;
-        this.#d.clearUrlSession();
+        void goto(`/sessions/${encodeURIComponent(id)}`, { replaceState: true, invalidateAll: true });
       } else {
         this.#d.toasts.error(
           m.sessions_toast_open_failed({ error: errMessage(e) }),
@@ -731,14 +728,24 @@ export class SessionsPage {
     }
   };
 
-  discardDraft = async (s: SessionListItem) => {
-    if (!this.#d.confirm(m.sessions_confirm_discard_draft())) return;
+  discardPending = $state<SessionListItem | null>(null);
+  discardDraft = (s: SessionListItem) => {
+    this.discardPending = s;
+  };
+  cancelDiscard = () => {
+    this.discardPending = null;
+  };
+  confirmDiscard = async () => {
+    const s = this.discardPending;
+    if (!s) return;
     try {
       await this.#d.actions.discardDraft(s.id);
       this.#d.spawnSlot.clear(s.machine_id, s.working_dir);
       this.#d.toasts.ok(m.sessions_toast_draft_discarded());
     } catch (e) {
       this.#d.toasts.error(errMessage(e));
+    } finally {
+      this.discardPending = null;
     }
   };
 

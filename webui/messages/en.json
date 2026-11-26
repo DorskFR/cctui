@@ -84,17 +84,31 @@
 	"access_policy_confirm_remove": "Remove the dispatch policy of {name}? It will dispatch unrestricted again.",
 	"access_tabs_label": "Access sections",
 	"access_tag_admin": "admin",
-	"access_title": "Access",
+	"access_title": "Users & keys",
 	"access_user_meta": "{machines} machines · {accounts} accounts",
 	"access_user_meta_accounts": "{accounts} accounts",
+	"access_user_online": [
+		{
+			"declarations": [
+				"input n",
+				"local nPlural = n: plural"
+			],
+			"selectors": [
+				"nPlural"
+			],
+			"match": {
+				"nPlural=one": "1 machine online",
+				"nPlural=other": "{n} machines online"
+			}
+		}
+	],
+	"access_user_offline": "offline",
 	"account_delete_help": "Deleting \"{name}\" removes the identity and every provider credential under it. This cannot be undone.",
 	"account_emoji_clear": "Clear",
 	"account_emoji_hint": "One emoji, shown wherever this account appears. Leave empty for a coloured letter square.",
 	"account_emoji_invalid": "Enter a single emoji, or leave it empty.",
 	"account_emoji_label": "Emoji",
-	"account_emoji_placeholder": "🐙",
 	"account_not_found": "That account no longer exists.",
-	"account_back": "All accounts",
 	"account_section_danger": "Danger zone",
 	"account_section_env": "Environment",
 	"account_section_env_help": "Extra environment variables handed to every session launched on this account. Values are write-only.",
@@ -118,7 +132,6 @@
 	"accounts_auth_bearer": "Bearer token",
 	"accounts_auth_keep": "Keep current",
 	"accounts_confirm_delete_account": "Delete account \"{name}\" and all its provider credentials?",
-	"accounts_confirm_remove_provider": "Remove the {provider} credential from \"{name}\"? The account and its other providers stay.",
 	"accounts_created": "created",
 	"accounts_delete_account": "Delete account",
 	"accounts_deleted": "Deleted",
@@ -243,7 +256,6 @@
 	"bookmarks_from_unknown": "from an unnamed session",
 	"bookmarks_line_label": "Save this message to bookmarks",
 	"bookmarks_line_saved_title": "Already bookmarked — open it in Bookmarks",
-	"bookmarks_line_title": "Bookmark this message",
 	"bookmarks_no_wrapup": "No assistant message to save yet.",
 	"bookmarks_note_hint": "Optional — why this is worth keeping.",
 	"bookmarks_open_session": "Open session",
@@ -318,6 +330,7 @@
 	"composer_schedule_custom_invalid": "Pick a time in the next 30 days",
 	"composer_schedule_confirm": "Schedule",
 	"conversation_dock_empty": "Pick a session in the list to open it here.",
+	"conversation_line_actions": "Message actions",
 	"conversation_scheduled_for": "Scheduled for {time}",
 	"device_approve": "Approve",
 	"device_approved": "Approved — the device can finish signing in.",
@@ -381,8 +394,9 @@
 	"conversation_attachment_load_failed": "Could not load {name}",
 	"conversation_attachment_open": "Open {name}",
 	"conversation_attachment_unavailable": "{name} is no longer available: the server no longer stores it and it is not on the machine",
-	"conversation_auto_approve_aria": "Auto-approve tool-use permissions — tool use only, plans still ask",
-	"conversation_auto_approve_btn": "Auto-approve",
+	"conversation_auto_approve_on": "Auto-approve: on",
+	"conversation_auto_approve_off": "Auto-approve: off",
+	"conversation_panels": "Panels",
 	"conversation_auto_approve_title": "Auto-approve tool-use permission requests for this session — tool use only, plans still ask",
 	"conversation_behavior_aria": "Behavior",
 	"conversation_brief_collapse": "Collapse the brief",
@@ -396,7 +410,6 @@
 	"conversation_copied_markdown": "Copied as Markdown",
 	"conversation_copy_failed": "Could not copy: {message}",
 	"conversation_copy_markdown_label": "Copy as Markdown",
-	"conversation_copy_markdown_title": "Copy this message as Markdown",
 	"conversation_edit_message_label": "Edit message",
 	"conversation_edit_message_title": "Pull this message back into the composer to edit and resend",
 	"conversation_edit_pending_label": "Edit pending message",
@@ -500,7 +513,6 @@
 	"conversation_queued": "queued",
 	"conversation_queue_removed": "removed from queue",
 	"conversation_pin_label": "Pin message",
-	"conversation_pin_title": "Pin this message and jump back to it later",
 	"conversation_pins": "Pins",
 	"conversation_pins_aria": "Pinned messages",
 	"conversation_pins_empty": "No pinned messages yet",
@@ -513,7 +525,6 @@
 	"conversation_retrying": "retrying… ({attempt}/{max})",
 	"conversation_retrying_title": "Delivery failed — retrying with backoff",
 	"conversation_save_image_label": "Save as image",
-	"conversation_save_image_title": "Save this message as an image",
 	"conversation_saved_image": "Saved image",
 	"conversation_sending": "sending…",
 	"conversation_show_less": "Show less",
@@ -702,7 +713,18 @@
 	"drawer_fork_title": "Fork into a new conversation (optionally change model)",
 	"drawer_interrupt_label": "Interrupt turn",
 	"drawer_interrupt_title": "Interrupt the in-flight turn",
+	"drawer_stop": "Stop",
+	"drawer_menu_group_share": "Share",
+	"drawer_menu_group_branch": "Branch",
+	"drawer_menu_group_collaborate": "Collaborate",
+	"drawer_menu_group_session": "Session",
 	"drawer_meta_details": "Session details",
+	"drawer_meta_tokens": "{tokens} tokens",
+	"drawer_meta_tokens_title": "In {in} · out {out} · cache {cache}",
+	"drawer_cost_with_source": "{cost} · {source}",
+	"drawer_cost_source_langfuse": "Langfuse",
+	"drawer_cost_source_harness": "harness",
+	"drawer_cost_plan": "Billed to plan",
 	"drawer_thread_previous": "Previous session in this thread",
 	"drawer_thread_next": "Next session in this thread",
 	"drawer_thread_menu": "Sessions in this thread",
@@ -715,7 +737,6 @@
 	"drawer_details_total": "Total",
 	"drawer_details_cost": "Cost",
 	"drawer_details_calls": "Calls",
-	"drawer_details_langfuse": "Langfuse",
 	"drawer_details_bust": "Cache bust",
 	"drawer_model_aria": "Model",
 	"drawer_more_actions": "More actions",
@@ -733,12 +754,27 @@
 	"events_load_more": "Load older",
 	"events_loading_more": "Loading…",
 	"events_filters_aria": "Event filters",
-	"events_filter_family_aria": "Event family",
-	"events_filter_severity_aria": "Severity",
+	"events_filter_kind": "Kind",
+	"events_filter_severity": "Severity",
 	"events_filter_machine_aria": "Machine",
 	"events_filter_all": "All",
 	"events_filter_all_machines": "All machines",
 	"events_filter_reset": "Reset",
+	"events_children_created": [
+		{
+			"declarations": [
+				"input n",
+				"local nPlural = n: plural"
+			],
+			"selectors": [
+				"nPlural"
+			],
+			"match": {
+				"nPlural=one": "1 subagent created",
+				"nPlural=other": "{n} subagents created"
+			}
+		}
+	],
 	"events_family_session": "session",
 	"events_family_machine": "machine",
 	"events_family_system": "system",
@@ -896,7 +932,7 @@
 	"home_cache_loss_title_7d": "Lost to cache busts · last 7 days",
 	"home_cache_loss_ttl_expired": "TTL expired",
 	"home_cache_loss_unknown": "Unknown",
-	"home_enroll_install": "Install {daemon} on the target machine (from GitHub Releases), then enroll it with a user token (create one on the Access page):",
+	"home_enroll_install": "Install {daemon} on the target machine (from GitHub Releases), then enroll it with a user token (create one under Users & keys):",
 	"home_enroll_run_as_service": "Then run it as a service:",
 	"home_enroll_title": "Enroll a machine",
 	"home_overview_title": "Overview",
@@ -920,6 +956,22 @@
 	"home_usage_no_data": "No usage data yet.",
 	"home_usage_output": "Output",
 	"home_usage_page_title": "Usage",
+	"home_needs_input_line": [
+		{
+			"declarations": [
+				"input count",
+				"local countPlural = count: plural"
+			],
+			"selectors": [
+				"countPlural"
+			],
+			"match": {
+				"countPlural=one": "{count} session needs your input",
+				"countPlural=other": "{count} sessions need your input"
+			}
+		}
+	],
+	"home_needs_input_open": "Open",
 	"home_usage_peak": "Peak {n} tokens/bucket",
 	"home_usage_range_cost": "{usd} spent over the range",
 	"home_usage_range_label": "Range",
@@ -1030,6 +1082,11 @@
 	"nav_harness_mode_tooltip": "Claude harness mode: {mode} — change in Settings (Codex sessions ignore this)",
 	"nav_instance_name": "Instance name",
 	"nav_log_out": "Log out",
+	"nav_appearance": "Appearance…",
+	"header_status_label": "Machines and usage",
+	"header_status_label_usage": "Machines and usage, worst {usage}",
+	"header_status_machines": "Machines",
+	"header_status_usage": "Usage",
 	"nav_main_label": "Main navigation",
 	"nav_notify_blocked": "Notifications blocked by browser",
 	"nav_notify_off": "Notifications off",
@@ -1037,7 +1094,7 @@
 	"nav_notify_on": "Notifications on",
 	"nav_notify_on_label": "Notifications on — click to mute",
 	"nav_notify_unsupported": "Notifications not supported in this browser",
-	"nav_overview": "Overview",
+	"nav_overview": "Usage",
 	"nav_review": "Review",
 	"settings_context_add_memory": "Add a note",
 	"settings_context_add_prompt": "Add a template",
@@ -1152,6 +1209,8 @@
 	"notifications_needs_answer": "Needs an answer",
 	"notif_center_title": "Notifications",
 	"notif_dismiss_blocking": "A session is still waiting on this. Dismiss it anyway? The session is told it expired.",
+	"notif_dismiss_blocking_title": "Dismiss a notice a session waits on?",
+	"notif_dismiss_anyway": "Dismiss anyway",
 	"notif_dismiss_failed": "Could not dismiss the notification",
 	"notif_load_failed": "Could not load notifications: {error}",
 	"notif_state": "{decision}",
@@ -1369,7 +1428,10 @@
 	"providers_out_of_schema_help": "Not in the bundled settings schema: passed to the harness as-is, unchecked.",
 	"providers_out_of_schema": "out of schema",
 	"providers_reauthenticate": "Reauthenticate",
-	"providers_remove_aria": "Remove {provider} provider",
+	"providers_remove": "Remove {provider}",
+	"providers_remove_help": "Removing {provider} deletes this credential with its models, aliases and limits. The account and its other providers stay.",
+	"providers_remove_title": "Remove {provider} from \"{name}\"?",
+	"providers_remove_confirm": "Sessions on \"{name}\" can no longer use {provider} models, and pools stop routing {provider} requests to it. Its models, aliases and limits are deleted. This cannot be undone.",
 	"providers_remove_key_aria": "Remove {key}",
 	"providers_requests": "{n} requests",
 	"providers_settings_help": "Applied to every session run under this provider. Curated settings and environment share one list; the server rejects org-managed keys.",
@@ -1404,8 +1466,8 @@
 	"redacted_tag_pill": "redacted",
 	"redacted_tag_pill_tooltip": "hidden by you",
 	"redacted_tag_unclosed": "Unclosed <redacted> tag: close it with </redacted>, or this text is sent and stored as written.",
-	"reload_new_ui_hint": "reload",
 	"reload_new_ui_title": "A newer web UI has been deployed — reload to pick it up",
+	"version_chip_reload": "New version · reload",
 	"release_channel_beta": "beta",
 	"release_channel_beta_title": "Beta release channel: a pre-release build",
 	"resource_gauge_aria": "{machine}: CPU {cpu}, memory {mem}, disk {disk}",
@@ -1414,7 +1476,6 @@
 	"resource_gauge_mem": "Memory",
 	"resource_gauge_stale": "Stale: no heartbeat for a few minutes.",
 	"resource_gauge_unknown": "No figures yet: the daemon is too old to report them, or the machine has no /proc.",
-	"search_bar_placeholder": "Search — status:active machine:… label:… or free text",
 	"search_field_account": "Account",
 	"search_field_adapter": "Adapter",
 	"search_field_created": "Created",
@@ -1465,6 +1526,7 @@
 	"sessions_confirm_archive_many_title": "Archive selected sessions",
 	"sessions_confirm_archive_section": "Archive all {count} sessions in {section}? You can undo from the toast.",
 	"sessions_confirm_discard_draft": "Discard this draft?",
+	"sessions_confirm_discard_draft_body": "“{name}” and its saved prompt and settings will be deleted. This can’t be undone.",
 	"sessions_copy_id_title": "Copy session id",
 	"sessions_dim_label": "Label",
 	"sessions_dim_machine": "Machine",
@@ -1506,7 +1568,21 @@
 	"sessions_filter_sections_count": "Filter sections ({count}/{total})",
 	"sessions_filtering_by_labels": "Filtering by {count} label(s)",
 	"sessions_glyphs_expand_label": "Session status",
-	"sessions_group_count": "{count} sessions",
+	"sessions_group_count": [
+		{
+			"declarations": [
+				"input count",
+				"local countPlural = count: plural"
+			],
+			"selectors": [
+				"countPlural"
+			],
+			"match": {
+				"countPlural=one": "{count} session",
+				"countPlural=other": "{count} sessions"
+			}
+		}
+	],
 	"sessions_hue": "Hue {hue}",
 	"sessions_kanban_empty": "Nothing here",
 	"sessions_label_color_aria": "Label color",
@@ -1524,9 +1600,6 @@
 	"sessions_labels_empty_create": "No labels yet — type to create one.",
 	"sessions_labels_menu": "Labels",
 	"sessions_labels_no_match": "No matching labels",
-	"sessions_langfuse_calls": "{count} gateway calls",
-	"sessions_langfuse_calls_short": "· {count} calls",
-	"sessions_langfuse_cost": "Langfuse cost: {cost}",
 	"sessions_launch": "Launch",
 	"sessions_launch_now": "Launch now",
 	"sessions_limit_reset": "Reset limit",
@@ -1582,6 +1655,24 @@
 	"sessions_rebind_reason_redirect": "redirect rule",
 	"sessions_rebind_reason_outage": "{family} incident",
 	"sessions_rebinds_tip": "This session changed accounts while running",
+	"sessions_search_placeholder": "Search sessions",
+	"sessions_row_tokens": [
+		{
+			"declarations": [
+				"input count",
+				"input tokens",
+				"local countPlural = count: plural"
+			],
+			"selectors": [
+				"countPlural"
+			],
+			"match": {
+				"countPlural=one": "{tokens} token",
+				"countPlural=other": "{tokens} tokens"
+			}
+		}
+	],
+	"sessions_row_tokens_title": "{total} tokens: {input} in, {output} out, {cache} cached",
 	"sessions_search_failed": "Could not search: {error}",
 	"sessions_search_live_only_hint": "(live only — pick Archived to search all).",
 	"sessions_search_no_match": "No chats match “{query}”",
@@ -1639,7 +1730,6 @@
 	"sessions_toast_fork_slow": "Forked conversation is taking a while to appear — it will show in the list shortly.",
 	"sessions_toast_spawn_slow": "New session is taking a while to appear — it will show in the list shortly.",
 	"sessions_toast_launch_failed": "Could not launch the session: {error}",
-	"sessions_toast_not_found": "Session not found — it may have been deleted.",
 	"sessions_toast_open_failed": "Could not open session: {error}",
 	"sessions_toast_pinned": "Starred",
 	"sessions_toast_save_current_failed": "Could not save the current form as a draft: {error}",
@@ -1685,13 +1775,11 @@
 	"settings_row_density_label": "Row density",
 	"settings_row_density_normal": "Comfortable",
 	"settings_row_density_compact": "Compact",
-	"settings_admin_instance_cleared": "Instance name cleared",
 	"settings_admin_instance_name_help": "Server-wide label shown as “cctui (NAME)” in the header and the browser tab, so several deployments stay telling apart. Empty (the default) shows the bare brand.",
 	"settings_admin_instance_name_label": "Instance name",
 	"settings_admin_instance_name_placeholder": "e.g. Acme",
-	"settings_admin_instance_save": "Save",
-	"settings_admin_instance_saved": "Instance name saved",
 	"settings_appearance_desc": "Theme, text size and language. The same settings are reachable from the header.",
+	"settings_appearance_device_note": "Look, motion and sound are saved in this browser only.",
 	"settings_archive_done_button_help": "Show the archive-all control on the Completed group header. Per-session archive and the swipe gesture stay available either way.",
 	"settings_archive_done_button_label": "Archive all on Completed",
 	"settings_archive_shortcut_help": "In an open conversation, ⌘ E (Mac) / Ctrl + E interrupts any running turn and archives the session.",
@@ -1713,7 +1801,6 @@
 	"settings_group_diagnostics": "Diagnostics",
 	"settings_group_dispatch": "Dispatched sessions",
 	"settings_group_list": "List",
-	"settings_group_server": "Server",
 	"settings_guides_cancel": "Cancel",
 	"settings_guides_description": "Every guided tour in the app. Replay one whenever you like.",
 	"settings_guides_empty": "This build ships no guides.",
@@ -1889,7 +1976,37 @@
 	"settings_event_retention_title": "Event log",
 	"settings_event_retention_label": "Keep events for (days)",
 	"settings_event_retention_help": "Older events are pruned automatically. 0 keeps them forever; the default is {days} days.",
-	"settings_event_retention_saved": "Event retention saved",
+	"settings_event_retention_shorten": [
+		{
+			"declarations": [
+				"input days",
+				"local daysPlural = days: plural"
+			],
+			"selectors": [
+				"daysPlural"
+			],
+			"match": {
+				"daysPlural=one": "Shorten to 1 day",
+				"daysPlural=other": "Shorten to {days} days"
+			}
+		}
+	],
+	"settings_event_retention_shorten_title": "Shorten event retention?",
+	"settings_event_retention_shorten_message": [
+		{
+			"declarations": [
+				"input days",
+				"local daysPlural = days: plural"
+			],
+			"selectors": [
+				"daysPlural"
+			],
+			"match": {
+				"daysPlural=one": "Events older than 1 day are deleted at the next prune. This cannot be undone.",
+				"daysPlural=other": "Events older than {days} days are deleted at the next prune. This cannot be undone."
+			}
+		}
+	],
 	"settings_net_stats_help": "What this browser has pulled from the API and the websocket since the page loaded.",
 	"settings_notification_sound_label": "Notification sound",
 	"settings_notifications_title": "Notifications",
@@ -1996,7 +2113,6 @@
 	"settings_scope_you": "You",
 	"settings_self_update_adapter": "Adapter",
 	"settings_self_update_clear": "Clear",
-	"settings_self_update_cleared": "Self-update machine cleared",
 	"settings_self_update_dir": "Working directory",
 	"settings_self_update_dir_placeholder": "/path/to/the/deployment",
 	"settings_self_update_from_env": "Currently taken from CCTUI_SELF_UPDATE_MACHINE / CCTUI_SELF_UPDATE_DIR; saving here overrides it.",
@@ -2008,8 +2124,8 @@
 	"settings_source_env": "from env",
 	"settings_source_default": "built-in default",
 	"settings_reset": "Reset",
-	"settings_uploads_apply_help": "Saved caps take effect on the very next upload, with no restart. The server enforces them; the browser check only fails fast.",
-	"settings_uploads_apply_label": "Save the caps",
+	"settings_uploads_apply_help": "Changed caps take effect on the very next upload, with no restart. The server enforces them; the browser check only fails fast.",
+	"settings_uploads_apply_label": "Where the caps come from",
 	"settings_uploads_ceiling_help": "The hard limit the upload routes are built with. Saving a total cap at or above it is refused: raise {env} and restart the server to go higher.",
 	"settings_uploads_ceiling_help_generic": "The hard limit the upload routes are built with, set by an environment variable at boot. Saving a total cap at or above it is refused.",
 	"settings_uploads_ceiling_label": "Request body ceiling",
@@ -2028,7 +2144,6 @@
 	"settings_uploads_max_files_label": "Files per upload",
 	"settings_uploads_max_total_help": "Combined size of all files in one upload. Must stay below the request ceiling below.",
 	"settings_uploads_max_total_label": "Total size per upload (MB)",
-	"settings_uploads_saved": "Upload caps saved",
 	"settings_speech_label": "Speech service",
 	"settings_speech_help": "OpenAI-compatible speech-to-text and text-to-speech service used for voice features. Its host is allowed as an upstream automatically.",
 	"settings_speech_enabled": "Enable voice features",
@@ -2048,8 +2163,6 @@
 	"settings_speech_summary_model": "Summary model",
 	"settings_speech_summary_model_help": "Chat model that shortens long messages before they are read aloud.",
 	"settings_speech_summary_off": "Off",
-	"settings_speech_save": "Save",
-	"settings_speech_saved": "Speech settings saved",
 	"settings_speech_load": "Refresh models and voices",
 	"settings_speech_test": "Test",
 	"settings_speech_test_ok": "Speech service is working",
@@ -2071,7 +2184,6 @@
 	"settings_upstreams_remove": "Remove {host}",
 	"settings_upstreams_empty": "No hosts allowed beyond public https endpoints.",
 	"settings_upstreams_managed": "LiteLLM or speech endpoint, always allowed",
-	"settings_upstreams_saved": "Allowed upstream hosts saved",
 	"settings_upstreams_reset_help": "Clear the saved list",
 	"settings_spawn_limits_label": "CctuiAgent limits",
 	"settings_spawn_limits_help": "Defaults for sessions launched without their own CctuiAgent limits. Leave a field empty to use the env seed (CCTUI_SPAWN_MAX_*) or the built-in default: unlimited children and budget, depth 3.",
@@ -2079,10 +2191,8 @@
 	"settings_spawn_max_depth": "Max depth",
 	"settings_spawn_max_budget": "Tree budget (USD)",
 	"settings_spawn_effective": "Effective: {value} ({source})",
-	"settings_spawn_limits_saved": "CctuiAgent limits saved",
 	"settings_spawn_limits_invalid": "Children and depth must be positive whole numbers; the budget a non-negative number.",
 	"settings_spawn_unlimited": "unlimited",
-	"settings_self_update_saved": "Self-update machine saved",
 	"settings_codex_sandbox_help": "How to fix it",
 	"settings_codex_sandbox_unknown": "Codex sandbox probe failed",
 	"settings_codex_sandbox_userns_denied": "Codex sandbox unavailable: AppArmor blocks user namespaces for bwrap",
@@ -2090,7 +2200,6 @@
 	"settings_harness_update_help": "Periodically run `claude update` / `codex update` on every machine, then restart `claude daemon` / `codex app-server` once nothing is running. Off by default; CCTUI_HARNESS_AUTOUPDATE=0 on a machine forces it off there.",
 	"settings_harness_update_enable": "Update harnesses automatically",
 	"settings_harness_update_interval": "Every (hours)",
-	"settings_harness_update_saved": "Harness auto-update saved",
 	"settings_harness_update_machines": "Machines",
 	"settings_harness_update_inherit": "Default",
 	"settings_harness_update_on": "On",
@@ -2151,16 +2260,17 @@
 	"settings_subtitle": "Your preferences, saved to your account.",
 	"settings_theme_help": "Auto follows the system's light or dark setting and recalls the last light and dark themes you picked.",
 	"settings_look_label": "Look",
-	"settings_look_help": "Surfaces, edges and elevation; colours stay the same. Saved in this browser.",
+	"settings_look_help": "Surfaces, edges and elevation; colours stay the same.",
 	"settings_motion_label": "Motion",
-	"settings_motion_help": "Micro-interactions on buttons, switches, tabs and cards. Saved in this browser.",
+	"settings_motion_help": "Micro-interactions on buttons, switches, tabs and cards.",
 	"settings_motion_reset": "Reset",
+	"settings_motion_effects": "Effects",
+	"settings_motion_effects_toggle": "Choose the effect for each kind of control",
 	"settings_motion_reduced_hint": "Your system asks for reduced motion: effects show their static fallback.",
-	"settings_sound_help": "Short UI sounds on clicks, toggles and results. Off by default. Saved in this browser.",
+	"settings_sound_help": "Short UI sounds on clicks, toggles and results. Off by default.",
 	"settings_sound_switch": "Sound effects",
 	"settings_sound_volume": "Volume",
 	"settings_sound_preview": "Preview",
-	"settings_sound_off_hint": "Off. Nothing is loaded until you turn it on.",
 	"settings_sound_reduced_hint": "Decorative sounds are muted because your system asks for reduced motion.",
 	"settings_theme_label": "Theme",
 	"settings_title": "Settings",
@@ -2251,9 +2361,8 @@
 	"spawn_mode_yolo_label": "Yolo",
 	"spawn_model_default": "Default",
 	"spawn_no_machines": "No machines enrolled",
-	"spawn_no_machines_hint": "No machines enrolled — enroll one from the Overview page.",
+	"spawn_no_machines_hint": "No machines enrolled — enroll one with a user token.",
 	"spawn_no_provider": "no provider",
-	"spawn_optional_settings": "Optional settings",
 	"spawn_permission_mode_label": "Permission mode",
 	"spawn_profile_account_aria": "Account",
 	"spawn_profile_adjust": "Adjust profile",
@@ -2268,6 +2377,7 @@
 	"spawn_profile_model_aria": "Model",
 	"spawn_profile_name_aria": "Profile name",
 	"spawn_profile_name_taken": "A profile already has this name",
+	"spawn_profile_manage": "Manage profiles…",
 	"spawn_profile_new": "New profile",
 	"spawn_profile_save": "Save to profile",
 	"spawn_profile_toast_failed": "Could not update the profile: {error}",
@@ -2317,14 +2427,29 @@
 	"spawn_pending_dismiss": "Dismiss",
 	"dispatch_failed_refused": "refused",
 	"dispatch_failed_never_registered": "never started",
-	"dispatch_failed_dispatched_at": "Dispatched {at}",
-	"dispatch_failed_prompt_file": "Prompt file: {file}",
 	"dispatch_failed_rerun": "Re-dispatch",
 	"dispatch_failed_rerun_note": "Re-dispatching sends the stored fields as a new dispatch; its result is not posted back to the original caller.",
 	"dispatch_failed_rerun_env": "Can't be re-dispatched from here: its env ({keys}) is not stored. Re-send it from its original caller.",
 	"dispatch_failed_rerun_prompt": "Can't be re-dispatched from here: only the start of the prompt is stored. Re-send it from its original caller.",
 	"dispatch_failed_rerun_redacted": "Can't be re-dispatched from here: the prompt's <redacted> parts are stored only masked. Re-send it from its original caller.",
 	"dispatch_failed_rerun_payload": "Can't be re-dispatched from here: the payload was too large to store. Re-send it from its original caller.",
+	"dispatch_failed_details": "Details",
+	"dispatch_failed_group_resolved": "Resolved: a later dispatch of the same work ran.",
+	"dispatch_failed_group_count": [
+		{
+			"declarations": [
+				"input count",
+				"local countPlural = count: plural"
+			],
+			"selectors": [
+				"countPlural"
+			],
+			"match": {
+				"countPlural=one": "1 dispatch",
+				"countPlural=other": "{count} dispatches"
+			}
+		}
+	],
 	"dispatch_failed_dismiss": "Dismiss",
 	"dispatch_failed_dismiss_all": "Dismiss all",
 	"dispatch_failed_resolved": "resolved",
@@ -2403,9 +2528,6 @@
 	"update_toast_failed": "Could not start the update: {error}",
 	"update_toast_launched": "Update to v{version} handed to an agent",
 	"update_toast_launched_hook": "Update to v{version} handed to the machine's update hook",
-	"usage_battery_aggregate_aria": "Usage across accounts: 5h {five}, weekly {weekly}",
-	"usage_battery_aggregate_title": "All accounts (worst headroom)",
-	"usage_battery_aria": "Usage: {account} {provider}, 5h {five}, weekly {weekly}",
 	"usage_battery_five_hour": "5h",
 	"usage_battery_pace_expected": "{expected}% expected at this point",
 	"usage_battery_pace_flame": "burning fast",
@@ -2414,8 +2536,9 @@
 	"usage_battery_pace_neutral": "on pace",
 	"usage_battery_pace_wall": "wall in ~{time}",
 	"usage_battery_resets_in": "resets in {time}",
-	"usage_battery_unknown": "unknown",
-	"usage_battery_weekly": "weekly",
+	"usage_gauge_aria": "Worst usage across accounts: {window} {pct}%",
+	"usage_gauge_open_accounts": "Open accounts",
+	"usage_gauge_weekly_short": "7d",
 	"usage_notices_enabled": "Notify sessions on usage steps",
 	"usage_notices_help": "Tell running sessions, in their next turn, each time this account crosses another step of a 5h, weekly or per-model usage window (percentage, soft-limit cap, reset time and countdown) so an orchestrator can pace itself. Off by default.",
 	"usage_notices_label": "Usage notices",
@@ -2685,12 +2808,14 @@
 	"settings_plugins_instance_secret_placeholder": "Write-only — leave blank to keep",
 	"settings_plugins_instance_secret_help": "Secrets are sealed with the server's key and never returned, not even here. Leave a secret field blank to keep its current value.",
 	"settings_plugins_instance_secret_clear": "Clear",
+	"settings_plugins_instance_secret_clear_title": "Clear {key}?",
 	"settings_plugins_instance_secret_clear_confirm": "Clear this secret? The plugin loses it immediately.",
 	"settings_plugins_instance_secret_cleared": "Secret cleared",
 	"settings_plugins_instance_upstream_hint": "The backend proxy forwards to this URL.",
 	"settings_plugins_instance_proxy_label": "Backend proxy secret",
 	"settings_plugins_instance_proxy_help": "Signs the user identity this instance sends to the plugin's backend. The backend needs the same value.",
 	"settings_plugins_instance_proxy_rotate": "Rotate",
+	"settings_plugins_instance_proxy_rotate_title": "Rotate the proxy secret?",
 	"settings_plugins_instance_proxy_rotate_confirm": "Rotate the proxy secret? The backend stops trusting this instance until you give it the new value.",
 	"settings_plugins_instance_proxy_rotated": "Proxy secret rotated",
 	"settings_plugins_instance_proxy_once": "Copy this now — it is shown once and never again.",
@@ -2806,6 +2931,8 @@
 	"voice_dictate_stop": "Stop and send",
 	"voice_dictate_discard": "Discard recording",
 	"voice_live_hint": "Live voice conversation with this session",
+	"voice_live_item": "Live voice",
+	"voice_menu": "More voice options",
 	"voice_live_connecting": "Connecting",
 	"voice_live_listening": "Listening",
 	"voice_live_thinking": "Thinking",
@@ -3177,6 +3304,7 @@
 	"settings_server_storage_lifecycle_help": "By default everything is kept. User and assistant messages are never touched, only tool output.",
 	"settings_server_storage_lifecycle_keep_all": "Keep everything",
 	"settings_server_storage_lifecycle_active": "Lifecycle on",
+	"settings_server_storage_apply": "Apply rules",
 	"settings_server_storage_trim_label": "Trim large tool output",
 	"settings_server_storage_trim_help": "Keep the start of each old tool output over the size limit, followed by a truncated marker.",
 	"settings_server_storage_trim_days_label": "Trim after (days)",
@@ -3192,7 +3320,6 @@
 	"settings_server_storage_preview_result": "Would free about {bytes}: {trimmed} outputs trimmed, {dropped} removed",
 	"settings_server_storage_preview_exact": "Row counts are exact. Freed bytes are estimated from each row's stored size.",
 	"settings_server_storage_preview_sampled": "Row counts and freed bytes are estimated from a {percent}% block sample.",
-	"settings_server_storage_saved": "Storage lifecycle saved",
 	"settings_server_storage_last_run_label": "Last run",
 	"settings_server_storage_last_run_never": "The job has not run: it only starts once a rule is on.",
 	"settings_server_storage_last_run_help": "{scanned} outputs checked · {trimmed} trimmed · {dropped} removed · {skipped} skipped",
@@ -3289,5 +3416,16 @@
 			}
 		}
 	],
+	"error_failed_body": "This page failed to load. Go back to your sessions, or reload to try again.",
+	"error_failed_title": "Something went wrong",
+	"error_go_to_sessions": "Go to sessions",
+	"error_not_found_body": "Nothing lives at {path}.",
+	"error_not_found_title": "Page not found",
+	"error_recent_sessions": "Recent sessions",
+	"error_search_archived": "Search archived sessions",
+	"error_search_archived_none": "No archived session matches.",
+	"error_search_archived_placeholder": "Name, folder or id",
+	"error_session_missing_body": "This session was archived or deleted. Search the archived sessions, or go back to your sessions.",
+	"error_session_missing_title": "Session not found",
 	"list_auto_approve": "auto-approve"
 }

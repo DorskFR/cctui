@@ -1,7 +1,8 @@
 <script lang="ts">
-	// Machine picker: a badge-shaped trigger tinted with the selected machine's
-	// hue (same recipe as MachineBadge) with a native <Select variant="ghost">
-	// laid over it, so the platform popup, keyboard and focus stay native.
+	// A trigger tinted with the selected machine's hue (MachineBadge recipe)
+	// under a native <Select variant="ghost">, so popup, keyboard and focus stay
+	// native. `pill` is the bare badge for inline prefixes; `field` is an
+	// outlined select with the badge inside.
 	import type { MachineResourcesRow } from '@bindings/MachineResourcesRow';
 	import type { MachineRow } from '@bindings/MachineRow';
 	import { hashHue } from '#lib/format.ts';
@@ -11,11 +12,13 @@
 	let {
 		value = $bindable(),
 		machines,
-		label
+		label,
+		variant = 'pill'
 	}: {
 		value: string;
 		machines: (MachineResourcesRow | MachineRow)[];
 		label: string;
+		variant?: 'pill' | 'field';
 	} = $props();
 
 	const idOf = (mc: MachineResourcesRow | MachineRow) =>
@@ -48,13 +51,27 @@
 	);
 </script>
 
-<span class="picker" class:disabled={!machines.length} style={triggerTint}>
+{#snippet badge()}
+	{#if selected}
+		<Dot color="hsl({hueOf(selected)} var(--mach-fg-sl))" />
+	{/if}
+	<span class="trigger-label">{selected ? nameOf(selected) : m.spawn_no_machines()}</span>
+{/snippet}
+
+<span
+	class="picker"
+	class:field={variant === 'field'}
+	class:disabled={!machines.length}
+	style={variant === 'pill' ? triggerTint : undefined}
+>
 	<span class="trigger" aria-hidden="true">
-		{#if selected}
-			<Dot color="hsl({hueOf(selected)} var(--mach-fg-sl))" />
+		{#if variant === 'field'}
+			<span class="pill" class:tinted={!!selected} style={triggerTint}>{@render badge()}</span>
+			<Icon name="chevron-down" size={14} />
+		{:else}
+			{@render badge()}
+			<Icon name="chevron-down" size={12} />
 		{/if}
-		<span class="trigger-label">{selected ? nameOf(selected) : m.spawn_no_machines()}</span>
-		<Icon name="chevron-down" size={12} />
 	</span>
 	<Select
 		id={selectId}
@@ -91,6 +108,43 @@
 		min-width: 0;
 		padding: 3px var(--sp-2);
 		border-radius: inherit;
+	}
+	.picker.field {
+		display: flex;
+		min-height: var(--control-height-default);
+		background: var(--control-fill);
+		border: var(--edge-width) solid var(--control-edge);
+		border-radius: var(--r-md);
+		box-shadow: var(--control-shadow);
+		color: var(--text-faint);
+		font-weight: var(--fw-normal);
+	}
+	.picker.field:not(.disabled):hover {
+		filter: none;
+		border-color: var(--text-faint);
+	}
+	.picker.field:focus-within {
+		outline: var(--focus-ring);
+		outline-offset: var(--focus-ring-offset);
+		border-color: var(--accent);
+	}
+	.field .trigger {
+		flex: 1;
+		justify-content: space-between;
+		gap: var(--sp-2);
+		padding: var(--sp-1) var(--control-px-md) var(--sp-1) var(--sp-2);
+	}
+	.pill {
+		display: inline-flex;
+		align-items: center;
+		gap: var(--sp-1);
+		min-width: 0;
+		padding: 2px var(--sp-2);
+		border: 1px solid transparent;
+		border-radius: var(--r-sm);
+		color: var(--text);
+		font-size: var(--fs-xs);
+		font-weight: var(--fw-medium);
 	}
 	.trigger-label {
 		max-width: 12rem;

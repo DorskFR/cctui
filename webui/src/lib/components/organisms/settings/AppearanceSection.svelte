@@ -4,15 +4,21 @@
 	// wrappers on `settings` drive the runtime theme/fontScale singletons AND
 	// persist, so this section and the header pickers share one surface.
 	import {
-		Badge,
+		Button,
+		Disclosure,
+		FX,
+		FX_FAMILIES,
+		fx,
 		LookPicker,
-		MotionSettings,
 		SegmentedControl,
 		Select,
-		SoundSettings,
+		Slider,
+		sound,
+		Switch,
 		Text
 	} from '@dorsk/tsumikit';
 	import type { SegmentOption } from '@dorsk/tsumikit';
+	import { MediaQuery } from 'svelte/reactivity';
 	import SettingGroup from '#lib/components/molecules/SettingGroup.svelte';
 	import SettingRow from '#lib/components/molecules/SettingRow.svelte';
 	import SettingSection from '#lib/components/molecules/SettingSection.svelte';
@@ -24,6 +30,15 @@
 	import { m } from '#lib/paraglide/messages.js';
 
 	const LOOKS = ['default', 'depth', 'tactile'] as const;
+
+	const motionOn = $derived(FX_FAMILIES.some((f) => fx.settings[f] !== 'none'));
+	function setMotion(on: boolean) {
+		if (on) fx.reset();
+		else for (const f of FX_FAMILIES) fx.set(f, 'none');
+	}
+
+	const reducedMotion = new MediaQuery('(prefers-reduced-motion: reduce)');
+	const volumePercent = $derived(Math.round(sound.volume * 100));
 
 	const scaleOptions: SegmentOption[] = SCALE_LEVELS.map((l) => ({ value: l.id, label: l.label }));
 	function scaleOf(id: string): number {
@@ -44,17 +59,11 @@
 	<Text style="font-size: {Math.min(scaleOf(o.value), 1.5)}em; line-height: 1" aria-hidden="true">A</Text>
 {/snippet}
 
-{#snippet lookHelp()}
-	{m.settings_look_help()} <Badge size="xs" border>{m.settings_this_device()}</Badge>
-{/snippet}
-{#snippet motionHelp()}
-	{m.settings_motion_help()} <Badge size="xs" border>{m.settings_this_device()}</Badge>
-{/snippet}
-{#snippet soundHelp()}
-	{m.settings_sound_help()} <Badge size="xs" border>{m.settings_this_device()}</Badge>
+{#snippet description()}
+	{m.settings_appearance_desc()} {m.settings_appearance_device_note()}
 {/snippet}
 
-<SettingSection id="theme" icon="◐" title={m.settings_sec_theme()} description={m.settings_appearance_desc()}>
+<SettingSection id="theme" icon="◐" title={m.settings_sec_theme()} descriptionSlot={description}>
 	<SettingGroup>
 		<SettingRow label={m.settings_theme_label()} help={m.settings_theme_help()}>
 			<Select
@@ -72,36 +81,73 @@
 				{/each}
 			</Select>
 		</SettingRow>
-		<SettingRow label={m.settings_look_label()} helpSlot={lookHelp} selfLabelled>
+		<SettingRow label={m.settings_look_label()} help={m.settings_look_help()} selfLabelled>
 			<div data-testid="appearance-look">
 				<LookPicker looks={LOOKS} experimental={false} size="sm" control label={m.settings_look_label()} />
 			</div>
 		</SettingRow>
-		<SettingRow label={m.settings_motion_label()} helpSlot={motionHelp} selfLabelled>
-			<div data-testid="appearance-motion">
-				<MotionSettings
-					size="sm"
-					control
-					label={m.settings_motion_label()}
-					resetLabel={m.settings_motion_reset()}
-					reducedMotionHint={m.settings_motion_reduced_hint()}
-				/>
-			</div>
+		<SettingRow
+			label={m.settings_motion_label()}
+			help={reducedMotion.current ? `${m.settings_motion_help()} ${m.settings_motion_reduced_hint()}` : m.settings_motion_help()}
+		>
+			<Switch
+				data-testid="appearance-motion"
+				label={m.settings_motion_label()}
+				bind:checked={() => motionOn, setMotion}
+			/>
 		</SettingRow>
-		<SettingRow label={m.settings_sound_label()} helpSlot={soundHelp} selfLabelled>
-			<div data-testid="appearance-sound">
-				<SoundSettings
-					size="sm"
-					control
-					label={m.settings_sound_label()}
-					switchLabel={m.settings_sound_switch()}
-					volumeLabel={m.settings_sound_volume()}
-					previewLabel={m.settings_sound_preview()}
-					offHint={m.settings_sound_off_hint()}
-					reducedMotionHint={m.settings_sound_reduced_hint()}
-				/>
-			</div>
+		{#if motionOn}
+			<SettingRow label={m.settings_motion_effects()} wide selfLabelled>
+				<Disclosure>
+					{#snippet header()}
+						<Text size="sm" tone="muted">{m.settings_motion_effects_toggle()}</Text>
+					{/snippet}
+					<div class="fx">
+						{#each FX_FAMILIES as family (family)}
+							<label class="fx-name" for="fx-{family}"><Text size="sm">{FX[family].label}</Text></label>
+							<Select
+								id="fx-{family}"
+								size="sm"
+								value={fx.settings[family]}
+								options={FX[family].variants.map((v) => ({ value: v.id, label: v.label }))}
+								onchange={(e) => fx.set(family, (e.currentTarget as HTMLSelectElement).value)}
+							/>
+						{/each}
+					</div>
+					<Button size="sm" variant="ghost" disabled={fx.isDefault} onclick={() => fx.reset()}>
+						{m.settings_motion_reset()}
+					</Button>
+				</Disclosure>
+			</SettingRow>
+		{/if}
+		<SettingRow
+			label={m.settings_sound_label()}
+			help={sound.muted === 'reduced-motion'
+				? `${m.settings_sound_help()} ${m.settings_sound_reduced_hint()}`
+				: m.settings_sound_help()}
+		>
+			<Switch
+				data-testid="appearance-sound"
+				label={m.settings_sound_switch()}
+				bind:checked={() => sound.enabled, (on) => sound.setEnabled(on)}
+			/>
 		</SettingRow>
+		{#if sound.enabled}
+			<SettingRow label={m.settings_sound_volume()} selfLabelled>
+				<Slider
+					value={sound.volume}
+					min={0}
+					max={1}
+					step={0.05}
+					label={m.settings_sound_volume()}
+					aria-valuetext="{volumePercent}%"
+					oninput={(e) => sound.setVolume(Number((e.currentTarget as HTMLInputElement).value))}
+				/>
+				<Button size="sm" variant="ghost" onclick={() => sound.play('success')}>
+					{m.settings_sound_preview()}
+				</Button>
+			</SettingRow>
+		{/if}
 		<SettingRow label={m.settings_font_size_label()} selfLabelled>
 			<SegmentedControl
 				options={scaleOptions}
@@ -144,3 +190,13 @@
 		</SettingRow>
 	</SettingGroup>
 </SettingSection>
+
+<style>
+	.fx {
+		display: grid;
+		grid-template-columns: max-content minmax(0, 14rem);
+		gap: var(--sp-2) var(--sp-4);
+		align-items: center;
+		padding-block: var(--sp-2);
+	}
+</style>

@@ -1,8 +1,9 @@
 // @vitest-environment happy-dom
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { mount, unmount } from 'svelte';
+import { flushSync, mount, unmount } from 'svelte';
 import LineActions from './LineActions.svelte';
 import actionsSource from './LineActions.svelte?raw';
+import lineSource from './ConversationLine.svelte?raw';
 import type { Line } from './types';
 
 const flush = () => new Promise((r) => setTimeout(r, 0));
@@ -33,60 +34,79 @@ async function render(props: Record<string, unknown> = {}) {
 	return document.querySelector('.line-actions') as HTMLElement;
 }
 
+async function openMenu() {
+	const panel = [...document.querySelectorAll('[popover]')].at(-1) as HTMLElement;
+	panel.dispatchEvent(Object.assign(new Event('toggle'), { newState: 'open' }));
+	flushSync();
+	await Promise.resolve();
+	flushSync();
+}
+
+const rows = () =>
+	[...document.querySelectorAll('[role="menuitem"], [role="menuitemcheckbox"]')] as HTMLElement[];
+const row = (text: string) => rows().find((r) => r.textContent?.includes(text)) ?? null;
 const byLabel = (root: HTMLElement, label: string) =>
 	[...root.querySelectorAll('button')].find((b) => b.getAttribute('aria-label') === label) ?? null;
 
-describe('line action buttons', () => {
+describe('line action cluster', () => {
 	it('uses no raw buttons of its own', () => {
 		expect(actionsSource).not.toContain('<button');
 	});
 
-	it('exposes the bookmark toggle state via aria-pressed', async () => {
-		const off = await render({ bookmarked: false });
-		const b = byLabel(off, 'Save this message to bookmarks');
-		expect(b).not.toBeNull();
-		expect(b?.getAttribute('aria-pressed')).toBe('false');
+	it('shows only quote reply and the ⋯ menu inline', async () => {
+		const el = await render({ onquote: vi.fn(), onspeak: vi.fn() });
+		expect(byLabel(el, 'Quote reply')).not.toBeNull();
+		expect(byLabel(el, 'Message actions')).not.toBeNull();
+		expect(byLabel(el, 'Copy as Markdown')).toBeNull();
+		expect(byLabel(el, 'Save as image')).toBeNull();
+		expect(byLabel(el, 'Read aloud')).toBeNull();
 	});
 
-	it('marks a saved bookmark as pressed', async () => {
-		const on = await render({ bookmarked: true });
-		const b = byLabel(on, 'Save this message to bookmarks');
-		expect(b?.getAttribute('aria-pressed')).toBe('true');
+	it('lists pin, read aloud, copy, save and bookmark under ⋯', async () => {
+		await render({ onspeak: vi.fn() });
+		await openMenu();
+		for (const label of ['Pin message', 'Read aloud', 'Copy as Markdown', 'Save as image', 'Save this message to bookmarks'])
+			expect(row(label), label).not.toBeNull();
 	});
 
-	it('renders the bookmark action as an outlined bookmark icon', async () => {
-		const b = byLabel(await render({ bookmarked: false }), 'Save this message to bookmarks');
-		expect(b?.textContent).not.toContain('◈');
-		const svg = b?.querySelector('svg[data-tsu="Icon"]');
-		expect(svg?.innerHTML).toContain('M17 3a2 2 0 0 1 2 2v15');
-		expect(svg?.getAttribute('fill')).toBe('none');
+	it('reflects the pin and bookmark state as checked rows', async () => {
+		await render({ pinned: true, bookmarked: true });
+		await openMenu();
+		expect(row('Unpin message')?.getAttribute('aria-checked')).toBe('true');
+		expect(row('Save this message to bookmarks')?.getAttribute('aria-checked')).toBe('true');
 	});
 
-	it('fills the bookmark icon when the message is bookmarked', async () => {
-		const b = byLabel(await render({ bookmarked: true }), 'Save this message to bookmarks');
-		expect(b?.querySelector('svg[data-tsu="Icon"]')?.getAttribute('fill')).toBe('currentColor');
+	it('drops the pin row when the line is not pinnable', async () => {
+		await render({ pinnable: false, onbookmark: undefined });
+		await openMenu();
+		expect(rows().map((r) => r.textContent?.trim())).toEqual(['Copy as Markdown', 'Save as image']);
 	});
 
-	it('exposes the pin toggle state via aria-pressed', async () => {
-		const el = await render({ pinned: true });
-		const pressed = [...el.querySelectorAll('button')].filter(
-			(b) => b.getAttribute('aria-pressed') === 'true'
-		);
-		expect(pressed.length).toBeGreaterThan(0);
+	it('saves the image from the line the cluster sits in', async () => {
+		const onsaveimage = vi.fn();
+		const el = await render({ onsaveimage });
+		await openMenu();
+		row('Save as image')?.click();
+		expect(onsaveimage).toHaveBeenCalledWith(el, ln);
 	});
 
-	it('hides the pin when the line is not pinnable', async () => {
-		const el = await render({ pinnable: false });
-		expect(el.querySelectorAll('button').length).toBe(3);
+	it('keeps a stop control inline while the line is being read', async () => {
+		const el = await render({ onspeak: vi.fn(), speaking: true });
+		expect(el.querySelector('button[aria-pressed="true"]')).not.toBeNull();
+		await openMenu();
+		expect(row('Read aloud')).toBeNull();
 	});
 });
 
-describe('read aloud', () => {
-	it('offers read aloud only when a speak handler is given', async () => {
-		expect(byLabel(await render(), 'Read aloud')).toBeNull();
-		if (comp) unmount(comp);
-		comp = null;
-		document.body.innerHTML = '';
-		expect(byLabel(await render({ onspeak: vi.fn() }), 'Read aloud')).not.toBeNull();
+describe('line action reveal', () => {
+	it('fades the cluster until the line is hovered or focused, on hover pointers', () => {
+		const css = lineSource.slice(lineSource.indexOf('<style>'));
+		expect(css).toMatch(/@media \(hover: hover\) \{\s*\.line:not\(:hover, :focus-within\) \.acts:not\(\.keep\) \{\s*opacity: 0;/);
+	});
+
+	it('shows it on touch only for the tapped line', () => {
+		const css = lineSource.slice(lineSource.indexOf('<style>'));
+		expect(css).toMatch(/@media \(hover: none\) \{\s*\.line:not\(:focus-within\) \.acts:not\(\.keep\) \{\s*display: none;/);
+		expect(lineSource).toContain('tabindex="-1"');
 	});
 });

@@ -40,7 +40,12 @@ export default defineConfig({
 		{
 			name: 'drawer-header',
 			fullyParallel: true,
-			testMatch: ['drawer-header-meta.spec.ts', 'drawer-header-actions.spec.ts'],
+			testMatch: [
+				'drawer-header-meta.spec.ts',
+				'drawer-header-actions.spec.ts',
+				'drawer-header-mobile.spec.ts',
+				'drawer-typing.spec.ts'
+			],
 			use: { baseURL: headerUrl }
 		},
 		{

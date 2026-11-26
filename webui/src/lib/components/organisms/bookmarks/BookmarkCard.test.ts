@@ -41,7 +41,8 @@ describe('BookmarkCard', () => {
 		const bubble = card.querySelector('.bubble');
 		expect(bubble?.classList.contains('assistant')).toBe(true);
 		expect(bubble?.tagName).toBe('DIV');
-		expect(card.querySelector('.lmeta')?.textContent).toContain('assistant');
+		expect(card.querySelector('.lmeta .role')?.textContent).toBe('assistant');
+		expect(card.querySelector('.lmeta [data-tsu="Badge"]')).toBeNull();
 		expect(card.querySelector('.dot')).toBeNull();
 	});
 

@@ -18,7 +18,13 @@
 	} = $props();
 </script>
 
-<Card padding={compact ? 'sm' : 'md'} as={href ? 'a' : 'div'} {href} tap={!!href}>
+<Card
+	padding={compact ? 'sm' : 'md'}
+	as={href ? 'a' : 'div'}
+	{href}
+	tap={!!href}
+	style={href ? 'display: block; color: inherit; text-decoration: none;' : ''}
+>
 	<div class="tile" class:compact>
 		<div class="num">
 			<Text

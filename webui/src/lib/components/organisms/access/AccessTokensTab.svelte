@@ -69,11 +69,11 @@
 {/snippet}
 {#snippet colCreated(t: UserTokenRow)}
 	<span class="stamp">
-		<Timestamp value={t.created_at} mode="short-iso" mono size="xs" tone="faint" />
+		<Timestamp value={t.created_at} mode="short-iso" size="xs" tone="faint" />
 		{#if t.expires_at}
 			<Text size="xs" tone="faint">·</Text>
 			<Text size="xs" tone="faint">{m.users_expires_label()}</Text>
-			<Timestamp value={t.expires_at} mode="short-iso" mono size="xs" tone="faint" />
+			<Timestamp value={t.expires_at} mode="short-iso" size="xs" tone="faint" />
 		{/if}
 	</span>
 {/snippet}
@@ -177,7 +177,6 @@
 		gap: var(--sp-1);
 	}
 	.tbl {
-		border: 1px solid var(--border);
 		border-radius: var(--r-md);
 		background: var(--bg-elevated);
 		overflow: hidden;

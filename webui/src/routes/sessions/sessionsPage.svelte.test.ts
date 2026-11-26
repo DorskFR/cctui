@@ -5,6 +5,9 @@ import { QueryClient } from '@tanstack/svelte-query';
 import type { SessionListItem } from '@bindings/SessionListItem';
 import type { SessionListResponse } from '@bindings/SessionListResponse';
 import type { Label } from '@bindings/Label';
+
+const { goto } = vi.hoisted(() => ({ goto: vi.fn() }));
+vi.mock('$app/navigation', () => ({ goto }));
 import { ApiError } from '#lib/api.ts';
 import { wordStart } from '#lib/search.ts';
 import { m } from '#lib/paraglide/messages.js';
@@ -113,8 +116,6 @@ function harness(over: Partial<SessionsPageDeps> = {}, stored: Record<string, st
 			left: null,
 			right: null
 		}),
-		clearUrlSession: vi.fn(),
-		confirm: () => true,
 		spawnSlot: {
 			currentKey: () => 'slot',
 			read: () => slot,
@@ -622,23 +623,30 @@ describe('SessionsPage — pinned parents and the open drawer', () => {
 		expect(sp.liveOpen?.name).toBe('renamed');
 	});
 
-	it('fetches an unknown id and drops the URL only on a 404', async () => {
-		const { sp, api, deps, toasts } = make();
+	it('fetches an unknown id and keeps the URL whatever the outcome', async () => {
+		goto.mockClear();
+		const { sp, api, toasts } = make();
 		await sp.openById('remote');
 		expect(api.session).toHaveBeenCalledWith('remote');
 		expect(sp.openSession?.id).toBe('remote');
 		api.session.mockRejectedValueOnce(new Error('offline'));
 		await sp.openById('flaky');
-		expect(deps.clearUrlSession).not.toHaveBeenCalled();
+		expect(toasts.error).toHaveBeenCalledTimes(1);
+		expect(goto).not.toHaveBeenCalled();
+	});
+
+	it('hands a deleted session to the error page under its own URL, without a toast', async () => {
+		goto.mockClear();
+		const { sp, api, toasts } = make();
 		api.session.mockRejectedValueOnce(new ApiError(404, 'gone'));
 		await sp.openById('gone');
 		expect(sp.openSession).toBeNull();
-		expect(deps.clearUrlSession).toHaveBeenCalledTimes(1);
-		expect(toasts.error).toHaveBeenCalledTimes(2);
+		expect(goto).toHaveBeenCalledWith('/sessions/gone', { replaceState: true, invalidateAll: true });
+		expect(toasts.error).not.toHaveBeenCalled();
 	});
 
 	it('opens a just-spawned id whose row 404s once, without a not-found toast', async () => {
-		const { sp, api, deps, toasts } = make();
+		const { sp, api, toasts } = make();
 		api.session.mockRejectedValueOnce(new ApiError(404, 'not yet'));
 		const opening = sp.openById('followup', { spawned: true });
 		await vi.advanceTimersByTimeAsync(500);
@@ -646,12 +654,11 @@ describe('SessionsPage — pinned parents and the open drawer', () => {
 		expect(api.session).toHaveBeenCalledTimes(2);
 		expect(sp.openSession?.id).toBe('followup');
 		expect(toasts.error).not.toHaveBeenCalled();
-		expect(deps.clearUrlSession).not.toHaveBeenCalled();
 		expect(sp.urlResolving).toBe(false);
 	});
 
 	it('says a spawned session is slow, not deleted, when its row never shows', async () => {
-		const { sp, api, deps, toasts } = make();
+		const { sp, api, toasts } = make();
 		api.session.mockRejectedValue(new ApiError(404, 'not yet'));
 		const opening = sp.openById('followup', { spawned: true });
 		await vi.advanceTimersByTimeAsync(16 * 500);
@@ -659,11 +666,11 @@ describe('SessionsPage — pinned parents and the open drawer', () => {
 		expect(sp.openSession).toBeNull();
 		expect(toasts.error).toHaveBeenCalledTimes(1);
 		expect(toasts.error).toHaveBeenCalledWith(m.sessions_toast_spawn_slow());
-		expect(deps.clearUrlSession).not.toHaveBeenCalled();
 	});
 
 	it('drops a URL-driven open that resolves after the user navigated away', async () => {
-		const { sp, api, toasts, deps } = make();
+		goto.mockClear();
+		const { sp, api, toasts } = make();
 		let resolve!: (s: SessionListItem) => void;
 		api.session.mockImplementationOnce(() => new Promise((r) => (resolve = r)));
 		const opening = sp.openById('slow');
@@ -680,7 +687,7 @@ describe('SessionsPage — pinned parents and the open drawer', () => {
 		await failing;
 		expect(sp.openSession?.id).toBe('picked');
 		expect(toasts.error).not.toHaveBeenCalled();
-		expect(deps.clearUrlSession).not.toHaveBeenCalled();
+		expect(goto).not.toHaveBeenCalled();
 	});
 
 	it('lets a direct pick win over a fork still waiting for its row', async () => {
@@ -771,8 +778,20 @@ describe('SessionsPage — spawn form and drafts', () => {
 		expect(actions.launchDraft).toHaveBeenCalledWith('d');
 		expect(deps.spawnSlot.clear).toHaveBeenCalledWith('m', '/w');
 		expect(sp.launchingDraft).toBeNull();
-		await sp.discardDraft(d);
+		sp.discardDraft(d);
+		expect(actions.discardDraft).not.toHaveBeenCalled();
+		expect(sp.discardPending?.id).toBe('d');
+		await sp.confirmDiscard();
 		expect(actions.discardDraft).toHaveBeenCalledWith('d');
+		expect(sp.discardPending).toBeNull();
+	});
+
+	it('keeps a draft when the discard is cancelled', () => {
+		const { sp, actions } = make();
+		sp.discardDraft(session({ id: 'd', status: 'draft' }));
+		sp.cancelDiscard();
+		expect(sp.discardPending).toBeNull();
+		expect(actions.discardDraft).not.toHaveBeenCalled();
 	});
 
 	it('cancels a scheduled launch without touching the draft', async () => {

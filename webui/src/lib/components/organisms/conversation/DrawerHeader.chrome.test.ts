@@ -1,11 +1,12 @@
 // @vitest-environment happy-dom
 import { describe, expect, it } from 'vitest';
 import header from './DrawerHeader.svelte?raw';
+import menu from './DrawerMenu.svelte?raw';
 
 const markup = header.slice(header.indexOf('</script>'));
 const controls = markup
-	.split(/(?=<IconButton|<FontScalePicker|<Menu )/)
-	.filter((c) => /^<(IconButton|FontScalePicker|Menu )/.test(c))
+	.split(/(?=<IconButton|<DrawerMenu)/)
+	.filter((c) => /^<(IconButton|DrawerMenu)/.test(c))
 	.map((c) => c.slice(0, c.indexOf('>') + 1));
 
 const named = (label: string) => {
@@ -22,16 +23,44 @@ describe('drawer header control chrome', () => {
 		expect(markup).not.toMatch(/box="(xs|sm|md|lg)"/);
 	});
 
-	it('gives every trailing control the same chip chrome', () => {
-		for (const label of ['m.drawer_archive()', 'm.drawer_interrupt_label()', 'm.drawer_rename()']) {
-			expect(named(label)).toContain('chip');
+	it('draws every header control unboxed, the ⋯ trigger included', () => {
+		expect(markup).not.toMatch(/\bchip\b/);
+		expect(header).not.toContain('CHIP_CHROME');
+		for (const c of controls.filter((x) => x.startsWith('<IconButton') && !x.includes('m.drawer_back()'))) {
+			expect(c, c).toContain('variant="ghost"');
 		}
-		expect(markup).not.toContain('chip={!collapsed}');
-		for (const label of ['<FontScalePicker', 'm.drawer_more_actions()']) {
-			expect(named(label)).toContain('style={CHIP_CHROME}');
-		}
-		expect(header).toContain("const CHIP_CHROME = 'border-color: var(--border-strong); background: var(--surface)'");
+		expect(menu).toContain('placement="bottom-end" variant="ghost" {box}');
 		expect(header).not.toContain('--pop-trigger-');
+	});
+
+	it('keeps only back, title, search and ⋯; rename and archive live in ⋯', () => {
+		for (const icon of ['edit', 'archive', 'stop']) {
+			expect(markup, icon).not.toMatch(new RegExp(`<IconButton[^>]*icon="${icon}"`));
+		}
+		const items = menu.slice(menu.indexOf('const overflowItems'));
+		expect(items).toContain("{ label: m.drawer_rename(), icon: 'edit' as const, onselect: onrename }");
+		expect(items).toContain("...(archived ? [] : [{ label: m.drawer_archive(), icon: 'archive' as const, onselect: onarchive }])");
+	});
+
+	it('offers Stop only while a turn runs, outlined with a spinner', () => {
+		expect(header).toContain('working = false');
+		expect(header).toContain('const canStop = $derived(working && !archived && !compact)');
+		const stop = markup.slice(markup.indexOf('{#if canStop}'), markup.indexOf('{/if}', markup.indexOf('{#if canStop}')));
+		expect(stop).toContain('<Button size="sm"');
+		expect(stop).not.toMatch(/variant=|tone=/);
+		expect(stop).toContain('<Spinner size={12} label="" />');
+		expect(stop).toContain('{m.drawer_stop()}');
+		expect(stop).toContain('onclick={oninterrupt}');
+	});
+
+	it('moves the title to its own line when the bar collapses, never in a tile', () => {
+		expect(header).toContain('const titleOwnLine = $derived(collapsed && !compact)');
+		expect(markup).toMatch(/\{#if titleOwnLine\}\s*<div class="trow">\{@render title\(\)\}<\/div>/);
+		expect(markup.split('<DrawerTitle')).toHaveLength(2);
+	});
+
+	it('leaves text size to Settings, not the drawer header', () => {
+		expect(header).not.toContain('FontScalePicker');
 	});
 
 	it('keeps the back chevron the one quiet affordance', () => {
@@ -39,7 +68,7 @@ describe('drawer header control chrome', () => {
 	});
 
 	it('makes the ⋯ trigger a single button so its tooltip stays on it', () => {
-		const trigger = markup.slice(markup.indexOf('<Menu '), markup.indexOf('</Menu>'));
+		const trigger = menu.slice(menu.indexOf('<Menu '), menu.indexOf('</Menu>'));
 		expect(trigger).not.toContain('<IconButton');
 		expect(trigger).toContain('data-journey="actions"');
 		expect(trigger).toContain('title={m.drawer_more_actions()}');

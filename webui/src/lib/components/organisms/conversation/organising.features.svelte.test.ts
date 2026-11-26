@@ -7,7 +7,9 @@ import { BookmarkSaver } from './bookmarkSave.svelte';
 import type { ScrollController } from './scroll.svelte';
 import type { Line } from './types';
 import pane from '../ConversationPane.svelte?raw';
+import model from './paneModel.svelte.ts?raw';
 import header from './DrawerHeader.svelte?raw';
+import title from './DrawerTitle.svelte?raw';
 import notice from './AutoArchiveNotice.svelte?raw';
 
 const calls = vi.hoisted(() => ({
@@ -108,13 +110,13 @@ describe('conversation pane organising gates', () => {
 	});
 
 	it('lists an admin machines only with machine spawn', () => {
-		const at = pane.indexOf('const myMachines = useMachines(');
-		expect(pane.slice(at, pane.indexOf(');', at))).toContain("hasFeature('machine_spawn')");
+		const at = model.indexOf('readonly #machines = useMachines(');
+		expect(model.slice(at, model.indexOf(');', at))).toContain("hasFeature('machine_spawn')");
 	});
 
 	it('shows header label chips only with organising', () => {
 		expect(header).toContain("const showLabels = $derived(hasFeature('organising'));");
-		expect(header).toContain('{#if showLabels && session.labels.length === 0 && labelEditable}');
+		expect(title).toContain('{#if showLabels && session.labels.length === 0 && labels.onAttachLabel}');
 		expect(header).toContain('{#if showLabels && session.labels.length > 0 && !compact}');
 	});
 

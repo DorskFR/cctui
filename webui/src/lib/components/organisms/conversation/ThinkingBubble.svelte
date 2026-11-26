@@ -47,7 +47,6 @@
 	/* Reasoning — muted brown, visually behind the prose it produced. */
 	.bubble.think {
 		background: color-mix(in srgb, var(--role-thinking) 10%, var(--bg-elevated));
-		border-color: color-mix(in srgb, var(--role-thinking) 35%, transparent);
 		border-left: 2px solid color-mix(in srgb, var(--role-thinking) 60%, transparent);
 		color: color-mix(in srgb, var(--role-thinking) 45%, var(--md-text));
 	}

@@ -198,7 +198,7 @@ describe("SpawnModal with machine_spawn off", () => {
   it("keeps both tabs with every feature on", async () => {
     only([]);
     await open();
-    expect(tabs()).toBeTruthy();
+    expect(tabs()?.getAttribute("data-tsu")).toBe("SegmentedControl");
     expect(document.querySelector("#sp-cwd")).toBeTruthy();
   });
 });

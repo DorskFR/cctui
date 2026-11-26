@@ -67,7 +67,6 @@
 
 <style>
 	.frame {
-		border: 1px solid var(--border);
 		border-radius: var(--r-md);
 		overflow: hidden;
 		background: var(--bg-elevated);

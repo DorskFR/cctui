@@ -14,6 +14,7 @@
 	import { DRAIN_RESTARTABLE, deniedHealth, versionSkew } from '#lib/harnessHealth.ts';
 	import { toasts } from '#lib/toast.svelte.ts';
 	import { m } from '#lib/paraglide/messages.js';
+	import { autoSave, serverSave } from './serverSave.svelte.ts';
 
 	const DEFAULT_HARNESSES = ['claude-code', 'codex'];
 	const CODEX_SANDBOX_DOCS =
@@ -29,7 +30,6 @@
 	let enabled = $state(false);
 	let hours = $state('24');
 	let harnesses = $state<string[]>([...DEFAULT_HARNESSES]);
-	let saving = $state(false);
 
 	function apply(next: HarnessAutoupdateInfo) {
 		info = next;
@@ -46,24 +46,29 @@
 			.catch(() => {});
 	});
 
-	const draft = $derived<HarnessUpdatePolicy>({
-		enabled,
-		interval_hours: Math.max(1, Math.floor(Number(hours) || 24)),
-		harnesses: harnessIds.filter((h) => harnesses.includes(h))
+	const normalize = (p: HarnessUpdatePolicy): HarnessUpdatePolicy => ({
+		enabled: p.enabled,
+		interval_hours: p.interval_hours,
+		harnesses: harnessIds.filter((h) => p.harnesses.includes(h))
 	});
-	const dirty = $derived(JSON.stringify(draft) !== JSON.stringify(info?.instance ?? DEFAULT_POLICY));
+	const draft = $derived<HarnessUpdatePolicy>(
+		normalize({ enabled, interval_hours: Math.max(1, Math.floor(Number(hours) || 24)), harnesses })
+	);
+	const dirty = $derived(
+		JSON.stringify(draft) !== JSON.stringify(normalize(info?.instance ?? DEFAULT_POLICY))
+	);
 
 	async function run(call: () => Promise<HarnessAutoupdateInfo>) {
-		saving = true;
-		try {
-			apply(await call());
-			toasts.ok(m.settings_harness_update_saved());
-		} catch (e) {
-			toasts.error(e instanceof Error ? e.message : String(e));
-		} finally {
-			saving = false;
-		}
+		const sent = JSON.stringify(draft);
+		const res = await serverSave.run(call);
+		if (!res) return;
+		if (JSON.stringify(draft) === sent) apply(res);
+		else info = res;
 	}
+	autoSave(
+		() => (info && dirty ? draft : undefined),
+		(next) => run(() => endpoints.setHarnessAutoupdate(next))
+	);
 
 	function toggleHarness(h: string, on: boolean) {
 		harnesses = on ? [...new Set([...harnesses, h])] : harnesses.filter((x) => x !== h);
@@ -119,8 +124,6 @@
 	<SettingRow
 		label={m.settings_harness_update_enable()}
 		help={m.settings_harness_update_help()}
-		server
-		admin
 		wide
 		selfLabelled
 	>
@@ -139,9 +142,6 @@
 					onchange={(e) => toggleHarness(h, (e.currentTarget as HTMLInputElement).checked)}
 				/>
 			{/each}
-			<Button disabled={!dirty || saving} onclick={() => run(() => endpoints.setHarnessAutoupdate(draft))}>
-				{m.settings_admin_instance_save()}
-			</Button>
 		</div>
 	</SettingRow>
 
@@ -153,7 +153,7 @@
 						<Text size="sm">{row.name}</Text>
 						<Select
 							value={overrideValue(row)}
-							disabled={saving}
+							disabled={serverSave.status === 'pending'}
 							aria-label={m.settings_harness_update_override({ name: row.name })}
 							onchange={(e) => setOverride(row, (e.currentTarget as HTMLSelectElement).value)}
 						>
@@ -162,7 +162,7 @@
 							<option value="off">{m.settings_harness_update_off()}</option>
 						</Select>
 						{#if row.report}
-							<Text size="xs" tone="faint" variant="code">
+							<Text size="xs" tone="faint" numeric>
 								{versionLines(row.report.versions)}
 							</Text>
 							{#if row.report.managed_by_image}
@@ -186,7 +186,7 @@
 								{#if DRAIN_RESTARTABLE.has(skew.harness)}
 									<Button
 										size="sm"
-										disabled={saving || restarting !== null}
+										disabled={serverSave.status === 'pending' || restarting !== null}
 										onclick={() => restartWhenIdle(row, skew.harness)}
 									>
 										{m.settings_harness_restart_when_idle()}

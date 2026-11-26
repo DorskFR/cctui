@@ -12,8 +12,7 @@
 		canAddProvider = false,
 		onadd,
 		onedit,
-		onreauth,
-		onremove
+		onreauth
 	}: {
 		account: OAuthAccount;
 		managed?: boolean;
@@ -22,7 +21,6 @@
 		onadd?: () => void;
 		onedit?: (p: AccountProvider) => void;
 		onreauth?: (p: AccountProvider) => void;
-		onremove?: (p: AccountProvider) => void;
 	} = $props();
 </script>
 
@@ -38,10 +36,8 @@
 			<ProviderColumn
 				provider={p}
 				canManage={canEditProvider(p, owned) && !managed}
-				canRemove={canEditProvider(p, owned) && !managed}
 				onedit={() => onedit?.(p)}
 				onreauth={() => onreauth?.(p)}
-				onremove={() => onremove?.(p)}
 			/>
 		{:else}
 			<Text tone="faint" size="sm">{m.accounts_no_credentials()}</Text>

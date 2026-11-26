@@ -76,7 +76,8 @@ describe('CctuiAgent limits', () => {
 		expect(document.body.textContent).toContain('Effective: 2 (from env)');
 		expect(document.body.textContent).toContain('Effective: unlimited (built-in default)');
 		expect(input('Max live children')?.placeholder).toBe('unlimited');
-		expect(button('Save')?.disabled).toBe(true);
+		expect(button('Save')).toBeUndefined();
+		vi.useFakeTimers();
 
 		api.setSpawnDefaults.mockResolvedValue(
 			spawnInfo({
@@ -86,8 +87,10 @@ describe('CctuiAgent limits', () => {
 			})
 		);
 		type(input('Max live children'), '4');
-		button('Save')?.click();
+		await vi.advanceTimersByTimeAsync(700);
 		await settle();
+		vi.useRealTimers();
+		expect(api.setSpawnDefaults).toHaveBeenCalledTimes(1);
 		expect(api.setSpawnDefaults).toHaveBeenCalledWith({
 			max_children: 4,
 			max_depth: null,
@@ -109,8 +112,11 @@ describe('CctuiAgent limits', () => {
 		api.spawnDefaults.mockResolvedValue(spawnInfo());
 		comp = mount(SpawnLimitsGroup, { target: document.body });
 		await settle();
+		vi.useFakeTimers();
 		type(input('Max depth'), '0');
-		expect(button('Save')?.disabled).toBe(true);
+		await vi.advanceTimersByTimeAsync(700);
+		vi.useRealTimers();
+		expect(api.setSpawnDefaults).not.toHaveBeenCalled();
 		expect(document.body.textContent).toContain('positive whole numbers');
 	});
 });

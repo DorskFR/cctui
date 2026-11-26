@@ -1,6 +1,5 @@
 <script lang="ts">
-	// The composer's Send split-button. Stays a plain primary button across all
-	// cost states: a `tone` on `primary` recolors the label over the accent fill
+	// No `tone` on the primary: it recolors the label over the accent fill
 	// (unreadable), so the cold/imminent state lives in the label and the title.
 	import { Button, SplitButton, type MenuItem } from '@dorsk/tsumikit';
 	import { compact } from '#lib/format.ts';
@@ -20,6 +19,7 @@
 		route = 'send',
 		launching = false,
 		menu = true,
+		armed = true,
 		onclick
 	}: {
 		items: MenuItem[];
@@ -36,6 +36,8 @@
 		launching?: boolean;
 		/** False when nothing could go in the caret menu: a plain button then. */
 		menu?: boolean;
+		/** False keeps Send quiet: an idle composer must not add a filled primary. */
+		armed?: boolean;
 		onclick: () => void;
 	} = $props();
 
@@ -59,6 +61,7 @@
 						? m.composer_cache_imminent()
 						: undefined
 	);
+	const variant: 'primary' | 'ghost' = $derived(armed ? 'primary' : 'ghost');
 	const verb = $derived(followup ? m.composer_followup_send() : m.composer_send());
 </script>
 
@@ -73,7 +76,7 @@
 
 {#if menu}
 	<SplitButton
-		variant="primary"
+		{variant}
 		size="sm"
 		caret="half"
 		label={m.composer_schedule_menu()}
@@ -86,7 +89,7 @@
 		{@render sendLabel()}
 	</SplitButton>
 {:else}
-	<Button variant="primary" size="sm" disabled={disabled || launching} {onclick} {title}>
+	<Button {variant} size="sm" disabled={disabled || launching} {onclick} {title}>
 		{@render sendLabel()}
 	</Button>
 {/if}

@@ -1,9 +1,8 @@
 <script lang="ts">
-	// Composer voice entry points: the mic dictates into the draft (tap to
-	// start, tap to send, or hold while speaking to talk), the toggle, shown only with
-	// `ontogglelive`, talks with the session hands-free. While recording, a
-	// large stop target sits above the composer.
-	import { Button, IconButton, Toggle } from '@dorsk/tsumikit';
+	// The mic dictates into the draft: tap to start and tap to send, or hold
+	// while speaking. Its caret menu, shown only with `ontogglelive`, starts
+	// live voice. While recording, a large stop target sits above the composer.
+	import { Button, Icon, IconButton, Menu, type MenuItem } from '@dorsk/tsumikit';
 	import { errMessage } from '#lib/api.ts';
 	import { toasts } from '#lib/toast.svelte.ts';
 	import { Dictation } from '#lib/voice/dictation.ts';
@@ -44,6 +43,16 @@
 	const micStyle = $derived(
 		`touch-action: none; user-select: none; -webkit-touch-callout: none;${recording ? ' --accent: var(--danger);' : ''}`
 	);
+
+	const liveItems: MenuItem[] = $derived([
+		{
+			label: m.voice_live_item(),
+			icon: 'volume-high',
+			pressed: live,
+			attrs: { title: m.voice_live_hint() },
+			onselect: () => ontogglelive?.()
+		}
+	]);
 
 	const timer = $derived.by(() => {
 		const s = Math.floor(elapsed / 1000);
@@ -131,7 +140,7 @@
 
 <span class="voice-controls" data-journey="voice-controls">
 	<IconButton
-		emoji="🎙"
+		icon="mic"
 		box="sm"
 		variant="ghost"
 		pressed={recording}
@@ -153,14 +162,18 @@
 		onkeydown={onkey}
 	/>
 	{#if ontogglelive}
-		<Toggle
-			size="sm"
+		<Menu
+			label={m.voice_menu()}
+			title={m.voice_menu()}
+			items={liveItems}
+			placement="top-start"
+			box="sm"
+			variant="ghost"
 			pressed={live}
 			{disabled}
-			aria-label={m.voice_live_hint()}
-			title={m.voice_live_hint()}
-			onclick={ontogglelive}>{m.voice_live_toggle()}</Toggle
 		>
+			{#snippet trigger()}<Icon name="chevron-up" size={12} />{/snippet}
+		</Menu>
 	{/if}
 </span>
 
@@ -196,7 +209,7 @@
 	.voice-controls {
 		display: inline-flex;
 		align-items: center;
-		gap: var(--sp-1);
+		gap: 0;
 	}
 	.recording {
 		position: fixed;

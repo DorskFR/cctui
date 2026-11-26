@@ -8,6 +8,8 @@ const trailing = (page: Page) =>
 
 for (const viewport of [WIDE, NARROW]) {
 	const w = viewport.width;
+	// Back, Search and ⋯ when wide; a narrow bar folds Search into ⋯.
+	const minControls = viewport === NARROW ? 2 : 3;
 
 	test(`${w}px: every trailing header control shares one height and top y`, async ({
 		page
@@ -15,24 +17,20 @@ for (const viewport of [WIDE, NARROW]) {
 		await openDrawer(page, viewport);
 
 		const controls = await rects(trailing(page));
-		expect(controls.length).toBeGreaterThan(2);
+		expect(controls.length).toBeGreaterThanOrEqual(minControls);
 		for (const c of controls) console.log('control', c.label, JSON.stringify(c));
 
 		expect([...new Set(controls.map((c) => Math.round(c.height)))]).toHaveLength(1);
 		expect([...new Set(controls.map((c) => Math.round(c.y)))]).toHaveLength(1);
 	});
 
-	// `chip` and `box` disagreed in the kit: a chip action took its width from
-	// `--box-lg` and its height from `--btn-box`, so archive/stop/rename/search
-	// rendered 40x36 next to 36x36 popover triggers. Height and y alone did not
-	// catch it.
 	test(`${w}px: every trailing header control is square and the same width`, async ({
 		page
 	}) => {
 		await openDrawer(page, viewport);
 
 		const controls = await rects(trailing(page));
-		expect(controls.length).toBeGreaterThan(2);
+		expect(controls.length).toBeGreaterThanOrEqual(minControls);
 		for (const c of controls) console.log('control', c.label, JSON.stringify(c));
 
 		expect([...new Set(controls.map((c) => Math.round(c.width)))]).toHaveLength(1);
@@ -85,4 +83,30 @@ test('the ⋯ menu is one button, so its tooltip cannot land on a sibling', asyn
 	await expect(trigger).toHaveCount(1);
 	expect(await trigger.evaluate((el) => el.tagName)).toBe('BUTTON');
 	expect(await trigger.locator('button').count()).toBe(0);
+});
+
+test('an idle drawer shows no Stop and keeps rename and archive in ⋯', async ({ page }) => {
+	await openDrawer(page, WIDE);
+	const header = page.locator('[data-journey="header"]');
+	await expect(header.locator('[data-journey="stop"]')).toHaveCount(0);
+	await expect(header.getByRole('button', { name: 'Archive' })).toHaveCount(0);
+	await expect(header.getByRole('button', { name: 'Rename' })).toHaveCount(0);
+	await header.locator('[aria-haspopup="menu"]').click();
+	const menu = page.getByRole('menu');
+	await expect(menu.getByRole('menuitem', { name: 'Rename' })).toBeVisible();
+	await expect(menu.getByRole('menuitem', { name: 'Archive' })).toBeVisible();
+});
+
+test('nothing covers the drawer: a point on Back hits Back, not the scrim', async ({ page }) => {
+	await openDrawer(page, WIDE);
+	const back = page.locator('[data-journey="header"]').getByRole('button', { name: 'Back' });
+	const box = (await back.boundingBox())!;
+	const hit = await page.evaluate(
+		([x, y]) => {
+			const el = document.elementFromPoint(x, y);
+			return { back: el?.closest('button')?.getAttribute('aria-label') ?? null, scrim: !!el?.closest('[data-tsu="Scrim"]') };
+		},
+		[box.x + box.width / 2, box.y + box.height / 2]
+	);
+	expect(hit).toEqual({ back: 'Back', scrim: false });
 });

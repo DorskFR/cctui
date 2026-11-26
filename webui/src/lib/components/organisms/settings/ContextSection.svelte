@@ -719,8 +719,8 @@
 		justify-content: space-between;
 		gap: 0.75rem;
 		padding: 0.4rem 0.6rem;
-		border: 1px solid var(--border);
-		border-radius: var(--radius-sm);
+		background: var(--bg);
+		border-radius: var(--r-sm);
 	}
 	.main {
 		display: flex;
@@ -784,7 +784,7 @@
 		font-family: var(--font-mono);
 		font-size: var(--fs-xs);
 		white-space: pre-wrap;
-		border: 1px solid var(--border);
+		background: var(--bg);
 		border-radius: var(--r-sm);
 	}
 	.d-del {

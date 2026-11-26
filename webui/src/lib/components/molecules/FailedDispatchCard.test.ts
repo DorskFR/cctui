@@ -36,9 +36,13 @@ function dispatch(over: Partial<FailedDispatch> = {}): FailedDispatch {
 async function render(
 	d: FailedDispatch,
 	onrerun: (id: string) => Promise<unknown> = vi.fn(async () => {}),
-	ondismiss?: (id: string) => Promise<unknown>
+	ondismiss?: (id: string) => Promise<unknown>,
+	dispatcherHref: string | null = null
 ) {
-	comp = mount(FailedDispatchCard, { target: document.body, props: { dispatch: d, onrerun, ondismiss } });
+	comp = mount(FailedDispatchCard, {
+		target: document.body,
+		props: { dispatch: d, onrerun, ondismiss, dispatcherHref }
+	});
 	await flush();
 	return onrerun;
 }
@@ -57,19 +61,23 @@ describe('FailedDispatchCard', () => {
 		expect(onrerun).toHaveBeenCalledWith('0d4c1f2e-9a7b-4c3d-8e1f-2a3b4c5d6e7f');
 	});
 
-	it('a dispatch that needed env offers no one-click re-run and names the missing keys', async () => {
+	it('a blocked dispatch offers no one-click re-run and leaves the cause to its group header', async () => {
 		await render(dispatch({ reason: 'refused', detail: 'quota exceeded', env_keys: ['GITHUB_TOKEN'], rerun_blocked: 'env' }));
 		expect(text()).toContain('refused');
 		expect(document.querySelector('pre.detail')?.textContent).toBe('quota exceeded');
-		expect(text()).toContain('GITHUB_TOKEN');
+		expect(text()).not.toContain("Can't be re-dispatched");
 		expect(rerunButton()).toBeUndefined();
 	});
 
-	it('a dispatch whose prompt was masked says so and offers no one-click re-run', async () => {
-		await render(dispatch({ prompt_head: 'use [REDACTED:user] now', rerun_blocked: 'prompt_redacted' }));
-		expect(text()).toContain('<redacted> parts are stored only masked');
-		expect(text()).not.toContain('only the start of the prompt');
-		expect(rerunButton()).toBeUndefined();
+	it('names the prompt file in the row, and links the dispatcher only when it is manageable', async () => {
+		await render(dispatch({ prompt_file: 'implement-from-ticket.md' }), undefined, undefined, '/settings/instance#instance-dispatchers');
+		expect(text()).toContain('implement-from-ticket.md');
+		const link = [...document.querySelectorAll('a')].find((a) => a.textContent === 'kube');
+		expect(link?.getAttribute('href')).toBe('/settings/instance#instance-dispatchers');
+		unmount(comp!);
+		comp = null;
+		await render(dispatch());
+		expect([...document.querySelectorAll('a')].some((a) => a.textContent === 'kube')).toBe(false);
 	});
 
 	it('shows why a re-dispatch failed', async () => {
@@ -96,7 +104,6 @@ describe('FailedDispatchCard', () => {
 
 	it('a superseded failure resolves to a link to the run that replaced it, keeping the reason', async () => {
 		await render(dispatch({ reason: 'crashed', superseded_by: 'b7e2c9d1-0000-4000-8000-000000000000' }));
-		expect(text()).toContain('resolved');
 		expect(text()).toContain('crashed');
 		expect(text()).toContain('Superseded by');
 		const link = document.querySelector('a');

@@ -73,6 +73,11 @@ describe('handleError', () => {
 		reload.mockRestore();
 	});
 
+	it('leaves an unknown route to the error page instead of toasting it', () => {
+		call({ status: 404, message: 'Not found: /nope' }, 'framework');
+		expect(toasts.items).toHaveLength(0);
+	});
+
 	it('still toasts an ordinary failure', () => {
 		const reload = vi.spyOn(location, 'reload').mockImplementation(() => {});
 		call(new Error('boom'));

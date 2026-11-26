@@ -4,8 +4,6 @@
 	import { Text } from '@dorsk/tsumikit';
 	import { m } from '#lib/paraglide/messages.js';
 
-	// Every account the viewer can see, as the same organism the Accounts
-	// screen shows, in its read-only gauge form.
 	const accounts = useAccounts();
 	const rows = $derived(accounts.data ?? []);
 	const chips = useRedirectChips();
@@ -24,7 +22,10 @@
 {/if}
 
 <style>
+	/* The dock is itself --bg-elevated; lifting the card body one step makes
+	   header and body one surface that stands off the panel. */
 	.list {
+		--bg-elevated: var(--bg-elevated-2);
 		display: flex;
 		flex-direction: column;
 		gap: var(--sp-2);

@@ -1,6 +1,6 @@
 <script lang="ts">
 	import type { UserRow } from '@bindings/UserRow';
-	import { Avatar, Badge, Input, Button, Disclosure, Dot, Spinner, Text } from '@dorsk/tsumikit';
+	import { Avatar, Badge, Input, Button, Disclosure, Spinner, Text } from '@dorsk/tsumikit';
 	import PageHead from '#lib/components/molecules/PageHead.svelte';
 	import EnrollMachineCard from '#lib/components/organisms/EnrollMachineCard.svelte';
 	import { hashHue } from '#lib/format.ts';
@@ -14,7 +14,7 @@
 		selectedId,
 		canCreate = false,
 		meta,
-		online,
+		presence = () => '',
 		hidden = () => false,
 		onselect,
 		oncreate
@@ -24,7 +24,8 @@
 		selectedId: string;
 		canCreate?: boolean;
 		meta: (u: UserRow) => string;
-		online: (u: UserRow) => boolean;
+		/** Machine liveness in words, empty when there is nothing to report. */
+		presence?: (u: UserRow) => string;
 		hidden?: (u: UserRow) => boolean;
 		onselect: (id: string) => void;
 		oncreate: () => void;
@@ -49,13 +50,12 @@
 			<Avatar name={u.name} hue={hashHue(u.name)} size={26} decorative />
 			<span class="id">
 				<span class="nm">{u.name}</span>
-				<span class="mt">{meta(u)}</span>
+				<span class="mt"
+					>{meta(u)}{#if !revoked && hasFeature('machine_spawn') && presence(u)}{` · ${presence(u)}`}{/if}</span
+				>
 			</span>
 			{#if hidden(u)}
 				<Badge tone="muted" size="xs" style="flex:none" data-journey="hidden-chip">{m.hidden_owners_chip()}</Badge>
-			{/if}
-			{#if !revoked && hasFeature('machine_spawn')}
-				<Dot status={online(u) ? 'active' : 'dead'} />
 			{/if}
 		</Button>
 	</div>
@@ -98,7 +98,7 @@
 		{/if}
 	</div>
 
-	<EnrollMachineCard dashed />
+	<EnrollMachineCard />
 </div>
 
 <style>
@@ -116,7 +116,6 @@
 		}
 	}
 	.list {
-		border: 1px solid var(--border);
 		border-radius: var(--r-md);
 		background: var(--bg-elevated);
 		overflow: hidden;
@@ -145,6 +144,7 @@
 		min-width: 0;
 		display: flex;
 		flex-direction: column;
+		gap: var(--sp-1);
 		text-align: start;
 	}
 	.nm {

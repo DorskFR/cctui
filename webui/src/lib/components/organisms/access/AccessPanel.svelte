@@ -52,7 +52,12 @@
 			: hasFeature('machine_spawn')
 				? m.access_user_meta({ machines: machinesOf(u.id).length, accounts: accountsOf(u.id).length })
 				: m.access_user_meta_accounts({ accounts: accountsOf(u.id).length });
-	const online = (u: UserRow) => machinesOf(u.id).some((mc) => mc.liveness === 'online');
+	const presence = (u: UserRow) => {
+		const mine = machinesOf(u.id);
+		if (!mine.length) return '';
+		const n = mine.filter((mc) => mc.liveness === 'online').length;
+		return n ? m.access_user_online({ n }) : m.access_user_offline();
+	};
 
 	let secret = $state<{ title: string; value: string } | null>(null);
 	let createOpen = $state(false);
@@ -85,7 +90,7 @@
 				{selectedId}
 				canCreate
 				meta={userMeta}
-				{online}
+				{presence}
 				hidden={userHidden}
 				onselect={(id) => (picked = id)}
 				oncreate={() => (createOpen = true)}
@@ -112,7 +117,7 @@
 	</MasterDetail>
 {:else if self}
 	<div class="solo">
-		<EnrollMachineCard dashed />
+		<EnrollMachineCard />
 		<AccessDetail
 			user={self}
 			isAdmin={false}

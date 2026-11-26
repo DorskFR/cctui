@@ -10,10 +10,9 @@
 	} from '#lib/queries/index.ts';
 	import { toasts } from '#lib/toast.svelte.ts';
 	import { hasFeature } from '#lib/features.svelte.ts';
-	import { providerLabel } from '#lib/providers.ts';
 	import { m } from '#lib/paraglide/messages.js';
 	import { tick } from 'svelte';
-	import { Breadcrumb, Button, Text } from '@dorsk/tsumikit';
+	import { Breadcrumb, ConfirmModal, Text } from '@dorsk/tsumikit';
 	import PageHead from '#lib/components/molecules/PageHead.svelte';
 	import AccountEditorModal from '#lib/components/organisms/accounts/AccountEditorModal.svelte';
 	import { availableKinds, ownsAccount } from '#lib/components/organisms/accounts/account-editor.logic.ts';
@@ -79,24 +78,16 @@
 	});
 
 	function removeProvider(p: AccountProvider) {
-		if (!account) return;
-		if (
-			!confirm(
-				m.accounts_confirm_remove_provider({
-					provider: providerLabel(p.provider),
-					name: account.name
-				})
-			)
-		)
-			return;
-		guard(
-			actions.removeProvider(account.id, p.id).then(() => toasts.ok(m.accounts_provider_removed()))
-		);
+		if (!account) return Promise.resolve();
+		return actions.removeProvider(account.id, p.id).then(() => {
+			toasts.ok(m.accounts_provider_removed());
+			dropSelection();
+		});
 	}
 
+	let confirmingDelete = $state(false);
 	function removeAccount() {
 		if (!account) return;
-		if (!confirm(m.accounts_confirm_delete_account({ name: account.name }))) return;
 		guard(
 			actions.remove(account.id).then(() => {
 				toasts.ok(m.accounts_deleted());
@@ -115,9 +106,7 @@
 	/>
 
 	{#if account}
-		<PageHead title={account.name}>
-			<Button as="a" href={ACCOUNTS_HREF}>{m.account_back()}</Button>
-		</PageHead>
+		<PageHead title={account.name} />
 
 		<div class="sections">
 			<IdentitySection {account} {owner} />
@@ -129,7 +118,6 @@
 				onadd={() => editor?.openAddProvider(account)}
 				onedit={(p) => selectProvider(p, true)}
 				onreauth={(p) => editor?.reauth(account, p)}
-				onremove={removeProvider}
 			/>
 			{#if selected}
 				<ProviderSettingsSection
@@ -138,8 +126,10 @@
 					{selected}
 					accounts={rows}
 					initialPage={landingPage}
+					canRemove={ownsAccount(account, me.data)}
 					onselect={(p) => selectProvider(p)}
 					onmoved={dropSelection}
+					onremove={removeProvider}
 				/>
 			{/if}
 			<EnvSection {account} />
@@ -149,7 +139,7 @@
 					<ServiceTokensSection {account} />
 				{/if}
 			{/if}
-			<DangerSection {account} disabled={managed} ondelete={removeAccount} />
+			<DangerSection {account} disabled={managed} ondelete={() => (confirmingDelete = true)} />
 		</div>
 	{:else if accounts.isLoading}
 		<Text tone="faint">{m.common_loading()}</Text>
@@ -159,6 +149,18 @@
 </div>
 
 <AccountEditorModal bind:this={editor} {rows} {isAdmin} {activeUsers} />
+
+{#if account}
+	<ConfirmModal
+		bind:open={confirmingDelete}
+		tone="danger"
+		title={m.accounts_delete_account()}
+		message={m.accounts_confirm_delete_account({ name: account.name })}
+		confirmLabel={m.accounts_delete_account()}
+		cancelLabel={m.common_cancel()}
+		onconfirm={removeAccount}
+	/>
+{/if}
 
 <style>
 	.page {

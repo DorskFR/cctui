@@ -2,8 +2,16 @@
 	import { errMessage } from '#lib/api.ts';
 	import { useResourceShares, useResourceShareActions } from '#lib/queries/index.ts';
 	import { toasts } from '#lib/toast.svelte.ts';
-	import { Button, Input, Select, Text, Timestamp } from '@dorsk/tsumikit';
+	import { Button, ConfirmModal, Input, Select, Text, Timestamp } from '@dorsk/tsumikit';
 	import { m } from '#lib/paraglide/messages.js';
+
+	type Ask = { title: string; message?: string; label: string; run: () => void };
+	let ask = $state<Ask | null>(null);
+	let asking = $state(false);
+	function confirmFirst(a: Ask) {
+		ask = a;
+		asking = true;
+	}
 
 	// "Shared with" section for any shareable resource: lists live
 	// grants, a user-picker (login or UUID) to grant `use` — or one of `actions`
@@ -56,14 +64,19 @@
 		}
 	}
 
-	async function revoke(userId: string, name: string) {
-		if (!confirm(m.providers_share_confirm_revoke({ name, noun }))) return;
-		try {
-			await shareActions.revoke(resourceType, id, userId);
-			toasts.ok(m.providers_share_revoked());
-		} catch (e) {
-			toasts.error(errMessage(e));
-		}
+	function revoke(userId: string, name: string) {
+		confirmFirst({
+			title: m.providers_share_confirm_revoke({ name, noun }),
+			label: m.providers_share_revoke(),
+			run: async () => {
+				try {
+					await shareActions.revoke(resourceType, id, userId);
+					toasts.ok(m.providers_share_revoked());
+				} catch (e) {
+					toasts.error(errMessage(e));
+				}
+			}
+		});
 	}
 
 	const rows = $derived(shares.data ?? []);
@@ -106,6 +119,18 @@
 		<Button disabled={busy} onclick={grant}>{busy ? m.providers_share_sharing() : m.providers_share_button()}</Button>
 	</div>
 </div>
+
+{#if ask}
+	<ConfirmModal
+		bind:open={asking}
+		tone="danger"
+		title={ask.title}
+		message={ask.message}
+		confirmLabel={ask.label}
+		cancelLabel={m.common_cancel()}
+		onconfirm={ask.run}
+	/>
+{/if}
 
 <style>
 	.shares {

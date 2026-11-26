@@ -77,8 +77,8 @@ export const init: ClientInit = () => {
 };
 
 export const handleError: HandleClientError = ({ error, kind }) => {
-	// `error(...)` throws are expected: the error page shows them, no toast.
-	if (kind === 'app') return;
+	// The error page already shows these; a toast would repeat it.
+	if (kind === 'app' || (kind === 'framework' && error.status === 404)) return;
 	const text = message(error);
 	if (!ignored(error) && !swallowedAsStaleChunk(text)) toasts.error(text);
 	// Returned shape is exposed to the app as `page.error`; keep it message-only.

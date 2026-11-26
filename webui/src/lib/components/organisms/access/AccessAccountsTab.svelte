@@ -32,7 +32,7 @@
 	>
 {/snippet}
 {#snippet colCreated(a: OAuthAccount)}
-	<Timestamp value={a.created_at} mode="short-iso" mono size="xs" tone="faint" />
+	<Timestamp value={a.created_at} mode="short-iso" size="xs" tone="faint" />
 {/snippet}
 {#snippet colActions(a: OAuthAccount)}
 	<RowActions>

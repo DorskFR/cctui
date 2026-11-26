@@ -47,6 +47,7 @@
 			<RoomMenu busy={making} onpick={moveToRoom} />
 		</Popover>
 	{/if}
+	<Button variant="ghost" onclick={sp.list.exitSelect}>{m.sessions_cancel_selection()}</Button>
 	<Button
 		variant="danger"
 		loading={sp.archiving}
@@ -67,7 +68,6 @@
 		align-items: center;
 		margin-bottom: var(--sp-3);
 		padding: var(--sp-2) var(--sp-3);
-		border: 1px solid var(--border-strong);
 		border-radius: var(--r-md);
 		background: var(--bg-elevated);
 		box-shadow: var(--shadow-md);

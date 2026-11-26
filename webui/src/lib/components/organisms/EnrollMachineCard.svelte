@@ -3,10 +3,8 @@
 	import { copyText } from '#lib/clipboard.ts';
 	import { m } from '#lib/paraglide/messages.js';
 	import InlineCode, { SLOT } from '#lib/components/atoms/InlineCode.svelte';
-	import { Button, Card, Cluster, Stack, Text } from '@dorsk/tsumikit';
+	import { Button, Card, Stack, Text } from '@dorsk/tsumikit';
 	import { hasFeature } from '#lib/features.svelte.ts';
-
-	let { dashed = false }: { dashed?: boolean } = $props();
 
 	const enrollCmd = $derived(
 		`cctui-daemon enroll --server-url ${apiOrigin()} --token <user-token> --name "$(hostname)"`
@@ -18,23 +16,16 @@
 </script>
 
 {#if hasFeature('machine_spawn')}
-	<Card
-		padding={dashed ? 'sm' : 'md'}
-		style={dashed
-			? 'border-style: dashed; border-color: var(--border-strong); background: transparent'
-			: undefined}
-	>
+	<Card padding="md">
 		<Stack data-journey="enroll">
 			<Text weight="bold">{m.home_enroll_title()}</Text>
 			<Text as="p" tone="muted" size="sm">
 				<InlineCode text={m.home_enroll_install({ daemon: SLOT })} code="cctui-daemon" />
 			</Text>
-			<Cluster wrap={false} align="center">
-				<!-- as="div": truncate needs a block element — text-overflow:ellipsis is
-				     ignored on an inline <span>, so the long command would spill. -->
-				<div class="cmd" data-journey="enroll-cmd"><Text as="div" variant="code" truncate>{enrollCmd}</Text></div>
-				<Button data-journey="enroll-copy" onclick={copyEnroll}>{m.common_copy()}</Button>
-			</Cluster>
+			<div class="cmd" data-journey="enroll-cmd">
+				<div class="cmd-text"><Text as="div" variant="code">{enrollCmd}</Text></div>
+				<Button size="sm" data-journey="enroll-copy" onclick={copyEnroll}>{m.common_copy()}</Button>
+			</div>
 			<Text as="p" tone="muted" size="sm">
 				{m.home_enroll_run_as_service()} <Text variant="code">cctui-daemon service install</Text>
 			</Text>
@@ -43,14 +34,19 @@
 {/if}
 
 <style>
-	/* Owns the shrink (min-width:0 + flex:1) that lets the Text inside truncate. */
 	.cmd {
-		flex: 1;
-		min-width: 0;
+		display: flex;
+		align-items: flex-start;
+		gap: var(--sp-2);
 		padding: var(--sp-2) var(--sp-3);
 		background: var(--bg);
-		border: 1px solid var(--border-strong);
 		border-radius: var(--r-md);
 		font-size: var(--fs-xs);
+		white-space: pre-wrap;
+		overflow-wrap: anywhere;
+	}
+	.cmd-text {
+		flex: 1;
+		min-width: 0;
 	}
 </style>

@@ -1,12 +1,12 @@
 // @vitest-environment happy-dom
 import { flushSync, mount, unmount } from 'svelte';
 import { afterEach, describe, expect, it } from 'vitest';
-import header from './DrawerHeader.svelte?raw';
+import title from './DrawerTitle.svelte?raw';
+import menu from './DrawerMenu.svelte?raw';
 import RoomBadge from '#lib/components/molecules/RoomBadge.svelte';
 
-const markup = header.slice(header.indexOf('</script>'));
-const title = markup.slice(markup.indexOf('<div class="dtitle">'), markup.indexOf('<FontScalePicker'));
-const items = header.slice(header.indexOf('const overflowItems'), header.indexOf(']);', header.indexOf('const overflowItems')));
+const markup = menu.slice(menu.indexOf('</script>'));
+const items = menu.slice(menu.indexOf('const overflowItems'), menu.indexOf(']);', menu.indexOf('const overflowItems')));
 
 let comp: ReturnType<typeof mount> | null = null;
 afterEach(() => {

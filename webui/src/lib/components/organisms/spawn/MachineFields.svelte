@@ -1,4 +1,5 @@
 <script lang="ts">
+	import type { Snippet } from 'svelte';
 	// The "Machine" branch of the spawn form: where (machine badge · cwd ·
 	// branch), the session name, and the prompt. The harness / account / model /
 	// effort / permission knobs come from the selected profile (ProfileList).
@@ -9,14 +10,13 @@
 	import type { PromptAttachments } from '#lib/promptAttachments.svelte.ts';
 	import type { GitInfo } from '@bindings/GitInfo';
 	import MachinePicker from '#lib/components/molecules/MachinePicker.svelte';
+	import NoMachinesHint from './NoMachinesHint.svelte';
 	import {
-		Callout,
 		Field,
 		FilterInput,
 		Icon,
 		Input,
 		Kbd,
-		Link,
 		WorkingDir,
 		type Query
 	} from '@dorsk/tsumikit';
@@ -38,7 +38,8 @@
 		att,
 		promptEl = $bindable(null),
 		cwdCheck = 'unknown',
-		machineName = ''
+		machineName = '',
+		promptTools
 	}: {
 		form: Form;
 		machines: MachineResourcesRow[];
@@ -48,6 +49,7 @@
 		promptEl?: HTMLTextAreaElement | null;
 		cwdCheck?: CwdCheck;
 		machineName?: string;
+		promptTools?: Snippet;
 	} = $props();
 
 	let revealed = $state<ReadonlySet<string>>(new Set());
@@ -106,10 +108,7 @@
 </script>
 
 {#if machines.length === 0}
-	<Callout tone="warn" icon="info">
-		{m.spawn_no_machines_hint()}
-		<Link href="/">{m.nav_overview()}</Link>
-	</Callout>
+	<NoMachinesHint />
 {/if}
 
 <div class="where" data-journey="where">
@@ -157,8 +156,7 @@
 
 <Field for="sp-prompt">
 	{#snippet hint()}
-		<Kbd keys="mod+enter" />
-		{m.spawn_submit_hint_spawn()}
+		<span class="chord-hint"><Kbd keys="mod+enter" /> {m.spawn_submit_hint_spawn()}</span>
 	{/snippet}
 	<div class="prompt-head">
 		<PromptHistoryMenu
@@ -168,6 +166,7 @@
 			}}
 		/>
 		<label class="prompt-label" for="sp-prompt">{m.spawn_prompt_label()}</label>
+		{#if promptTools}<span class="prompt-tools">{@render promptTools()}</span>{/if}
 	</div>
 	<PromptField
 		{att}
@@ -222,5 +221,15 @@
 		overflow: hidden;
 		white-space: nowrap;
 		text-overflow: ellipsis;
+	}
+	@media (pointer: coarse) {
+		.chord-hint {
+			display: none;
+		}
+	}
+	.prompt-tools {
+		display: inline-flex;
+		align-items: center;
+		margin-inline-start: auto;
 	}
 </style>

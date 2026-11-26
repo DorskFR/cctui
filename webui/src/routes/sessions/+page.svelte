@@ -18,7 +18,7 @@
 	import ConversationDrawer from '#lib/components/organisms/ConversationDrawer.svelte';
 	import ConversationDock from '#lib/components/organisms/ConversationDock.svelte';
 	import SpawnModal from '#lib/components/organisms/SpawnModal.svelte';
-	import { dockLayout } from '#lib/spawnDock.svelte.ts';
+	import { dockLayout, spawnDockHold } from '#lib/spawnDock.svelte.ts';
 	import StatsDock from '#lib/components/organisms/statsdock/StatsDock.svelte';
 	import SessionControls from '#lib/components/organisms/SessionControls.svelte';
 	import { Callout, ConfirmModal } from '@dorsk/tsumikit';
@@ -42,6 +42,7 @@
 	import { settings } from '#lib/settings.svelte.ts';
 	import { m } from '#lib/paraglide/messages.js';
 	import {
+		foldedPrefill,
 		sessionIdFromLocation,
 		sessionHrefFor,
 		sessionNavState,
@@ -81,8 +82,6 @@
 		invalidateSessions,
 		refetchLive: () => qc.invalidateQueries({ queryKey: qk.sessions(false) }),
 		dockLayout,
-		clearUrlSession: () => replaceUrlSession(null),
-		confirm: (message) => confirm(message),
 		spawnSlot: {
 			currentKey: currentSpawnSlot,
 			read: readSpawnSlot,
@@ -179,11 +178,6 @@
 		mounted = true;
 	});
 
-	function replaceUrlSession(id: string | null) {
-		const href = sessionHrefFor(location.href, id);
-		if (href !== null) goto(href, { shallow: true, replace: true });
-	}
-
 	function syncUrlSession(id: string | null, quiet: boolean) {
 		const urlId = sessionIdFromLocation(location.pathname, new URLSearchParams(location.search));
 		const { fromList } = sessionNavState(untrack(() => page.state));
@@ -266,6 +260,20 @@
 		drafts.clear(LAST_DOCKED_SESSION);
 		sp.openSession = null;
 	};
+
+	$effect(() => {
+		const open = !!sp.liveOpen;
+		untrack(() => {
+			if (open && sp.dockSide) sp.spawnPrefill = foldedPrefill(sp.spawnPrefill);
+			const wasHeld = spawnDockHold.collapsed;
+			spawnDockHold.collapsed = open;
+			// The dock returning takes over a modal opened while it was folded.
+			if (!open && wasHeld && sp.dockSide) sp.showSpawn = false;
+		});
+	});
+	$effect(() => () => {
+		spawnDockHold.collapsed = false;
+	});
 
 	// live status changes from the websocket → refetch the list
 	$effect(() => {
@@ -440,6 +448,18 @@
 		busy={sp.archiveConfirm.busy}
 		onconfirm={sp.archiveConfirm.confirm}
 		oncancel={sp.archiveConfirm.cancel}
+	/>
+{/if}
+
+{#if sp.discardPending}
+	<ConfirmModal
+		open
+		tone="danger"
+		title={m.sessions_confirm_discard_draft()}
+		message={m.sessions_confirm_discard_draft_body({ name: displayNameOf(sp.discardPending) })}
+		confirmLabel={m.sessions_discard()}
+		onconfirm={sp.confirmDiscard}
+		oncancel={sp.cancelDiscard}
 	/>
 {/if}
 

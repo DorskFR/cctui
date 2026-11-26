@@ -10,7 +10,7 @@
 	let { isAdmin = false, active = false }: { isAdmin?: boolean; active?: boolean } = $props();
 </script>
 
-<SettingSection id="instance-users" icon="◎" title={m.settings_sec_users()} admin>
+<SettingSection id="instance-users" icon="◎" title={m.settings_sec_users()}>
 	<SettingGroup>
 		<SettingRow label={m.settings_nav_users()} help={m.settings_users_help()} selfLabelled wide />
 		<SettingRow label={m.settings_nav_dispatchers()} help={m.settings_dispatchers_help()} selfLabelled wide />

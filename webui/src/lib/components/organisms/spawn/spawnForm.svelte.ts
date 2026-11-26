@@ -15,7 +15,6 @@ import {
 	endpoints
 } from '#lib/queries/index.ts';
 import { toasts } from '#lib/toast.svelte.ts';
-import { submitChordLabel } from '#lib/platform.ts';
 import {
 	drafts,
 	promptHistory,
@@ -250,9 +249,7 @@ export class SpawnForm {
 			this.spawnValid &&
 			this.att.images.pending.length === 0
 	);
-	spawnLabel = $derived(
-		`${this.target !== 'machine' ? m.spawn_action_dispatch() : m.spawn_action_spawn()} (${submitChordLabel()})`
-	);
+	spawnLabel = $derived(this.target !== 'machine' ? m.spawn_action_dispatch() : m.spawn_action_spawn());
 	noMachines = $derived(this.target === 'machine' && this.machineList.length === 0);
 	disabledReason = $derived(
 		this.noMachines
@@ -592,6 +589,11 @@ export class SpawnForm {
 		} finally {
 			this.busy = false;
 		}
+	};
+
+	/** Navigating away: the modal closes, the docked panel unmounts with its page. */
+	leave = () => {
+		if (!this.docked()) this.onclose();
 	};
 
 	clearForm = () => {

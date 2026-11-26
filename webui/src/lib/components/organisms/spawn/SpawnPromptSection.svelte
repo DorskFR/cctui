@@ -11,14 +11,20 @@
 	import { findInvite } from '#lib/cctuiverse.ts';
 	import { cctuiverseConfig, loadCctuiverseConfig } from '#lib/cctuiverseConfig.svelte.ts';
 	import { hasFeature } from '#lib/features.svelte.ts';
+	import { settingsHref } from '../settings/settings.logic';
 
 	let { sf }: { sf: SpawnForm } = $props();
 
 	$effect(() => {
 		void loadCctuiverseConfig();
 	});
+	const promptTools = $derived(hasFeature('voice') ? dictation : undefined);
 	const hasInvite = $derived(hasFeature('federation') && findInvite(sf.form.prompt) !== null);
 </script>
+
+{#snippet dictation()}
+	<SpawnDictation {sf} />
+{/snippet}
 
 {#if sf.target === 'dispatch'}
 	{#if hasInvite}
@@ -29,10 +35,8 @@
 		dispatcherIds={sf.dispatcherIds}
 		accounts={sf.allAccounts}
 		onsubmit={sf.submit}
+		{promptTools}
 	/>
-	{#if hasFeature('voice')}
-		<SpawnDictation {sf} />
-	{/if}
 {:else}
 	<MachineFields
 		bind:form={sf.form}
@@ -43,10 +47,8 @@
 		bind:promptEl={sf.promptEl}
 		cwdCheck={sf.cwdCheck}
 		machineName={sf.machineName}
+		{promptTools}
 	/>
-	{#if hasFeature('voice')}
-		<SpawnDictation {sf} />
-	{/if}
 	{#if hasInvite && !cctuiverseConfig.enabled}
 		<Callout tone="warn" style="flex-basis:100%">{m.cctuiverse_disabled_invite()}</Callout>
 	{:else if hasInvite}
@@ -65,6 +67,8 @@
 			oncreate={(name, spec) => createProfile(sf, name, spec)}
 			onsave={(id, name, spec) => saveProfile(sf, id, name, spec)}
 			ondelete={(id) => deleteProfile(sf, id)}
+			manageHref={settingsHref('sessions', 'launch')}
+			onmanage={sf.leave}
 		/>
 	{/if}
 {/if}
