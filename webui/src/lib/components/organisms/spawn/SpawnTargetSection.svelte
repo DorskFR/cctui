@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { SegmentedControl } from '@dorsk/tsumikit';
+	import { AutoGrid, OptionButton, Text } from '@dorsk/tsumikit';
 	import { m } from '#lib/paraglide/messages.js';
 	import type { SpawnForm } from './spawnForm.svelte';
 
@@ -7,11 +7,17 @@
 </script>
 
 {#if sf.showTargetTabs}
-	<SegmentedControl
-		block
-		label={m.spawn_run_on_label()}
-		options={sf.targetOptions}
-		value={sf.target}
-		onchange={(v) => sf.setTarget(v)}
-	/>
+	<AutoGrid min="8rem" maxCols={2} gap="var(--sp-2)" role="radiogroup" aria-label={m.spawn_run_on_label()}>
+		{#each sf.targetOptions as o (o.value)}
+			<OptionButton
+				row
+				selected={sf.target === o.value}
+				role="radio"
+				aria-checked={sf.target === o.value}
+				onclick={() => sf.setTarget(o.value)}
+			>
+				<Text>{o.label}</Text>
+			</OptionButton>
+		{/each}
+	</AutoGrid>
 {/if}
