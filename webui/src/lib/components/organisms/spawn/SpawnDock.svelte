@@ -29,7 +29,6 @@
 
 	const bodyId = $props.id();
 	let dockEl = $state<HTMLElement>();
-	let bodyEl = $state<HTMLElement>();
 	const towardEdge = $derived(side === 'left' ? '«' : '»');
 	const awayFromEdge = $derived(side === 'left' ? '»' : '«');
 
@@ -38,15 +37,6 @@
 		else minifySpawnDock();
 		await tick();
 		dockEl?.querySelector<HTMLElement>('[data-dock-toggle]')?.focus();
-	}
-
-	async function startNew() {
-		expandSpawnDock();
-		await tick();
-		const field =
-			bodyEl?.querySelector<HTMLElement>('textarea') ??
-			bodyEl?.querySelector<HTMLElement>('input:not([type="hidden"])');
-		field?.focus();
 	}
 
 	let dragging = $state(false);
@@ -77,7 +67,6 @@
 				data-dock-toggle
 				onclick={() => toggle(true)}
 			/>
-			<IconButton icon="plus" variant="ghost" label={m.spawn_modal_title()} onclick={startNew} />
 		</div>
 	{:else}
 		<!-- svelte-ignore a11y_no_noninteractive_tabindex -->
@@ -117,7 +106,7 @@
 			/>
 		</div>
 	{/if}
-	<div class="dock-body" id={bodyId} bind:this={bodyEl} hidden={minified} inert={minified}>
+	<div class="dock-body" id={bodyId} hidden={minified} inert={minified}>
 		{@render body()}
 	</div>
 	<div class="dock-foot" hidden={minified} inert={minified}>{@render footer()}</div>

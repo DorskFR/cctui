@@ -83,14 +83,12 @@ describe('SpawnDock minify', () => {
 		expect(button(m.spawn_dock_expand())?.textContent).toContain('«');
 	});
 
-	it('opens the form from the rail new-session button, focused on the prompt', async () => {
+	it('shows a single expand button on the rail', () => {
 		settings.setSpawnDock({ minified: true });
 		render();
-		button(m.spawn_modal_title())?.click();
-		flushSync();
-		await tick();
-		expect(dock()?.classList.contains('minified')).toBe(false);
-		expect(document.activeElement).toBe(draft());
+		const buttons = [...document.querySelectorAll<HTMLButtonElement>('.rail button')];
+		expect(buttons.map((b) => b.getAttribute('aria-label'))).toEqual([m.spawn_dock_expand()]);
+		expect(buttons[0].title).toBe(m.spawn_dock_expand());
 	});
 
 	it('minifies while a conversation is open and restores the form when it closes', () => {
