@@ -13,6 +13,7 @@ import {
 	recentFrom,
 	isAxisTick,
 	rangeCost,
+	bucketLabel,
 } from './usage-analytics';
 
 // Anchor "now" to a fixed local wall-clock instant so bucket keys are stable.
@@ -164,5 +165,17 @@ describe('hasUsage', () => {
 		expect(hasUsage(undefined)).toBe(false);
 		expect(hasUsage({ buckets: [], models: [], heatmap: [] })).toBe(false);
 		expect(hasUsage({ buckets: [bucket(NOW)], models: [], heatmap: [] })).toBe(true);
+	});
+});
+
+describe('bucketLabel', () => {
+	const ms = new Date(2026, 10, 26, 14, 0, 0).getTime();
+	it('names only the date of a day bucket', () => {
+		expect(bucketLabel(ms, 'day', 'en-US')).toBe('11/26/2026');
+		expect(bucketLabel(ms, 'day', 'ja-JP')).toBe('2026/11/26');
+	});
+	it('names the date and hour of an hour bucket, without seconds', () => {
+		expect(bucketLabel(ms, 'hour', 'en-US')).toBe('11/26/2026, 2:00 PM');
+		expect(bucketLabel(ms, 'hour', 'ja-JP')).toBe('2026/11/26 14:00');
 	});
 });

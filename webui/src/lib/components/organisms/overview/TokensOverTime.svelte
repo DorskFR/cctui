@@ -2,8 +2,9 @@
 	import type { UsageBucket } from '@bindings/UsageBucket';
 	import { compact, usd } from '#lib/format.ts';
 	import { m } from '#lib/paraglide/messages.js';
-	import { Text, Timestamp, formatTimestamp } from '@dorsk/tsumikit';
+	import { Text, formatTimestamp } from '@dorsk/tsumikit';
 	import {
+		bucketLabel,
 		bucketTotal,
 		fillBuckets,
 		isAxisTick,
@@ -42,7 +43,7 @@
 				class="col"
 				class:recent={i >= recent}
 				role="listitem"
-				title={`${formatTimestamp(b.ms, 'datetime')}\n↑${b.input}  ↓${b.output}  ⚡${b.cache_read}  ${usd(b.cost_usd)}`}
+				title={`${bucketLabel(b.ms, granularity)}\n↑${b.input}  ↓${b.output}  ⚡${b.cache_read}  ${usd(b.cost_usd)}`}
 			>
 				<div class="bar" style={`height:${pct(bucketTotal(b))}`}></div>
 			</div>
@@ -60,7 +61,7 @@
 	{#if peak}
 		<Text size="xs" tone="faint"
 			>{m.home_usage_peak({ n: compact(bucketTotal(peak)) })} ·
-			<Timestamp value={peak.ms} mode="datetime" tone="inherit" />
+			<time datetime={new Date(peak.ms).toISOString()}>{bucketLabel(peak.ms, granularity)}</time>
 			{#if cost > 0}
 				· {m.home_usage_range_cost({ usd: usd(cost) })}
 			{/if}</Text

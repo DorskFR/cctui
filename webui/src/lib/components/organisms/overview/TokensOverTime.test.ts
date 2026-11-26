@@ -77,4 +77,22 @@ describe('TokensOverTime', () => {
 		const el = render([], 1, 'hour');
 		expect(el.querySelectorAll('.col').length).toBe(24);
 	});
+
+	it('dates a daily peak without a time of day', () => {
+		const el = render([bucket({ input: 100 })], 7, 'day');
+		const caption = el.querySelector('time')?.textContent ?? '';
+		expect(caption).toBe(new Date().toLocaleDateString());
+		expect(caption).not.toMatch(/\d:\d\d/);
+		const cols = el.querySelectorAll('.col');
+		expect(cols[cols.length - 1].getAttribute('title')).not.toMatch(/\d:\d\d/);
+	});
+
+	it('dates an hourly peak to the hour, without seconds', () => {
+		const el = render([bucket({ input: 100 })], 1, 'hour');
+		const caption = el.querySelector('time')?.textContent ?? '';
+		expect(caption).toMatch(/\d:00/);
+		expect(caption).not.toMatch(/\d:\d\d:\d\d/);
+		const cols = el.querySelectorAll('.col');
+		expect(cols[cols.length - 1].getAttribute('title')).not.toMatch(/\d:\d\d:\d\d/);
+	});
 });

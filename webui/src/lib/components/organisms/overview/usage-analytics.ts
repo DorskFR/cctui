@@ -96,6 +96,12 @@ export function peakBucket(buckets: readonly FilledBucket[]): FilledBucket | und
 	return best;
 }
 
+export function bucketLabel(ms: number, granularity: Granularity, locale?: string): string {
+	const opts: Intl.DateTimeFormatOptions = { year: 'numeric', month: 'numeric', day: 'numeric' };
+	if (granularity === 'hour') Object.assign(opts, { hour: 'numeric', minute: '2-digit' });
+	return new Intl.DateTimeFormat(locale, opts).format(ms);
+}
+
 export function recentFrom(count: number, n = 5): number {
 	return Math.max(0, count - n);
 }
