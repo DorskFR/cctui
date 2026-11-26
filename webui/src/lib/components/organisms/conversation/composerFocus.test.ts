@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { flushSync } from 'svelte';
+import { tick } from 'svelte';
 
 const media = vi.hoisted(() => {
 	const state = { short: false, queries: [] as string[] };
@@ -35,29 +35,44 @@ function pane(id: string) {
 }
 
 describe('ComposerFocus', () => {
-	it('follows focus in and out of this pane composer', () => {
+	it('follows focus in and out of this pane composer', async () => {
 		pane('a');
 		const f = new ComposerFocus();
 		const stop = f.attach(document.getElementById('a-head') as HTMLElement);
 		(document.getElementById('a-msg') as HTMLTextAreaElement).focus();
-		flushSync();
+		await tick();
 		expect(f.focused).toBe(true);
 		(document.getElementById('a-send') as HTMLButtonElement).focus();
-		flushSync();
+		await tick();
 		expect(f.focused).toBe(true);
 		(document.getElementById('a-rename') as HTMLInputElement).focus();
-		flushSync();
+		await tick();
 		expect(f.focused).toBe(false);
 		stop();
 	});
 
-	it('ignores the composer of another pane', () => {
+	it('never writes state inside the focus event, which can fire mid-render', async () => {
+		pane('a');
+		const f = new ComposerFocus();
+		const stop = f.attach(document.getElementById('a-head') as HTMLElement);
+		(document.getElementById('a-msg') as HTMLTextAreaElement).focus();
+		expect(f.focused).toBe(false);
+		await tick();
+		expect(f.focused).toBe(true);
+		(document.getElementById('a-rename') as HTMLInputElement).focus();
+		expect(f.focused).toBe(true);
+		await tick();
+		expect(f.focused).toBe(false);
+		stop();
+	});
+
+	it('ignores the composer of another pane', async () => {
 		pane('a');
 		pane('b');
 		const f = new ComposerFocus();
 		const stop = f.attach(document.getElementById('a-head') as HTMLElement);
 		(document.getElementById('b-msg') as HTMLTextAreaElement).focus();
-		flushSync();
+		await tick();
 		expect(f.focused).toBe(false);
 		stop();
 	});

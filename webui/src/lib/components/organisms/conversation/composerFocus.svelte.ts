@@ -20,11 +20,12 @@ export class ComposerFocus {
 		const root: HTMLElement | Document = node.closest<HTMLElement>(PANE) ?? document;
 		const inComposer = (t: EventTarget | null) =>
 			t instanceof Element && !!t.closest(COMPOSER) && root.contains(t);
-		const onIn = (e: Event) => {
-			this.focused = inComposer(e.target);
-		};
+		// Removing a focused node fires focusout synchronously, inside Svelte's
+		// own update, where writing state throws: defer the write.
+		const set = (v: boolean) => queueMicrotask(() => (this.focused = v));
+		const onIn = (e: Event) => set(inComposer(e.target));
 		const onOut = (e: FocusEvent) => {
-			if (!inComposer(e.relatedTarget)) this.focused = false;
+			if (!inComposer(e.relatedTarget)) set(false);
 		};
 		root.addEventListener('focusin', onIn);
 		root.addEventListener('focusout', onOut as EventListener);
