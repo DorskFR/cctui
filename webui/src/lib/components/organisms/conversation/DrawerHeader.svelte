@@ -25,7 +25,7 @@
 		showStatusBadge,
 		maximized = false,
 		compact = false,
-		working = false,
+		working: _working,
 		onmaximize,
 		onclose,
 		onrename,
@@ -61,7 +61,7 @@
 		/** Tile chrome: one row only — no meta row, no label strip, every action
 		 *  but maximize behind the ⋯ menu. */
 		compact?: boolean;
-		/** A turn is running: the only time Stop is offered. */
+		/** Ignored: Stop is offered whatever the turn state. */
 		working?: boolean;
 		onmaximize?: () => void;
 		/** Omitted in a tile, which has nothing to close back to. */
@@ -125,7 +125,6 @@
 	// One square per density for every control in the bar, so they share a
 	// height and a top edge whatever glyph they carry.
 	const box: 'sm' | 'md' = $derived(collapsed ? 'sm' : 'md');
-	const canStop = $derived(working && !archived && !compact);
 	let stopping = $state(false);
 	async function stop() {
 		stopping = true;
@@ -183,8 +182,6 @@
 		{/if}
 		{#if !archived && !compact}
 			<IconButton {box} variant="ghost" tone="warn" icon="archive" label={m.drawer_archive()} onclick={onarchive} />
-		{/if}
-		{#if canStop}
 			<IconButton
 				{box}
 				variant="ghost"

@@ -8,8 +8,8 @@ const trailing = (page: Page) =>
 
 for (const viewport of [WIDE, NARROW]) {
 	const w = viewport.width;
-	// Back, Archive and ⋯.
-	const minControls = 3;
+	// Back, Archive, Stop and ⋯.
+	const minControls = 4;
 
 	test(`${w}px: every trailing header control shares one height and top y`, async ({
 		page
@@ -85,9 +85,10 @@ test('the ⋯ menu is one button, so its tooltip cannot land on a sibling', asyn
 	expect(await trigger.locator('button').count()).toBe(0);
 });
 
-test('the header keeps Archive inline and renames from the title', async ({ page }) => {
+test('an idle drawer keeps Stop and Archive inline and renames from the title', async ({ page }) => {
 	await openDrawer(page, WIDE);
 	const header = page.locator('[data-journey="header"]');
+	await expect(header.locator('[data-journey="stop"]')).toBeVisible();
 	await expect(header.getByRole('button', { name: 'Archive' })).toBeVisible();
 	await expect(header.getByRole('button', { name: 'Rename' })).toHaveCount(0);
 	await header.locator('[data-journey="rename"]').click();

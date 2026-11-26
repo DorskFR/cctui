@@ -52,16 +52,14 @@ describe('drawer header control chrome', () => {
 		expect(title).toMatch(/\.tname:hover \.pen/);
 	});
 
-	it('offers Stop while a turn runs as one red icon that spins until acknowledged', () => {
-		expect(header).toContain('working = false');
-		expect(header).toContain('const canStop = $derived(working && !archived && !compact)');
-		const stop = markup.slice(markup.indexOf('{#if canStop}'), markup.indexOf('{/if}', markup.indexOf('{#if canStop}')));
-		expect(stop).toContain('<IconButton');
+	it('always offers Stop beside Archive as one red icon that spins until acknowledged', () => {
+		expect(header).not.toContain('canStop');
+		const block = markup.slice(markup.indexOf('{#if !archived && !compact}'), markup.indexOf('{/if}', markup.indexOf('{#if !archived && !compact}')));
+		expect(block).toContain('icon="archive"');
+		const stop = block.slice(block.indexOf('icon="stop"') - 80);
 		expect(stop).toContain('tone="danger"');
-		expect(stop).toContain('icon="stop"');
 		expect(stop).toContain('loading={stopping}');
 		expect(stop).toContain('onclick={stop}');
-		expect(stop).not.toContain('m.drawer_stop()');
 		expect(header).toMatch(/stopping = true;\s*try \{\s*await oninterrupt\(\);\s*\} finally \{\s*stopping = false;/);
 	});
 
