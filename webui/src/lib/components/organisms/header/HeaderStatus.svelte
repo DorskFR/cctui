@@ -34,10 +34,11 @@
 		gauge.worst ? m.header_status_label_usage({ usage: readingText(gauge.worst) }) : m.header_status_label()
 	);
 	let open = $state(false);
+	const PANEL_STYLE = 'max-width:min(30rem, calc(100vw - 2 * var(--sp-3)))';
 </script>
 
 {#if gauge.worst || rows.length > 0}
-	<Popover bind:open {label} placement="bottom-end" bare hitArea="compact">
+	<Popover bind:open {label} placement="bottom-end" bare hitArea="compact" panelStyle={PANEL_STYLE}>
 		{#snippet trigger()}
 			<span class="status" data-tone={tone}>
 				<span class="dot" aria-hidden="true"></span>
@@ -57,15 +58,17 @@
 					<ul class="machines">
 						{#each rows as r (r.machine_id)}
 							<li data-tone={machineTone(r)}>
-								<Text size="sm" truncate>{machineLabel(r)}</Text>
-								{#if r.resources && !isStale(r.updated_at, now)}
-									<Text size="sm" numeric nowrap tone="muted"
-										>{m.resource_gauge_cpu()} {pct(r.resources.cpu_pct)} · {m.resource_gauge_mem()}
-										{pct(r.resources.mem_pct)} · {m.resource_gauge_disk()} {pct(r.resources.disk_pct)}</Text
-									>
-								{:else}
-									<Text size="sm" tone="faint">{m.resource_gauge_unknown()}</Text>
-								{/if}
+								<span class="name"><Text size="sm" truncate>{machineLabel(r)}</Text></span>
+								<span class="stats">
+									{#if r.resources && !isStale(r.updated_at, now)}
+										<Text size="sm" numeric nowrap tone="muted"
+											>{m.resource_gauge_cpu()} {pct(r.resources.cpu_pct)} · {m.resource_gauge_mem()}
+											{pct(r.resources.mem_pct)} · {m.resource_gauge_disk()} {pct(r.resources.disk_pct)}</Text
+										>
+									{:else}
+										<Text size="sm" tone="faint">{m.resource_gauge_unknown()}</Text>
+									{/if}
+								</span>
 							</li>
 						{/each}
 					</ul>
@@ -113,7 +116,8 @@
 		display: flex;
 		flex-direction: column;
 		gap: var(--sp-4);
-		width: 20rem;
+		width: max-content;
+		min-width: min(20rem, 100%);
 		max-width: 100%;
 		padding: var(--sp-2) var(--sp-3);
 		box-sizing: border-box;
@@ -136,8 +140,18 @@
 	}
 	.machines li {
 		display: flex;
-		justify-content: space-between;
-		gap: var(--sp-3);
+		flex-wrap: wrap;
+		column-gap: var(--sp-3);
 		min-width: 0;
+	}
+	.name {
+		display: flex;
+		flex: 0 1 auto;
+		min-width: 0;
+	}
+	.stats {
+		display: flex;
+		flex: none;
+		margin-inline-start: auto;
 	}
 </style>
