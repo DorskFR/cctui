@@ -112,15 +112,6 @@ describe('the system bar carries no ? button', () => {
 		expect(rowByText('Getting started')).toBeNull();
 	});
 
-	it('offers the notification toggle in the menu and reflects its pressed state', async () => {
-		render();
-		await openUserMenu();
-		const row = rowByText('Notify me when a session needs input');
-		expect(row).not.toBeNull();
-		expect(row?.getAttribute('role')).toBe('menuitemcheckbox');
-		expect(row?.getAttribute('aria-checked')).toBe('false');
-	});
-
 	it('gives every menu row an icon', async () => {
 		render();
 		await openUserMenu();
@@ -156,43 +147,32 @@ describe('notifications', () => {
 		notifications.unread = 0;
 	});
 
-	it('keeps the bell out of the bar and the toggle in the user menu', async () => {
-		notify.enabled = false;
+	it('puts the bell in the bar, between the pickers and the account menu', () => {
 		render();
-		expect(document.querySelectorAll('[data-tsu="NotificationCenter"]')).toHaveLength(1);
-		expect(document.querySelector('[data-tsu="NotificationCenter"] [aria-haspopup="dialog"]')).toBeNull();
-		expect(document.querySelector('.inbox-anchor')).toBeNull();
-		await openUserMenu();
-		expect(rowByText('Notify me when a session needs input')).toBeTruthy();
+		const tail = document.querySelector('header.hd .tail') as HTMLElement;
+		const bell = tail.querySelector('[data-tsu="NotificationCenter"] [aria-haspopup="dialog"]');
+		expect(bell).not.toBeNull();
+		const kids = [...tail.children];
+		const at = (sel: string) => kids.findIndex((el) => el.matches(sel));
+		expect(at('.prefs')).toBeLessThan(at('[data-tsu="NotificationCenter"]'));
+		expect(at('[data-tsu="NotificationCenter"]')).toBeLessThan(at('.acct'));
 	});
 
-	it('opens the notification panel from the Notifications row', async () => {
-		render();
-		const drawer = document.querySelector('[data-tsu="NotificationCenter"] [data-tsu="Drawer"]') as HTMLDialogElement;
-		expect(drawer.open).toBe(false);
-		await openUserMenu();
-		rowByText('Notifications')?.click();
-		flushSync();
-		await Promise.resolve();
-		flushSync();
-		expect(drawer.open).toBe(true);
-		expect(drawer.getAttribute('aria-label')).toBe('Notifications');
-	});
-
-	it('shows no unread count when everything is read', async () => {
-		render();
-		expect(document.querySelector('.pill [data-tsu="Badge"]')).toBeNull();
-		await openUserMenu();
-		expect(rowByText('Notifications')?.querySelector('[data-tsu="Badge"]')).toBeNull();
-	});
-
-	it('carries the unread count on the pill and the Notifications row', async () => {
+	it('badges the unread count on the bell, not the account pill', () => {
 		notifications.unread = 3;
 		render();
-		expect(document.querySelector('.pill [data-tsu="Badge"]')?.textContent?.trim()).toBe('3');
+		const bell = document.querySelector('[data-tsu="NotificationCenter"] [aria-haspopup="dialog"]') as HTMLElement;
+		expect(bell.textContent).toContain('3');
+		expect(document.querySelector('.pill [data-tsu="Badge"]')).toBeNull();
+	});
+
+	it('keeps notification rows out of the account menu', async () => {
+		notifications.unread = 2;
+		render();
 		await openUserMenu();
-		const row = rowByText('Notifications');
-		expect(row?.querySelector('[data-tsu="Badge"]')?.textContent?.trim()).toBe('3');
+		expect(menuRows().length).toBeGreaterThan(0);
+		for (const r of menuRows()) expect(r.textContent).not.toMatch(/notif/i);
+		expect(document.querySelector('[role="menuitemcheckbox"]')).toBeNull();
 	});
 });
 

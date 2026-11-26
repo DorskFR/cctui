@@ -6,6 +6,7 @@
 	import ResourceBattery from '#lib/components/molecules/ResourceBattery.svelte';
 	import ProviderStatusDot from '#lib/components/molecules/ProviderStatusDot.svelte';
 	import HeaderBrand from './header/HeaderBrand.svelte';
+	import NotificationBell from '#lib/components/organisms/NotificationBell.svelte';
 	import AccountMenu from './header/AccountMenu.svelte';
 	import HeaderStatus from './header/HeaderStatus.svelte';
 	import { installShellWatchers } from './header/shellWatchers.svelte.ts';
@@ -39,6 +40,7 @@
 				/>
 				<FontScalePicker />
 			</span>
+			<NotificationBell />
 			<AccountMenu />
 		</div>
 	</div>
