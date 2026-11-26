@@ -60,24 +60,28 @@ async function openPanel(): Promise<HTMLElement> {
 describe('the machine popover', () => {
 	it('shows CPU, memory and disk as labelled, toned meters with their percent', async () => {
 		const panel = await openPanel();
-		const stats = [...panel.querySelectorAll('.stat')].map((s) => ({
-			text: s.textContent?.replace(/\s+/g, ' ').trim(),
-			tone: (s.querySelector('.meter') as HTMLElement).dataset.tone,
-			fill: (s.querySelector('.meter .fill') as HTMLElement).style.width
-		}));
+		const stats = [...panel.querySelectorAll('[data-tsu="Meter"]')].map((s) => {
+			const bar = s.querySelector('[data-tsu="Progress"]') as HTMLElement;
+			return {
+				text: s.textContent?.replace(/\s+/g, ' ').trim(),
+				tone: [...bar.classList].find((c) => c.startsWith('tone-')),
+				value: bar.getAttribute('aria-valuenow')
+			};
+		});
 		expect(stats).toEqual([
-			{ text: 'CPU 82% load 1.50', tone: 'warn', fill: '82%' },
-			{ text: 'Memory 47% 7.0 GB / 15 GB', tone: 'ok', fill: '47%' },
-			{ text: 'Disk 91% 424 GB / 466 GB', tone: 'danger', fill: '91%' }
+			{ text: 'CPU 82% load 1.50', tone: 'tone-warn', value: '82' },
+			{ text: 'Memory 47% 7.0 GB / 15 GB', tone: 'tone-success', value: '47' },
+			{ text: 'Disk 91% 424 GB / 466 GB', tone: 'tone-danger', value: '91' }
 		]);
 		expect(panel.textContent).toContain('/home/ci');
 	});
 
-	it('hatches the meters of a machine that went quiet', async () => {
+	it('empties and greys the meters of a machine that went quiet', async () => {
 		machines.data[0].updated_at = new Date(Date.now() - 3600_000).toISOString();
 		const panel = await openPanel();
-		const meters = [...panel.querySelectorAll('.stat .meter')] as HTMLElement[];
-		expect(meters.map((m) => m.dataset.tone)).toEqual(['unknown', 'unknown', 'unknown']);
-		expect(panel.querySelector('.stat .fill')).toBeNull();
+		const bars = [...panel.querySelectorAll('[data-tsu="Meter"] [data-tsu="Progress"]')] as HTMLElement[];
+		expect(bars.map((b) => b.getAttribute('aria-valuenow'))).toEqual(['0', '0', '0']);
+		expect(bars.every((b) => b.classList.contains('tone-neutral'))).toBe(true);
+		expect(panel.textContent).toContain('Stale');
 	});
 });

@@ -1,12 +1,11 @@
 <script lang="ts">
-	import { Link, Text } from '@dorsk/tsumikit';
+	import { Link, Progress, Text } from '@dorsk/tsumikit';
 	import AdapterIcon from '#lib/components/atoms/AdapterIcon.svelte';
 	import { now as clockNow } from '#lib/clock.svelte.ts';
 	import { m } from '#lib/paraglide/messages.js';
 	import { countdown } from './usage-battery.logic.ts';
 	import type { GaugeReading } from './usage-gauge.logic.ts';
 	import { windowShort, type GaugeRow } from './usageGauge.svelte.ts';
-	import UsageMeter from './UsageMeter.svelte';
 
 	let { rows, onnavigate }: { rows: GaugeRow[]; onnavigate?: () => void } = $props();
 
@@ -29,7 +28,7 @@
 					{#each row.readings as r (r.window)}
 						<span class="reading" title={resetTitle(r)}>
 							<Text size="xs" tone="muted">{windowShort(r.window)}</Text>
-							<UsageMeter pct={r.pct} tone={r.tone} />
+							<span class="meter" aria-hidden="true"><Progress value={r.pct} tone={r.tone} size="sm" /></span>
 							<span class="pct"
 								><Text size="sm" numeric tone={r.tone === 'ok' ? 'default' : r.tone}>{r.pct}%</Text></span
 							>
@@ -79,6 +78,10 @@
 		display: inline-flex;
 		align-items: center;
 		gap: var(--sp-2);
+	}
+	.meter {
+		display: block;
+		width: 32px;
 	}
 	.pct {
 		min-width: 3.5ch;

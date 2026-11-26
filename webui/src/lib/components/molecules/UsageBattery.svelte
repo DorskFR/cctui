@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { Popover, Text } from '@dorsk/tsumikit';
+	import { Popover, Progress, Text } from '@dorsk/tsumikit';
 	import { useQueryClient } from '@tanstack/svelte-query';
 	import { ws } from '#lib/ws.svelte.ts';
 	import { usageKeys } from '#lib/queries/index.ts';
@@ -8,7 +8,6 @@
 	import { patchUsageEntries } from './usage-battery.logic.ts';
 	import { readingText, useUsageGauge, windowShort } from './usageGauge.svelte.ts';
 	import UsageDetail from './UsageDetail.svelte';
-	import UsageMeter from './UsageMeter.svelte';
 
 	// Patched in place: invalidating would refetch and undo what the push saved.
 	const qc = useQueryClient();
@@ -36,7 +35,7 @@
 	>
 		{#snippet trigger()}
 			<span class="gauge" data-tone={w.tone}>
-				<UsageMeter pct={w.pct} tone={w.tone} width={36} />
+				<span class="meter" aria-hidden="true"><Progress value={w.pct} tone={w.tone} size="sm" /></span>
 				<Text size="xs" numeric nowrap tone="inherit">{readingText(w)}</Text>
 			</span>
 		{/snippet}
@@ -67,6 +66,10 @@
 			min-height: 44px;
 			min-width: 44px;
 		}
+	}
+	.meter {
+		display: block;
+		width: 36px;
 	}
 	.gauge[data-tone='warn'] {
 		color: var(--warn);

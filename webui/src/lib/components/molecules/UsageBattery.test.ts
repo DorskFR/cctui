@@ -70,9 +70,9 @@ describe('the header usage gauge', () => {
 
 	it('draws the worst window as a filled meter beside the text', () => {
 		render();
-		const meter = document.querySelector('.gauge .meter') as HTMLElement;
-		expect(meter.dataset.tone).toBe('ok');
-		expect((meter.querySelector('.fill') as HTMLElement).style.width).toBe('88%');
+		const bar = document.querySelector('.gauge .meter [data-tsu="Progress"]') as HTMLElement;
+		expect(bar.getAttribute('aria-valuenow')).toBe('88');
+		expect(bar.classList.contains('tone-success')).toBe(true);
 	});
 
 	it('stays neutral below the soft limit and turns amber past it', () => {
@@ -94,10 +94,10 @@ describe('the header usage gauge', () => {
 		expect(text).toContain('qtax');
 		const readings = [...panel.querySelectorAll('.reading')].map((r) => ({
 			text: r.textContent?.replace(/\s+/g, ' ').trim(),
-			fill: (r.querySelector('.meter .fill') as HTMLElement | null)?.style.width
+			value: r.querySelector('[data-tsu="Progress"]')?.getAttribute('aria-valuenow')
 		}));
-		expect(readings).toContainEqual({ text: '5h 40%', fill: '40%' });
-		expect(readings).toContainEqual({ text: '7d 88%', fill: '88%' });
+		expect(readings).toContainEqual({ text: '5h 40%', value: '40' });
+		expect(readings).toContainEqual({ text: '7d 88%', value: '88' });
 		expect(panel.querySelector('a[href="/accounts"]')).not.toBeNull();
 	});
 

@@ -1,14 +1,13 @@
 <script lang="ts">
 	import { now as clockNow } from '#lib/clock.svelte.ts';
 	import { useQueryClient } from '@tanstack/svelte-query';
-	import { Popover, Text } from '@dorsk/tsumikit';
+	import { Meter, Popover, Text } from '@dorsk/tsumikit';
 	import { qk, useMachineResources } from '#lib/queries/index.ts';
 	import type { MachineResourcesRow } from '@bindings/MachineResourcesRow';
 	import { settings } from '#lib/settings.svelte.ts';
 	import { ws } from '#lib/ws.svelte.ts';
 	import { hashHue } from '#lib/format.ts';
 	import { m } from '#lib/paraglide/messages.js';
-	import UsageMeter from './UsageMeter.svelte';
 	import {
 		fmtBytes,
 		isStale,
@@ -75,12 +74,15 @@
 {/snippet}
 
 {#snippet stat(label: string, v: number | null | undefined, stale: boolean, detail: string)}
-	<span class="stat">
-		<Text size="sm" tone="muted">{label}</Text>
-		<UsageMeter pct={pctOf(v)} tone={stale ? 'unknown' : resourceTone(v)} width={120} />
-		<span class="stat-pct"><Text size="sm" numeric weight="semibold">{pctText(v)}</Text></span>
-		<Text size="xs" tone="faint" numeric nowrap>{detail}</Text>
-	</span>
+	{@const tone = stale ? 'unknown' : resourceTone(v)}
+	<Meter
+		{label}
+		value={stale ? 0 : (pctOf(v) ?? 0)}
+		tone={tone === 'unknown' ? 'neutral' : tone}
+		size="sm"
+		format={() => pctText(v)}
+		caption={detail || undefined}
+	/>
 {/snippet}
 
 {#if rows.length > 0}
@@ -242,16 +244,8 @@
 		color: hsl(var(--hue) 60% 60%);
 	}
 	.stats {
-		display: grid;
-		grid-template-columns: auto auto auto 1fr;
-		gap: var(--sp-2) var(--sp-3);
-		align-items: center;
-	}
-	.stat {
-		display: contents;
-	}
-	.stat-pct {
-		text-align: right;
-		min-width: 4ch;
+		display: flex;
+		flex-direction: column;
+		gap: var(--sp-3);
 	}
 </style>
