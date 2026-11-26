@@ -158,6 +158,48 @@ const layout = (page: Page, root: string) =>
 		};
 	}, root);
 
+const readoutColumns = (page: Page, root: string) =>
+	page.evaluate((root) => {
+		const card = document.querySelector(`${root} article.acct`) as HTMLElement;
+		const rows = [...card.querySelectorAll<HTMLElement>('[data-tsu="CapBar"]')].map((bar) => {
+			const track = (bar.querySelector('.track') as HTMLElement).getBoundingClientRect();
+			const readout = bar.querySelector('.readout') as HTMLElement;
+			const range = document.createRange();
+			range.selectNodeContents(readout);
+			const text = range.getBoundingClientRect();
+			return {
+				text: (readout.textContent ?? '').replace(/\s+/g, ' ').trim(),
+				stacked: bar.classList.contains('stacked'),
+				trackRight: track.right,
+				textLeft: text.left,
+				textRight: text.right,
+				boxRight: readout.getBoundingClientRect().right,
+				clipped: readout.scrollWidth > readout.clientWidth + 0.5,
+				gap: Number.parseFloat(getComputedStyle(bar).columnGap)
+			};
+		});
+		return { rows, overflow: card.scrollWidth - card.clientWidth };
+	}, root);
+
+function assertReadoutColumn(r: Awaited<ReturnType<typeof readoutColumns>>, tag: string) {
+	expect.soft(r.overflow, `${tag}: card does not overflow`).toBeLessThanOrEqual(0);
+	const stacks = new Map<number, typeof r.rows>();
+	for (const row of r.rows) {
+		expect.soft(row.stacked, `${tag}: "${row.text}" keeps the row layout`).toBe(false);
+		expect.soft(row.clipped, `${tag}: "${row.text}" is not clipped`).toBe(false);
+		expect.soft(row.textRight, `${tag}: "${row.text}" stays in its column`).toBeLessThanOrEqual(row.boxRight + 0.5);
+		const key = [...stacks.keys()].find((k) => Math.abs(k - row.boxRight) <= 1) ?? row.boxRight;
+		stacks.set(key, [...(stacks.get(key) ?? []), row]);
+	}
+	for (const rows of stacks.values()) {
+		const ends = rows.map((row) => row.trackRight);
+		expect.soft(Math.max(...ends) - Math.min(...ends), `${tag}: bars in a stack end at one x`).toBeLessThanOrEqual(1);
+		const slack = Math.min(...rows.map((row) => row.textLeft)) - Math.max(...ends);
+		console.log(`${tag} readout gap`, slack.toFixed(1), rows.map((row) => row.text).join(' | '));
+		expect.soft(slack, `${tag}: no slack between bars and the widest readout`).toBeLessThanOrEqual(rows[0].gap + 2);
+	}
+}
+
 type Layout = Awaited<ReturnType<typeof layout>>;
 
 function assertSeparators(l: Layout, tag: string, expectRows: 'side' | 'stacked') {
@@ -199,6 +241,7 @@ test.describe('account card', () => {
 		expect.soft(l.head).not.toMatch(/Claude|Codex/);
 		assertSeparators(l, 'dock', 'stacked');
 		assertCapZone(l, 'dock');
+		assertReadoutColumn(await readoutColumns(page, 'aside.dock'), 'dock');
 		expect(errors).toEqual([]);
 	});
 
@@ -215,6 +258,7 @@ test.describe('account card', () => {
 		expect.soft(l.head).not.toMatch(/Claude|Codex/);
 		assertSeparators(l, 'page', 'side');
 		assertCapZone(l, 'page');
+		assertReadoutColumn(await readoutColumns(page, 'main'), 'page');
 	});
 	for (const width of [412, 360]) {
 		test(`accounts page on a ${width}px phone`, async ({ page }) => {
@@ -230,6 +274,7 @@ test.describe('account card', () => {
 			expect.soft(l.head).not.toMatch(/Claude|Codex/);
 			assertSeparators(l, `phone-${width}`, 'stacked');
 			assertCapZone(l, `phone-${width}`);
+			assertReadoutColumn(await readoutColumns(page, 'main'), `phone-${width}`);
 			const box = await card.boundingBox();
 			expect(box!.x).toBeGreaterThanOrEqual(0);
 			expect(box!.x + box!.width).toBeLessThanOrEqual(width);

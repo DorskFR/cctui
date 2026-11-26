@@ -6,7 +6,8 @@ import {
 	isDenseWidth,
 	resetIn,
 	resetInShort,
-	USAGE_DENSE_BELOW_PX,
+	readoutColumns,
+	USAGE_ROW_FIXED_REM,
 	usdPct,
 	usdReadout,
 	withCap
@@ -82,9 +83,44 @@ describe('resetInShort', () => {
 });
 
 describe('isDenseWidth', () => {
+	const fixed = USAGE_ROW_FIXED_REM * 16;
 	it('is dense only once a measured width drops under the threshold', () => {
 		expect(isDenseWidth(0)).toBe(false);
-		expect(isDenseWidth(USAGE_DENSE_BELOW_PX)).toBe(false);
-		expect(isDenseWidth(USAGE_DENSE_BELOW_PX - 1)).toBe(true);
+		expect(isDenseWidth(300)).toBe(false);
+		expect(isDenseWidth(299)).toBe(true);
+	});
+	it('keeps the row layout while the measured readout and a usable track fit', () => {
+		expect(isDenseWidth(fixed + 90, 90)).toBe(false);
+		expect(isDenseWidth(fixed + 89, 90)).toBe(true);
+		expect(isDenseWidth(250, 80)).toBe(false);
+	});
+	it('scales the fixed part with the root font size', () => {
+		expect(isDenseWidth(fixed + 90, 90, 20)).toBe(true);
+		expect(isDenseWidth(USAGE_ROW_FIXED_REM * 20 + 90, 90, 20)).toBe(false);
+	});
+});
+
+describe('readoutColumns', () => {
+	it('gives every row of a stack the widest readout, rounded up', () => {
+		const g = {};
+		expect(
+			readoutColumns([
+				{ group: g, right: 300, width: 70.2 },
+				{ group: g, right: 300.6, width: 95.4 },
+				{ group: g, right: 300, width: 0 }
+			])
+		).toEqual([96, 96, 96]);
+	});
+	it('keeps side-by-side columns and separate groups apart', () => {
+		const a = {};
+		const b = {};
+		expect(
+			readoutColumns([
+				{ group: a, right: 300, width: 70 },
+				{ group: a, right: 600, width: 95 },
+				{ group: b, right: 300, width: 120 },
+				{ group: a, right: 299.5, width: 60 }
+			])
+		).toEqual([70, 95, 120, 70]);
 	});
 });

@@ -18,12 +18,32 @@ export function usdPct(amountUsd: number | null, capUsd: number | null | undefin
 
 /** Shared column widths so every usage bar track lines up; overridable per list. */
 export const USAGE_LABEL_W = 'var(--usage-label-w, 4rem)';
-/** Fits the widest readout: "$1234.56 / $2000.00" and "Not currently reported". */
+/** Until the readouts are measured: fits "$1234.56 / $2000.00" and "Not currently reported". */
 export const USAGE_READOUT_W = 'var(--usage-readout-w, 8.75rem)';
-export const USAGE_DENSE_BELOW_PX = 300;
+const READOUT_FALLBACK_REM = 8.75;
+/** Label column, both column gaps and the narrowest useful track. */
+export const USAGE_ROW_FIXED_REM = 10;
 
-/** Zero (unmeasured) is never dense. */
-export const isDenseWidth = (width: number): boolean => width > 0 && width < USAGE_DENSE_BELOW_PX;
+/** Zero (unmeasured) width is never dense; an unmeasured readout counts as the fallback column. */
+export const isDenseWidth = (width: number, readoutPx = 0, remPx = 16): boolean =>
+	width > 0 && width < (readoutPx || READOUT_FALLBACK_REM * remPx) + USAGE_ROW_FIXED_REM * remPx;
+
+export type ReadoutMeasure = { group: unknown; right: number; width: number };
+
+/** Rows of one group whose readouts end at the same x (±1px) share the widest readout. */
+export function readoutColumns(rows: ReadoutMeasure[]): number[] {
+	const stacks: { group: unknown; right: number; width: number }[] = [];
+	const of = rows.map((r) => {
+		let stack = stacks.find((s) => s.group === r.group && Math.abs(s.right - r.right) <= 1);
+		if (!stack) {
+			stack = { group: r.group, right: r.right, width: 0 };
+			stacks.push(stack);
+		}
+		stack.width = Math.max(stack.width, Math.ceil(r.width));
+		return stack;
+	});
+	return of.map((s) => s.width);
+}
 
 export const money = (n: number) => `$${n.toFixed(2)}`;
 

@@ -154,7 +154,7 @@
 	}
 </script>
 
-<article class="acct" class:compact class:lifted={drag.touchDragging} id={a.id} data-journey="account" data-journey-key={a.name}>
+<article class="acct" class:compact class:lifted={drag.touchDragging} id={a.id} data-journey="account" data-usage-group data-journey-key={a.name}>
 	<header class="head">
 		{#if onmovepool && !managed && !compact}
 			<span

@@ -98,7 +98,7 @@
 	{onclose}
 >
 	{#snippet body()}
-		<div class="acct-body">
+		<div class="acct-body" data-usage-group>
 			<Text as="p" tone="muted" size="sm">
 				{softLimit ? m.conversation_acct_soft_desc() : m.conversation_acct_bindings_desc()}
 			</Text>
