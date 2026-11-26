@@ -38,9 +38,9 @@ describe('drawer header ⋯ menu', () => {
 		expect(menu).not.toContain('onterminal');
 	});
 
-	it('stands in for search only while the bar is collapsed', () => {
-		expect(items()).toMatch(/\.\.\.\(collapsed && onsearch\s*\?/);
-		expect(header).toContain('collapseBelow="{COLLAPSE_BELOW}px"');
+	it('offers search in ⋯ at every width', () => {
+		expect(items()).toMatch(/\.\.\.\(onsearch\s*\?/);
+		expect(menu).not.toMatch(/\bcollapsed\b/);
 	});
 
 	it('does not render the menu actions inline', () => {
@@ -74,11 +74,9 @@ describe('drawer header ⋯ menu', () => {
 		expect(toolbar).toContain('panelItems(');
 	});
 
-	it('offers find-in-conversation inline and in the collapsed menu, never both', () => {
-		expect(markup()).toMatch(/<IconButton\s+data-overflow[\s\S]{0,200}icon="search"/);
+	it('offers find-in-conversation only from ⋯ and the chord, not inline', () => {
+		expect(markup()).not.toMatch(/<IconButton[^>]*icon="search"/);
 		expect(items().split('m.conversation_search_label()')).toHaveLength(2);
-		const gate = items().lastIndexOf('...(', items().indexOf('m.conversation_search_label()'));
-		expect(items().slice(gate)).toMatch(/^\.\.\.\(collapsed && onsearch/);
 	});
 
 	it('binds ⌘F / Ctrl+F to the find bar and gives it first refusal on Escape', () => {

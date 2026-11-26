@@ -8,8 +8,8 @@ const trailing = (page: Page) =>
 
 for (const viewport of [WIDE, NARROW]) {
 	const w = viewport.width;
-	// Back, Search and ⋯ when wide; a narrow bar folds Search into ⋯.
-	const minControls = viewport === NARROW ? 2 : 3;
+	// Back, Archive and ⋯.
+	const minControls = 3;
 
 	test(`${w}px: every trailing header control shares one height and top y`, async ({
 		page
@@ -85,16 +85,13 @@ test('the ⋯ menu is one button, so its tooltip cannot land on a sibling', asyn
 	expect(await trigger.locator('button').count()).toBe(0);
 });
 
-test('an idle drawer shows no Stop and keeps rename and archive in ⋯', async ({ page }) => {
+test('the header keeps Archive inline and renames from the title', async ({ page }) => {
 	await openDrawer(page, WIDE);
 	const header = page.locator('[data-journey="header"]');
-	await expect(header.locator('[data-journey="stop"]')).toHaveCount(0);
-	await expect(header.getByRole('button', { name: 'Archive' })).toHaveCount(0);
+	await expect(header.getByRole('button', { name: 'Archive' })).toBeVisible();
 	await expect(header.getByRole('button', { name: 'Rename' })).toHaveCount(0);
-	await header.locator('[aria-haspopup="menu"]').click();
-	const menu = page.getByRole('menu');
-	await expect(menu.getByRole('menuitem', { name: 'Rename' })).toBeVisible();
-	await expect(menu.getByRole('menuitem', { name: 'Archive' })).toBeVisible();
+	await header.locator('[data-journey="rename"]').click();
+	await expect(header.getByRole('textbox', { name: 'Session name' })).toBeVisible();
 });
 
 test('nothing covers the drawer: a point on Back hits Back, not the scrim', async ({ page }) => {

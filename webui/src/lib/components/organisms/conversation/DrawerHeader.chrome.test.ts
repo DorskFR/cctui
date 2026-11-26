@@ -33,13 +33,23 @@ describe('drawer header control chrome', () => {
 		expect(header).not.toContain('--pop-trigger-');
 	});
 
-	it('keeps only back, title, search and ⋯; rename and archive live in ⋯', () => {
-		for (const icon of ['edit', 'archive', 'stop']) {
+	it('keeps archive inline, drops the inline rename and search buttons', () => {
+		for (const icon of ['edit', 'search']) {
 			expect(markup, icon).not.toMatch(new RegExp(`<IconButton[^>]*icon="${icon}"`));
 		}
+		expect(markup).toContain(
+			'<IconButton {box} variant="ghost" tone="warn" icon="archive" label={m.drawer_archive()} onclick={onarchive} />'
+		);
 		const items = menu.slice(menu.indexOf('const overflowItems'));
 		expect(items).toContain("{ label: m.drawer_rename(), icon: 'edit' as const, onselect: onrename }");
-		expect(items).toContain("...(archived ? [] : [{ label: m.drawer_archive(), icon: 'archive' as const, onselect: onarchive }])");
+	});
+
+	it('renames by clicking the title', async () => {
+		const title = (await import('./DrawerTitle.svelte?raw')).default;
+		expect(header).toContain('onrename={startRename} />');
+		expect(title).toMatch(/<button type="button" class="tname" title=\{m\.drawer_rename\(\)\} onclick=\{onrename\}/);
+		expect(title).toContain('<Icon name="edit" size={14} />');
+		expect(title).toMatch(/\.tname:hover \.pen/);
 	});
 
 	it('offers Stop only while a turn runs, outlined with a spinner', () => {

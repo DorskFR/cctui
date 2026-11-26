@@ -68,6 +68,12 @@
 		)
 	);
 
+	const QUICK_TINT: Record<QuickFilterId, string> = {
+		assistant: 'var(--role-assistant)',
+		user: 'var(--role-user)',
+		tools: 'var(--role-tool)'
+	};
+
 	const offCount = $derived(MSG_CATEGORIES.filter((c) => !view.msgFilter[c]).length);
 
 	function quickTitle(id: QuickFilterId): string {
@@ -100,8 +106,7 @@
 				data-journey="quick"
 				data-journey-key={q.id}
 				pressed={quickOn(view.msgFilter, q.id)}
-				tone="neutral"
-				style={`${CTL}${quickPartial(view.msgFilter, q.id) ? ';border-style:dashed' : ''}`}
+				style={`${CTL};--accent: ${QUICK_TINT[q.id]}${quickPartial(view.msgFilter, q.id) ? ';border-style:dashed' : ''}`}
 				title={quickTitle(q.id)}
 				onclick={() => toggleQuick(q.id)}
 			>

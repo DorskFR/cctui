@@ -89,16 +89,18 @@ describe('popover triggers match their sibling toggles', () => {
 });
 
 describe('quick filter pills', () => {
-	it('share one neutral selected style with a check, whatever the role', async () => {
-		expect(toolbarSource).not.toContain('QUICK_TINT');
-		expect(toolbarSource).not.toContain('--role-');
+	it('tint each pill with its role colour and mark the on ones with a check', async () => {
+		expect(toolbarSource).toContain("assistant: 'var(--role-assistant)'");
+		expect(toolbarSource).toContain("user: 'var(--role-user)'");
+		expect(toolbarSource).toContain("tools: 'var(--role-tool)'");
 		const bar = await render({
 			view: { ...view(), msgFilter: { ...allFilter(true), user: false } }
 		});
 		const quick = [...bar.querySelectorAll<HTMLElement>('[data-journey="quick"]')];
 		expect(quick.length).toBe(3);
 		for (const q of quick) {
-			expect(q.classList.contains('tone-neutral'), q.textContent ?? '').toBe(true);
+			expect(q.classList.contains('tone-neutral'), q.textContent ?? '').toBe(false);
+			expect(q.getAttribute('style'), q.textContent ?? '').toContain('--accent: var(--role-');
 			const on = q.getAttribute('aria-pressed') === 'true';
 			expect(!!q.querySelector('svg[data-tsu="Icon"]'), q.textContent ?? '').toBe(on);
 		}

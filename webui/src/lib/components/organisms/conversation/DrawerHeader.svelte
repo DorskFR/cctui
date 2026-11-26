@@ -117,8 +117,6 @@
 		onrename(n);
 	}
 
-	// Mirrors the Toolbar's `collapseBelow`: search joins the menu only while
-	// its inline button is hidden.
 	const COLLAPSE_BELOW = 640;
 	let barWidth = $state(Infinity);
 	const collapsed = $derived(compact || barWidth < COLLAPSE_BELOW);
@@ -127,8 +125,7 @@
 	// height and a top edge whatever glyph they carry.
 	const box: 'sm' | 'md' = $derived(collapsed ? 'sm' : 'md');
 	const canStop = $derived(working && !archived && !compact);
-	// A narrow drawer gives the title its own line so the action row keeps
-	// only Back and ⋯ (search folds into ⋯ below COLLAPSE_BELOW).
+	// A narrow drawer gives the title its own line.
 	const titleOwnLine = $derived(collapsed && !compact);
 
 	let headEl = $state<HTMLElement>();
@@ -149,12 +146,12 @@
 <svelte:window onkeydown={onWinKey} />
 
 {#snippet title()}
-	<DrawerTitle {session} {compact} {showLabels} {labels} {renaming} bind:name={newName} onsubmit={doRename} />
+	<DrawerTitle {session} {compact} {showLabels} {labels} {renaming} bind:name={newName} onsubmit={doRename} onrename={startRename} />
 {/snippet}
 
 <div class="dhead" class:compact class:typing={!compact && composer.collapse} bind:this={headEl} data-journey="header">
 	<div class="dbar" bind:clientWidth={barWidth}>
-	<Toolbar collapseBelow="{COLLAPSE_BELOW}px" density={collapsed ? 'compact' : 'default'}>
+	<Toolbar density={collapsed ? 'compact' : 'default'}>
 		{#if onclose}
 			<IconButton icon="chevron-left" label={m.drawer_back()} {box} onclick={onclose} />
 		{/if}
@@ -190,22 +187,12 @@
 				onclick={onmaximize}
 			/>
 		{/if}
-		{#if onsearch}
-			<IconButton
-				data-overflow
-				data-journey="find"
-				{box}
-				variant="ghost"
-				icon="search"
-				label={m.conversation_search_label()}
-				title={m.conversation_search_title()}
-				onclick={onsearch}
-			/>
+		{#if !archived && !compact}
+			<IconButton {box} variant="ghost" tone="warn" icon="archive" label={m.drawer_archive()} onclick={onarchive} />
 		{/if}
 		<DrawerMenu
 			{session}
 			{archived}
-			{collapsed}
 			{box}
 			onrename={startRename}
 			{onsearch}
