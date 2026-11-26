@@ -49,13 +49,6 @@ describe('TokensOverTime', () => {
 		expect(cols.slice(-5).every((c) => c.classList.contains('recent'))).toBe(true);
 	});
 
-	it('labels the axis every 7th day, ending on the newest bucket', () => {
-		const el = render([], 30, 'day');
-		const ticks = [...el.querySelectorAll('.tick')];
-		const labelled = ticks.flatMap((t, i) => (t.textContent?.trim() ? [i] : []));
-		expect(labelled).toEqual([1, 8, 15, 22, 29]);
-	});
-
 	it('captions the dollars of the range and prices each bar in its tooltip', () => {
 		const el = render(
 			[bucket({ input: 100, output: 40, cache_read: 20, cost_usd: 1.5 })],

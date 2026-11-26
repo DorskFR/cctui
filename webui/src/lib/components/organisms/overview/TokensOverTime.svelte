@@ -2,12 +2,13 @@
 	import type { UsageBucket } from '@bindings/UsageBucket';
 	import { compact, usd } from '#lib/format.ts';
 	import { m } from '#lib/paraglide/messages.js';
-	import { Text, formatTimestamp } from '@dorsk/tsumikit';
+	import { Text } from '@dorsk/tsumikit';
 	import {
+		axisLabel,
+		axisTicks,
 		bucketLabel,
 		bucketTotal,
 		fillBuckets,
-		isAxisTick,
 		peakBucket,
 		peakBucketTotal,
 		rangeCost,
@@ -31,8 +32,11 @@
 	const recent = $derived(recentFrom(filled.length));
 	const cost = $derived(rangeCost(filled));
 
-	const tickEvery = $derived(granularity === 'hour' ? 6 : days <= 7 ? 1 : 7);
-	const tick = (ms: number) => formatTimestamp(ms, granularity === 'hour' ? 'time' : 'short-iso');
+	const labels = $derived(filled.map((b) => axisLabel(b.ms, granularity)));
+	const widest = $derived(labels.reduce((a, b) => (b.length > a.length ? b : a), ''));
+	let axisWidth = $state(0);
+	let labelWidth = $state(0);
+	const ticks = $derived(axisTicks(filled.length, axisWidth, labelWidth, granularity));
 	const pct = (v: number) => `${(v / peakHeight) * 100}%`;
 </script>
 
@@ -49,13 +53,14 @@
 			</div>
 		{/each}
 	</div>
-	<div class="axis">
-		{#each filled as b, i (b.ms)}
-			<div class="tick">
-				{#if isAxisTick(i, filled.length, tickEvery)}
-					<Text size="xs" tone="faint" numeric nowrap>{tick(b.ms)}</Text>
-				{/if}
-			</div>
+	<div class="axis" bind:clientWidth={axisWidth}>
+		<span class="probe" aria-hidden="true" bind:clientWidth={labelWidth}>
+			<Text size="xs" numeric nowrap>{widest}</Text>
+		</span>
+		{#each ticks as t (t.index)}
+			<span class="tick" style:left="{t.left}px" style:width="{labelWidth}px">
+				<Text size="xs" tone="faint" numeric nowrap>{labels[t.index]}</Text>
+			</span>
 		{/each}
 	</div>
 	{#if peak}
@@ -101,22 +106,16 @@
 	.col:hover .bar {
 		filter: brightness(1.15);
 	}
-	/* Each label sits under its own bar; the edge labels grow inward so they
-	   stay inside the chart without being clipped. */
 	.axis {
-		display: flex;
-		gap: 3px;
+		position: relative;
+	}
+	.probe {
+		display: inline-block;
+		visibility: hidden;
 	}
 	.tick {
-		flex: 1 1 0;
-		min-width: 0;
-		display: flex;
-		justify-content: center;
-	}
-	.tick:first-child {
-		justify-content: flex-start;
-	}
-	.tick:last-child {
-		justify-content: flex-end;
+		position: absolute;
+		top: 0;
+		text-align: center;
 	}
 </style>
