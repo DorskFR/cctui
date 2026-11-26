@@ -14,6 +14,12 @@
 //! stops refreshing `checked_at`, so a 500 or a timeout from the status host
 //! leaves every existing behaviour unchanged.
 //!
+//! Scope: a reading covers only the API and CLI components listed in
+//! [`RELEVANT_COMPONENTS`]. The indicator is the worst of those components,
+//! not the page-wide one; an incident counts only when it names one of them,
+//! or names none and is major or critical. A claude.ai or `ChatGPT` incident
+//! never reaches the header, the account rows or failover.
+//!
 //! Politeness: each family's `ETag` is remembered and sent back as
 //! `If-None-Match`, so an unchanged page costs a 304 with no body.
 //!
@@ -34,8 +40,8 @@ use chrono::Utc;
 use dashmap::DashMap;
 
 pub use cctui_proto::api::provider_status::{
-    DegradedComponent, IncidentSummary, Indicator, ProviderStatus, SOURCES, family_of_provider,
-    page_url,
+    DegradedComponent, IncidentSummary, Indicator, ProviderStatus, RELEVANT_COMPONENTS, SOURCES,
+    family_of_provider, is_relevant_component, page_url,
 };
 
 const INITIAL_DELAY: std::time::Duration = std::time::Duration::from_secs(10);
@@ -114,24 +120,19 @@ impl ProviderStatusCache {
     }
 }
 
-/// Statuspage `summary.json` → one normalized reading.
+/// Statuspage `summary.json` → one reading scoped to the family's
+/// [`RELEVANT_COMPONENTS`].
 ///
 /// Every field is optional in practice: a page that renames or drops one yields
-/// a reading with that part missing, never a failure. An unparseable
-/// `status.indicator` lands on `Unknown`, which is the honest answer.
+/// a reading with that part missing, never a failure. A page with none of the
+/// relevant components reads `Unknown` unless the whole page says `none`.
 #[must_use]
 pub fn normalize(family: &str, summary: &serde_json::Value) -> ProviderStatus {
     let status = summary.get("status");
-    let indicator = status
+    let page_indicator = status
         .and_then(|s| s.get("indicator"))
         .and_then(serde_json::Value::as_str)
         .map_or(Indicator::Unknown, Indicator::parse);
-    let description = status
-        .and_then(|s| s.get("description"))
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or_default()
-        .trim()
-        .to_owned();
     let url = summary
         .get("page")
         .and_then(|p| p.get("url"))
@@ -140,56 +141,78 @@ pub fn normalize(family: &str, summary: &serde_json::Value) -> ProviderStatus {
         .filter(|u| !u.is_empty())
         .unwrap_or_else(|| page_url(family).to_owned());
 
-    let components = summary
-        .get("components")
-        .and_then(serde_json::Value::as_array)
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|c| {
-                    let status =
-                        c.get("status").and_then(serde_json::Value::as_str).unwrap_or_default();
-                    if status.is_empty() || status == "operational" {
-                        return None;
-                    }
-                    // A component group repeats its children's worst status;
-                    // listing both says the same thing twice.
-                    if c.get("group").and_then(serde_json::Value::as_bool).unwrap_or(false) {
-                        return None;
-                    }
-                    let name = c.get("name").and_then(serde_json::Value::as_str)?.trim();
-                    (!name.is_empty()).then(|| DegradedComponent {
-                        name: name.to_owned(),
-                        status: status.to_owned(),
-                    })
-                })
-                .collect()
-        })
-        .unwrap_or_default();
+    let mut worst: Option<Indicator> = None;
+    let mut components = Vec::new();
+    for c in summary.get("components").and_then(serde_json::Value::as_array).into_iter().flatten() {
+        // A component group repeats its children's worst status.
+        if c.get("group").and_then(serde_json::Value::as_bool).unwrap_or(false) {
+            continue;
+        }
+        let status = c.get("status").and_then(serde_json::Value::as_str).unwrap_or_default();
+        let Some(name) = c.get("name").and_then(serde_json::Value::as_str).map(str::trim) else {
+            continue;
+        };
+        if status.is_empty() || name.is_empty() || !is_relevant_component(family, name) {
+            continue;
+        }
+        let level = component_indicator(status);
+        worst = Some(worst.map_or(level, |w| w.max(level)));
+        if level != Indicator::None {
+            components.push(DegradedComponent { name: name.to_owned(), status: status.to_owned() });
+        }
+    }
+    let mut indicator = worst.unwrap_or(if page_indicator == Indicator::None {
+        Indicator::None
+    } else {
+        Indicator::Unknown
+    });
 
-    let incidents = summary
-        .get("incidents")
-        .and_then(serde_json::Value::as_array)
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|i| {
-                    let name = i.get("name").and_then(serde_json::Value::as_str)?.trim();
-                    (!name.is_empty()).then(|| IncidentSummary {
-                        name: name.to_owned(),
-                        impact: i
-                            .get("impact")
-                            .and_then(serde_json::Value::as_str)
-                            .unwrap_or("none")
-                            .to_owned(),
-                        url: i
-                            .get("shortlink")
-                            .and_then(serde_json::Value::as_str)
-                            .map(str::to_owned)
-                            .filter(|s| !s.is_empty()),
-                    })
-                })
-                .collect()
-        })
-        .unwrap_or_default();
+    let mut incidents = Vec::new();
+    for i in summary.get("incidents").and_then(serde_json::Value::as_array).into_iter().flatten() {
+        let Some(name) = i.get("name").and_then(serde_json::Value::as_str).map(str::trim) else {
+            continue;
+        };
+        if name.is_empty() {
+            continue;
+        }
+        let impact = i.get("impact").and_then(serde_json::Value::as_str).unwrap_or("none");
+        let named: Vec<&str> = i
+            .get("components")
+            .and_then(serde_json::Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|c| c.get("name").and_then(serde_json::Value::as_str))
+            .collect();
+        if named.is_empty() {
+            let level = Indicator::parse(impact);
+            if !matches!(level, Indicator::Major | Indicator::Critical) {
+                continue;
+            }
+            indicator = indicator.max(level);
+        } else if !named.iter().any(|n| is_relevant_component(family, n)) {
+            continue;
+        }
+        incidents.push(IncidentSummary {
+            name: name.to_owned(),
+            impact: impact.to_owned(),
+            url: i
+                .get("shortlink")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)
+                .filter(|s| !s.is_empty()),
+        });
+    }
+
+    let description = if indicator == Indicator::None {
+        String::new()
+    } else {
+        status
+            .and_then(|s| s.get("description"))
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .trim()
+            .to_owned()
+    };
 
     ProviderStatus {
         family: family.to_owned(),
@@ -199,6 +222,16 @@ pub fn normalize(family: &str, summary: &serde_json::Value) -> ProviderStatus {
         components,
         incidents,
         checked_at: Some(Utc::now()),
+    }
+}
+
+fn component_indicator(status: &str) -> Indicator {
+    match status {
+        "operational" => Indicator::None,
+        "degraded_performance" | "under_maintenance" => Indicator::Minor,
+        "partial_outage" => Indicator::Major,
+        "major_outage" => Indicator::Critical,
+        _ => Indicator::Unknown,
     }
 }
 
@@ -281,6 +314,16 @@ mod tests {
     const MINOR: &str = include_str!("fixtures/provider_status/anthropic_minor.json");
     const MAJOR: &str = include_str!("fixtures/provider_status/openai_major.json");
     const CRITICAL: &str = include_str!("fixtures/provider_status/openai_critical.json");
+    const CLAUDE_AI_ONLY: &str =
+        include_str!("fixtures/provider_status/anthropic_claude_ai_only.json");
+    const CLAUDE_CODE_OUTAGE: &str =
+        include_str!("fixtures/provider_status/anthropic_claude_code_outage.json");
+    const CODEX_REVIEWS_MINOR: &str =
+        include_str!("fixtures/provider_status/openai_codex_reviews_minor.json");
+    const COMPONENTLESS_MAJOR: &str =
+        include_str!("fixtures/provider_status/openai_componentless_major.json");
+    const RESPONSES_DEGRADED: &str =
+        include_str!("fixtures/provider_status/openai_responses_degraded.json");
 
     fn parse(raw: &str) -> serde_json::Value {
         serde_json::from_str(raw).expect("fixture is valid json")
@@ -306,7 +349,7 @@ mod tests {
         let s = normalize("anthropic", &parse(NONE));
         assert_eq!(s.indicator, Indicator::None);
         assert!(!s.indicator.is_degraded());
-        assert_eq!(s.description, "All Systems Operational");
+        assert_eq!(s.description, "", "a healthy reading says nothing");
         assert_eq!(s.url, "https://status.claude.com");
         assert!(s.components.is_empty(), "operational components are not listed");
         assert!(s.incidents.is_empty());
@@ -329,11 +372,11 @@ mod tests {
     }
 
     #[test]
-    fn major_summary_lists_every_non_operational_component() {
+    fn major_summary_lists_only_relevant_non_operational_components() {
         let s = normalize("openai", &parse(MAJOR));
         assert_eq!(s.indicator, Indicator::Major);
         let names: Vec<&str> = s.components.iter().map(|c| c.name.as_str()).collect();
-        assert_eq!(names, vec!["Responses", "Login"]);
+        assert_eq!(names, vec!["Responses"], "Login is not the API");
         assert!(s.indicator.is_degraded());
     }
 
@@ -343,6 +386,128 @@ mod tests {
         assert_eq!(s.indicator, Indicator::Critical);
         assert_eq!(s.incidents.len(), 1);
         assert_eq!(s.incidents[0].impact, "critical");
+    }
+
+    #[test]
+    fn a_claude_ai_only_incident_is_not_an_api_reading() {
+        let s = normalize("anthropic", &parse(CLAUDE_AI_ONLY));
+        assert_eq!(s.indicator, Indicator::None);
+        assert!(s.components.is_empty());
+        assert!(s.incidents.is_empty(), "a major incident naming only claude.ai is dropped");
+        assert_eq!(s.description, "");
+        let cache = ProviderStatusCache::default();
+        cache.seed(s);
+        assert_eq!(cache.routing_outage("anthropic"), None);
+        assert!(cache.degraded_for_provider("anthropic").is_none());
+    }
+
+    #[test]
+    fn a_claude_code_partial_outage_is_a_major_routing_outage() {
+        let s = normalize("anthropic", &parse(CLAUDE_CODE_OUTAGE));
+        assert_eq!(s.indicator, Indicator::Major);
+        assert_eq!(
+            s.components,
+            vec![DegradedComponent {
+                name: "Claude Code".to_owned(),
+                status: "partial_outage".to_owned(),
+            }]
+        );
+        assert_eq!(s.incidents.len(), 1);
+        assert_eq!(s.description, "Partial System Outage");
+        let cache = ProviderStatusCache::default();
+        cache.seed(s);
+        assert_eq!(cache.routing_outage("anthropic"), Some(Indicator::Major));
+        assert!(cache.degraded_for_provider("anthropic").is_some());
+    }
+
+    #[test]
+    fn a_componentless_minor_incident_is_dropped() {
+        let s = normalize("openai", &parse(CODEX_REVIEWS_MINOR));
+        assert_eq!(s.indicator, Indicator::None);
+        assert!(s.components.is_empty());
+        assert!(s.incidents.is_empty());
+        assert_eq!(s.description, "");
+        let cache = ProviderStatusCache::default();
+        cache.seed(s);
+        assert!(cache.degraded_for_provider("openai").is_none());
+    }
+
+    #[test]
+    fn a_componentless_major_incident_lifts_the_family() {
+        let s = normalize("openai", &parse(COMPONENTLESS_MAJOR));
+        assert_eq!(s.indicator, Indicator::Major);
+        assert!(s.components.is_empty());
+        assert_eq!(s.incidents.len(), 1);
+        assert_eq!(s.incidents[0].impact, "major");
+        let cache = ProviderStatusCache::default();
+        cache.seed(s);
+        assert_eq!(cache.routing_outage("openai"), Some(Indicator::Major));
+    }
+
+    #[test]
+    fn a_degraded_responses_component_reads_minor() {
+        let s = normalize("openai", &parse(RESPONSES_DEGRADED));
+        assert_eq!(s.indicator, Indicator::Minor);
+        let names: Vec<&str> = s.components.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(names, vec!["Responses"]);
+        assert_eq!(s.incidents.len(), 1);
+        assert_eq!(s.description, "Partial System Degradation");
+        let cache = ProviderStatusCache::default();
+        cache.seed(s);
+        assert_eq!(cache.routing_outage("openai"), None);
+        assert!(cache.degraded_for_provider("openai").is_some());
+    }
+
+    #[test]
+    fn worst_relevant_component_sets_the_indicator() {
+        let page = |status: &str| {
+            serde_json::json!({
+                "status": {"indicator": "minor", "description": "x"},
+                "components": [
+                    {"name": "claude.ai", "status": "major_outage"},
+                    {"name": "CLAUDE API (api.anthropic.com)", "status": "operational"},
+                    {"name": "Claude Code", "status": status}
+                ]
+            })
+        };
+        let cases = [
+            ("operational", Indicator::None),
+            ("degraded_performance", Indicator::Minor),
+            ("under_maintenance", Indicator::Minor),
+            ("partial_outage", Indicator::Major),
+            ("major_outage", Indicator::Critical),
+        ];
+        for (status, want) in cases {
+            assert_eq!(normalize("anthropic", &page(status)).indicator, want, "{status}");
+        }
+    }
+
+    #[test]
+    fn a_page_without_relevant_components_is_unknown_unless_all_clear() {
+        let page = |indicator: &str| {
+            serde_json::json!({
+                "status": {"indicator": indicator, "description": "x"},
+                "components": [{"name": "ChatGPT", "status": "operational"}]
+            })
+        };
+        assert_eq!(normalize("openai", &page("minor")).indicator, Indicator::Unknown);
+        assert_eq!(normalize("openai", &page("none")).indicator, Indicator::None);
+    }
+
+    #[test]
+    fn relevant_components_match_case_insensitively() {
+        assert!(is_relevant_component("anthropic", "Claude API (api.anthropic.com)"));
+        assert!(is_relevant_component("anthropic", "claude api"));
+        assert!(is_relevant_component("anthropic", "claude code"));
+        assert!(!is_relevant_component("anthropic", "Claude Code Web"));
+        assert!(!is_relevant_component("anthropic", "claude.ai"));
+        assert!(is_relevant_component("openai", "Chat Completions"));
+        assert!(is_relevant_component("openai", "responses"));
+        assert!(is_relevant_component("openai", "Codex in ChatGPT Desktop"));
+        assert!(is_relevant_component("openai", "CODEX CLI"));
+        assert!(!is_relevant_component("openai", "Login"));
+        assert!(!is_relevant_component("openai", "Claude Code"));
+        assert!(!is_relevant_component("fireworks", "Responses"));
     }
 
     #[test]

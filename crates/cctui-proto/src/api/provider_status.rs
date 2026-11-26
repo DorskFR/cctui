@@ -12,9 +12,44 @@ pub const SOURCES: &[(&str, &str, &str)] = &[
     ("openai", "https://status.openai.com/api/v2/summary.json", "https://status.openai.com"),
 ];
 
+/// How a Statuspage component name is matched, always case-insensitively.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ComponentMatch {
+    Exact(&'static str),
+    Prefix(&'static str),
+    Contains(&'static str),
+}
+
+/// The components that speak for each family's API and CLI. Everything else on
+/// the page (claude.ai, `ChatGPT`, Login, …) never reaches a reading.
+pub const RELEVANT_COMPONENTS: &[(&str, &[ComponentMatch])] = &[
+    ("anthropic", &[ComponentMatch::Prefix("claude api"), ComponentMatch::Exact("claude code")]),
+    (
+        "openai",
+        &[
+            ComponentMatch::Exact("responses"),
+            ComponentMatch::Exact("chat completions"),
+            ComponentMatch::Contains("codex"),
+        ],
+    ),
+];
+
+/// Whether `name` is one of `family`'s relevant components.
+#[must_use]
+pub fn is_relevant_component(family: &str, name: &str) -> bool {
+    let name = name.trim().to_lowercase();
+    RELEVANT_COMPONENTS.iter().filter(|(f, _)| *f == family).flat_map(|(_, m)| m.iter()).any(|m| {
+        match *m {
+            ComponentMatch::Exact(p) => name == p,
+            ComponentMatch::Prefix(p) => name.starts_with(p),
+            ComponentMatch::Contains(p) => name.contains(p),
+        }
+    })
+}
+
 /// Normalized severity of an upstream family. `Unknown` is a first-class state:
 /// no reading yet, or a reading we could not parse.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 #[cfg_attr(test, derive(ts_rs::TS), ts(export, rename = "ProviderIndicator"))]
 pub enum Indicator {

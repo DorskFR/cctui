@@ -9,13 +9,13 @@
     {
       "id": "n0ttv6mfpnw1",
       "name": "API",
-      "status": "major_outage",
+      "status": "partial_outage",
       "group": true
     },
     {
       "id": "01jhq7xz6vpw",
       "name": "Responses",
-      "status": "major_outage",
+      "status": "partial_outage",
       "group": false
     },
     {
@@ -43,5 +43,8 @@
     }
   ],
   "scheduled_maintenances": [],
-  "status": { "indicator": "major", "description": "Partial System Outage" }
+  "status": {
+    "indicator": "major",
+    "description": "Partial System Outage"
+  }
 }
