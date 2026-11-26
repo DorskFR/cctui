@@ -146,13 +146,13 @@ describe('InstanceSection auto-save', () => {
 });
 
 describe('InstanceSection labels', () => {
-	it('shows no admin or server scope pills', async () => {
+	it('marks the section and the instance name row as server-wide and admin-only', async () => {
 		await render();
 		const leaves = [...document.body.querySelectorAll('*')]
 			.filter((el) => el.children.length === 0)
 			.map((el) => el.textContent?.trim());
-		expect(leaves).not.toContain(m.settings_scope_admin());
-		expect(leaves).not.toContain(m.settings_scope_server());
+		expect(leaves.filter((t) => t === m.settings_scope_admin()).length).toBeGreaterThanOrEqual(2);
+		expect(leaves).toContain(m.settings_scope_server());
 	});
 
 	it('names the self-update row once', async () => {

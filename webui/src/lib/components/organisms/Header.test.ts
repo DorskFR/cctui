@@ -32,6 +32,11 @@ vi.mock('@tanstack/svelte-query', () => ({
 }));
 const { goto } = vi.hoisted(() => ({ goto: vi.fn() }));
 vi.mock('$app/navigation', () => ({ goto }));
+const updated = vi.hoisted(() => ({ current: false }));
+vi.mock('$app/state', async (importOriginal) => ({
+	...(await importOriginal<typeof import('$app/state')>()),
+	updated
+}));
 vi.mock('#lib/ws.svelte.ts', () => ({
 	ws: {
 		status: 'open',
@@ -50,6 +55,7 @@ vi.mock('#lib/toast.svelte.ts', () => ({
 vi.stubGlobal('__CLIENT_VERSION__', '0.11.0');
 
 import { notify } from '#lib/notify.svelte.ts';
+import { notifications } from '#lib/notifications.svelte.ts';
 import { setCapabilitiesForTest } from '#lib/features.svelte.ts';
 import Header from './Header.svelte';
 
@@ -70,6 +76,7 @@ beforeEach(() => {
 	versionData.version = '0.11.0';
 	sessionsData.sessions = [];
 	notify.enabled = false;
+	updated.current = false;
 });
 
 const render = () => {
@@ -130,28 +137,62 @@ describe('the system bar carries no ? button', () => {
 });
 
 describe('appearance', () => {
-	it('keeps the theme and text size pickers out of the bar', () => {
+	it('keeps the theme and text size pickers in the bar', () => {
 		render();
-		const hd = document.querySelector('header.hd') as HTMLElement;
-		expect(hd.querySelector('[data-tsu="ThemePicker"], [data-tsu="FontScalePicker"]')).toBeNull();
-		expect(hd.querySelector('.prefs')).toBeNull();
+		const prefs = document.querySelector('header.hd .tail .prefs') as HTMLElement;
+		expect(prefs.querySelector('[data-tsu="ThemePicker"]')).not.toBeNull();
+		expect(prefs.querySelector('[data-tsu="FontScalePicker"]')).not.toBeNull();
 	});
 
-	it('opens Settings › Interface › Theme from the account menu', async () => {
+	it('drops the Appearance row from the account menu', async () => {
 		render();
 		await openUserMenu();
-		rowByText('Appearance…')?.click();
-		expect(goto).toHaveBeenCalledWith('/settings/interface#theme');
+		expect(rowByText('Appearance')).toBeNull();
 	});
 });
 
 describe('notifications', () => {
-	it('keep no indicator on the pill; the toggle lives in the user menu', async () => {
+	afterEach(() => {
+		notifications.unread = 0;
+	});
+
+	it('keeps the bell out of the bar and the toggle in the user menu', async () => {
 		notify.enabled = false;
 		render();
-		expect(document.querySelector('.pill .bell')).toBeNull();
+		expect(document.querySelectorAll('[data-tsu="NotificationCenter"]')).toHaveLength(1);
+		expect(document.querySelector('[data-tsu="NotificationCenter"] [aria-haspopup="dialog"]')).toBeNull();
+		expect(document.querySelector('.inbox-anchor')).toBeNull();
 		await openUserMenu();
 		expect(rowByText('Notify me when a session needs input')).toBeTruthy();
+	});
+
+	it('opens the notification panel from the Notifications row', async () => {
+		render();
+		const drawer = document.querySelector('[data-tsu="NotificationCenter"] [data-tsu="Drawer"]') as HTMLDialogElement;
+		expect(drawer.open).toBe(false);
+		await openUserMenu();
+		rowByText('Notifications')?.click();
+		flushSync();
+		await Promise.resolve();
+		flushSync();
+		expect(drawer.open).toBe(true);
+		expect(drawer.getAttribute('aria-label')).toBe('Notifications');
+	});
+
+	it('shows no unread count when everything is read', async () => {
+		render();
+		expect(document.querySelector('.pill [data-tsu="Badge"]')).toBeNull();
+		await openUserMenu();
+		expect(rowByText('Notifications')?.querySelector('[data-tsu="Badge"]')).toBeNull();
+	});
+
+	it('carries the unread count on the pill and the Notifications row', async () => {
+		notifications.unread = 3;
+		render();
+		expect(document.querySelector('.pill [data-tsu="Badge"]')?.textContent?.trim()).toBe('3');
+		await openUserMenu();
+		const row = rowByText('Notifications');
+		expect(row?.querySelector('[data-tsu="Badge"]')?.textContent?.trim()).toBe('3');
 	});
 });
 
@@ -164,12 +205,32 @@ describe('versions stay out of the bar', () => {
 		expect(hd.querySelector('.reload')).toBeNull();
 	});
 
-	it('shows a reload chip only when the ui and server builds differ', () => {
+	it('shows no reload chip when the server runs another version but no newer ui was deployed', () => {
+		vi.stubGlobal('__CLIENT_VERSION__', '0.33.0-beta.1');
+		versionData.version = '0.32.0';
+		render();
+		expect(document.querySelector('header.hd .reload')).toBeNull();
+		vi.stubGlobal('__CLIENT_VERSION__', '0.11.0');
+	});
+
+	it('shows the reload chip once a newer ui build is deployed, and reloads on click', () => {
+		const reload = vi.fn();
+		vi.stubGlobal('location', { ...window.location, reload });
+		updated.current = true;
+		render();
+		const chip = document.querySelector('header.hd .reload') as HTMLButtonElement;
+		expect(chip).not.toBeNull();
+		chip.click();
+		expect(reload).toHaveBeenCalledOnce();
+		vi.unstubAllGlobals();
+		vi.stubGlobal('__CLIENT_VERSION__', '0.11.0');
+	});
+
+	it('names a ui and server mismatch as plain text in the account menu', async () => {
 		versionData.version = '0.12.0';
 		render();
-		const chip = document.querySelector('header.hd .reload') as HTMLElement;
-		expect(chip).not.toBeNull();
-		expect(chip.title).toContain('ui v0.11.0 · srv v0.12.0');
+		await openUserMenu();
+		expect(rowByText('ui v0.11.0 · srv v0.12.0')).not.toBeNull();
 	});
 
 	it('keeps the version in the account menu', async () => {

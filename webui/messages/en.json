@@ -330,7 +330,6 @@
 	"composer_schedule_custom_invalid": "Pick a time in the next 30 days",
 	"composer_schedule_confirm": "Schedule",
 	"conversation_dock_empty": "Pick a session in the list to open it here.",
-	"conversation_line_actions": "Message actions",
 	"conversation_scheduled_for": "Scheduled for {time}",
 	"device_approve": "Approve",
 	"device_approved": "Approved — the device can finish signing in.",
@@ -713,18 +712,30 @@
 	"drawer_fork_title": "Fork into a new conversation (optionally change model)",
 	"drawer_interrupt_label": "Interrupt turn",
 	"drawer_interrupt_title": "Interrupt the in-flight turn",
-	"drawer_stop": "Stop",
 	"drawer_menu_group_share": "Share",
 	"drawer_menu_group_branch": "Branch",
 	"drawer_menu_group_collaborate": "Collaborate",
 	"drawer_menu_group_session": "Session",
 	"drawer_meta_details": "Session details",
-	"drawer_meta_tokens": "{tokens} tokens",
-	"drawer_meta_tokens_title": "In {in} · out {out} · cache {cache}",
 	"drawer_cost_with_source": "{cost} · {source}",
 	"drawer_cost_source_langfuse": "Langfuse",
 	"drawer_cost_source_harness": "harness",
 	"drawer_cost_plan": "Billed to plan",
+	"sessions_langfuse_calls_short": [
+		{
+			"declarations": [
+				"input count",
+				"local countPlural = count: plural"
+			],
+			"selectors": [
+				"countPlural"
+			],
+			"match": {
+				"countPlural=one": "· {count} call",
+				"countPlural=other": "· {count} calls"
+			}
+		}
+	],
 	"drawer_thread_previous": "Previous session in this thread",
 	"drawer_thread_next": "Next session in this thread",
 	"drawer_thread_menu": "Sessions in this thread",
@@ -1082,7 +1093,6 @@
 	"nav_harness_mode_tooltip": "Claude harness mode: {mode} — change in Settings (Codex sessions ignore this)",
 	"nav_instance_name": "Instance name",
 	"nav_log_out": "Log out",
-	"nav_appearance": "Appearance…",
 	"header_status_label": "Machines and usage",
 	"header_status_label_usage": "Machines and usage, worst {usage}",
 	"header_status_machines": "Machines",
@@ -1474,6 +1484,7 @@
 	"resource_gauge_cpu": "CPU",
 	"resource_gauge_disk": "Disk",
 	"resource_gauge_mem": "Memory",
+	"resource_gauge_load": "load {load}",
 	"resource_gauge_stale": "Stale: no heartbeat for a few minutes.",
 	"resource_gauge_unknown": "No figures yet: the daemon is too old to report them, or the machine has no /proc.",
 	"search_field_account": "Account",
@@ -1656,23 +1667,6 @@
 	"sessions_rebind_reason_outage": "{family} incident",
 	"sessions_rebinds_tip": "This session changed accounts while running",
 	"sessions_search_placeholder": "Search sessions",
-	"sessions_row_tokens": [
-		{
-			"declarations": [
-				"input count",
-				"input tokens",
-				"local countPlural = count: plural"
-			],
-			"selectors": [
-				"countPlural"
-			],
-			"match": {
-				"countPlural=one": "{tokens} token",
-				"countPlural=other": "{tokens} tokens"
-			}
-		}
-	],
-	"sessions_row_tokens_title": "{total} tokens: {input} in, {output} out, {cache} cached",
 	"sessions_search_failed": "Could not search: {error}",
 	"sessions_search_live_only_hint": "(live only — pick Archived to search all).",
 	"sessions_search_no_match": "No chats match “{query}”",
@@ -1689,7 +1683,7 @@
 	"sessions_section_unread": "Unread only",
 	"sessions_sections_aria": "Sections",
 	"sessions_select_all": "Select all",
-	"sessions_select_multiple": "Select multiple to archive",
+	"sessions_select_multiple": "Select multiple",
 	"sessions_select_range_hint": "Shift-click to select a range",
 	"sessions_selected_count": "{count} selected",
 	"sessions_sort_asc": "Ascending",
@@ -2241,6 +2235,8 @@
 	"settings_sort_name": "Name",
 	"settings_sound_label": "Sound",
 	"settings_spawn_dock_help": "Replace the “+ New” button with the whole new-session form, pinned to one side of the Sessions screen. On narrow screens the button and dialog come back.",
+	"settings_spawn_dock_fold_label": "Minify the launch panel during a conversation",
+	"settings_spawn_dock_fold_help": "While a conversation is open, the docked launch form shrinks to a narrow bar on its side; your draft is kept and the form comes back when the conversation closes.",
 	"settings_spawn_dock_label": "Always-visible launch panel",
 	"settings_spawn_dock_side_label": "Panel side",
 	"settings_spawn_dock_side_left": "Left",
@@ -2318,6 +2314,7 @@
 	"spawn_action_dispatch": "Dispatch",
 	"spawn_action_spawn": "Launch",
 	"spawn_action_spawn_profile": "Launch · {profile}",
+	"spawn_add_context": "Context",
 	"spawn_add_env_vars": "Env vars",
 	"spawn_add_files": "Files",
 	"spawn_add_label": "Labels",
@@ -2335,6 +2332,8 @@
 	"spawn_cwd_suggestions_aria": "Directory suggestions",
 	"spawn_cwd_worktree_badge": "worktree",
 	"spawn_cwd_worktree_title": "Linked worktree on branch {branch}",
+	"spawn_dock_expand": "Expand the launch panel",
+	"spawn_dock_minify": "Minify the launch panel",
 	"spawn_draft": "Draft",
 	"spawn_draft_incomplete": "a draft needs a machine, a working directory and a prompt",
 	"spawn_dropzone_label": "Drop files to attach",
@@ -2377,7 +2376,6 @@
 	"spawn_profile_model_aria": "Model",
 	"spawn_profile_name_aria": "Profile name",
 	"spawn_profile_name_taken": "A profile already has this name",
-	"spawn_profile_manage": "Manage profiles…",
 	"spawn_profile_new": "New profile",
 	"spawn_profile_save": "Save to profile",
 	"spawn_profile_toast_failed": "Could not update the profile: {error}",
@@ -3422,10 +3420,7 @@
 	"error_not_found_body": "Nothing lives at {path}.",
 	"error_not_found_title": "Page not found",
 	"error_recent_sessions": "Recent sessions",
-	"error_search_archived": "Search archived sessions",
-	"error_search_archived_none": "No archived session matches.",
-	"error_search_archived_placeholder": "Name, folder or id",
-	"error_session_missing_body": "This session was archived or deleted. Search the archived sessions, or go back to your sessions.",
+	"error_session_missing_body": "This session was archived or deleted.",
 	"error_session_missing_title": "Session not found",
 	"list_auto_approve": "auto-approve"
 }

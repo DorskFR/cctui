@@ -287,6 +287,7 @@
 				usageEnabled={enabled}
 				canManage={canEditProvider(p, owned) && !compact}
 				dense={compact}
+				divided
 				onedit={() => oneditprovider?.(p)}
 				onreauth={() => onreauthprovider?.(p)}
 			/>
@@ -344,6 +345,7 @@
 		gap: var(--sp-2) var(--sp-3);
 		padding: var(--sp-3) var(--sp-4);
 		background: var(--bg-elevated-2);
+		border-bottom: var(--edge-width) solid var(--surface-edge);
 		min-width: 0;
 	}
 	.handle {

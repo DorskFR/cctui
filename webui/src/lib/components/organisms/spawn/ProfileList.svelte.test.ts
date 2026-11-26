@@ -1,4 +1,5 @@
 // @vitest-environment happy-dom
+import { readFileSync } from 'node:fs';
 import { flushSync, mount, unmount } from 'svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { SessionProfile } from '@bindings/SessionProfile';
@@ -57,7 +58,6 @@ const codexQuick: SessionProfile = {
 const oncreate = vi.fn<(name: string, spec: ProfileSpecForm) => Promise<boolean>>();
 const onsave = vi.fn();
 const ondelete = vi.fn();
-const onmanage = vi.fn();
 let held: { selectedId: string | null; oneOff: ProfileSpecForm | null };
 let component: ReturnType<typeof mount> | undefined;
 
@@ -65,7 +65,6 @@ beforeEach(() => {
 	oncreate.mockReset().mockResolvedValue(true);
 	onsave.mockReset();
 	ondelete.mockReset();
-	onmanage.mockReset();
 });
 afterEach(async () => {
 	if (component) await unmount(component);
@@ -73,7 +72,7 @@ afterEach(async () => {
 	document.body.replaceChildren();
 });
 
-function render(manageHref?: string, target: Element = document.body) {
+function render(target: Element = document.body) {
 	component = mount(Host, {
 		target,
 		props: {
@@ -82,8 +81,6 @@ function render(manageHref?: string, target: Element = document.body) {
 			oncreate,
 			onsave,
 			ondelete,
-			manageHref,
-			onmanage,
 			onready: (s) => (held = s)
 		}
 	});
@@ -123,31 +120,41 @@ const mode = (v: string) => {
 	return el;
 };
 
-describe('ProfileList as a picker (the spawn form)', () => {
-	it('has no editing control and links its footer to where profiles are managed', () => {
-		render('/settings/sessions#launch');
-		expect(() => button('Adjust profile')).toThrow();
+describe('ProfileList picker', () => {
+	it('carries the cog on the card and New profile in the list footer', () => {
+		render();
+		expect(button('Adjust profile')).toBeTruthy();
 		const panel = openPicker();
-		expect(panel.querySelector('[data-journey="new-profile"]')).toBeNull();
-		const link = panel.querySelector<HTMLAnchorElement>('a[data-journey="manage-profiles"]');
-		expect(link?.getAttribute('href')).toBe('/settings/sessions#launch');
-		link?.addEventListener('click', (e) => e.preventDefault());
-		link?.click();
-		flushSync();
-		expect(onmanage).toHaveBeenCalledTimes(1);
-		expect(profileForm()).toBeNull();
+		expect(panel.querySelector('[data-journey="new-profile"]')).not.toBeNull();
+		expect(panel.querySelector('[data-journey="manage-profiles"]')).toBeNull();
+	});
+
+	it('gives the rule beside the cog no class a tsumikit global utility styles', () => {
+		const utilities = readFileSync('node_modules/@dorsk/tsumikit/dist/styles/utilities.css', 'utf8');
+		const reserved = new Set([...utilities.matchAll(/\.([a-zA-Z][\w-]*)/g)].map((m) => m[1]));
+		expect(reserved.has('divider')).toBe(true);
+		render();
+		const cog = button('Adjust profile');
+		const rule = cog.closest('.tools')?.querySelector<HTMLElement>(':scope > [aria-hidden="true"]');
+		expect(rule).toBeTruthy();
+		expect([...(rule?.classList ?? [])].filter((c) => reserved.has(c))).toEqual([]);
 	});
 });
 
 describe('ProfileList picker placement', () => {
 	const rect = (top: number, bottom: number) =>
 		({ top, bottom, left: 0, right: 400, x: 0, y: top, width: 400, height: bottom - top }) as DOMRect;
-	function inArea(cardTop: number) {
+	function inArea(cardTop: number, labelAbove?: [number, number]) {
 		const area = document.createElement('div');
 		area.style.overflowY = 'auto';
 		area.getBoundingClientRect = () => rect(100, 700);
 		document.body.append(area);
-		render('/settings/sessions#launch', area);
+		if (labelAbove) {
+			const label = document.createElement('label');
+			label.getBoundingClientRect = () => rect(...labelAbove);
+			area.append(label);
+		}
+		render(area);
 		const card = document.querySelector<HTMLElement>('.card');
 		if (!card) throw new Error('picker card not found');
 		card.getBoundingClientRect = () => rect(cardTop, cardTop + 60);
@@ -162,6 +169,12 @@ describe('ProfileList picker placement', () => {
 		expect(card.style.getPropertyValue('--sheet-max')).toBe('492px');
 	});
 
+	it('stops an upward sheet below the label of the field above', () => {
+		const card = inArea(600, [300, 320]);
+		expect(card.dataset.placement).toBe('top-start');
+		expect(card.style.getPropertyValue('--sheet-max')).toBe('272px');
+	});
+
 	it('opens downward, capped to the room below, when there is space under the card', () => {
 		const card = inArea(150);
 		expect(card.dataset.placement).toBe('bottom-start');
@@ -169,7 +182,7 @@ describe('ProfileList picker placement', () => {
 	});
 });
 
-describe('ProfileList as the editor (Settings)', () => {
+describe('ProfileList in the launch form', () => {
 	it('the cog toggles an edit form for the current profile', () => {
 		render();
 		button('Adjust profile').click();

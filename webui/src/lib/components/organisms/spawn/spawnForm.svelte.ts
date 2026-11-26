@@ -591,11 +591,6 @@ export class SpawnForm {
 		}
 	};
 
-	/** Navigating away: the modal closes, the docked panel unmounts with its page. */
-	leave = () => {
-		if (!this.docked()) this.onclose();
-	};
-
 	clearForm = () => {
 		this.discardMirror();
 		this.resetForm();

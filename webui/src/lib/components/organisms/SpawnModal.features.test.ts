@@ -198,7 +198,7 @@ describe("SpawnModal with machine_spawn off", () => {
   it("keeps both tabs with every feature on", async () => {
     only([]);
     await open();
-    expect(tabs()?.getAttribute("data-tsu")).toBe("SegmentedControl");
+    expect(tabs()?.querySelectorAll('[role="radio"]').length).toBe(2);
     expect(document.querySelector("#sp-cwd")).toBeTruthy();
   });
 });
@@ -216,13 +216,28 @@ describe("SpawnModal machine tab with a feature off", () => {
     expect(document.querySelector('input[type="file"]')).toBeTruthy();
   });
 
+  // The caret stays for the auto-archive toggle; only the schedule rows go.
+  const menuRows = async () => {
+    const trigger = document.querySelector<HTMLButtonElement>(
+      'button[aria-label="More spawn options"]',
+    );
+    const id = trigger?.getAttribute("popovertarget");
+    const panel = id ? document.getElementById(id) : null;
+    if (!panel) throw new Error("caret panel did not render");
+    (panel as HTMLElement & { hidePopover?: () => void }).hidePopover = () => {};
+    panel.dispatchEvent(Object.assign(new Event("toggle"), { newState: "open" }));
+    await new Promise((r) => setTimeout(r, 50));
+    const toggle = document.querySelector('[data-journey="auto-archive"]');
+    return [...(toggle?.parentElement?.children ?? [])].map(
+      (r) => r.getAttribute("data-journey") ?? r.textContent?.trim(),
+    );
+  };
+
   it("drops Draft and the schedule menu without drafts", async () => {
     only(["drafts"]);
     await open();
     expect(button("Draft")).toBeUndefined();
-    expect(
-      document.querySelector('[aria-label="More spawn options"]'),
-    ).toBeNull();
+    expect(await menuRows()).toEqual(["auto-archive"]);
     expect(button("Launch")).toBeTruthy();
   });
 
@@ -230,9 +245,7 @@ describe("SpawnModal machine tab with a feature off", () => {
     only(["scheduling"]);
     await open();
     expect(button("Draft")).toBeTruthy();
-    expect(
-      document.querySelector('[aria-label="More spawn options"]'),
-    ).toBeNull();
+    expect(await menuRows()).toEqual(["auto-archive"]);
   });
 
   it("asks for no profile without profiles", async () => {
@@ -246,6 +259,25 @@ describe("SpawnModal machine tab with a feature off", () => {
     await open();
     expect(calls.voiceConfig).toBe(0);
     expect(document.querySelector('[data-journey="spawn-dictation"]')).toBeNull();
+  });
+
+  it("keeps the context row behind + Context until asked for", async () => {
+    only([]);
+    await open();
+    expect(document.querySelector("#sp-context")).toBeNull();
+    const add = document.querySelector<HTMLButtonElement>('[data-journey="add-context"]');
+    expect(add?.closest('[data-journey="spawn-addons"]')).toBeTruthy();
+    add?.click();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(document.querySelector("#sp-context")).toBeTruthy();
+    expect(document.activeElement?.id).toBe("sp-context");
+    expect(document.querySelector('[data-journey="add-context"]')).toBeNull();
+  });
+
+  it("offers no + Context without context", async () => {
+    only(["context"]);
+    await open();
+    expect(document.querySelector('[data-journey="add-context"]')).toBeNull();
   });
 
   it("mounts no context row without context", async () => {

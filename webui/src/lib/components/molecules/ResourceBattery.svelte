@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { now as clockNow } from '#lib/clock.svelte.ts';
 	import { useQueryClient } from '@tanstack/svelte-query';
-	import { Popover, Text } from '@dorsk/tsumikit';
+	import { Meter, Popover, Text } from '@dorsk/tsumikit';
 	import { qk, useMachineResources } from '#lib/queries/index.ts';
 	import type { MachineResourcesRow } from '@bindings/MachineResourcesRow';
 	import { settings } from '#lib/settings.svelte.ts';
@@ -73,6 +73,18 @@
 	</span>
 {/snippet}
 
+{#snippet stat(label: string, v: number | null | undefined, stale: boolean, detail: string)}
+	{@const tone = stale ? 'unknown' : resourceTone(v)}
+	<Meter
+		{label}
+		value={stale ? 0 : (pctOf(v) ?? 0)}
+		tone={tone === 'unknown' ? 'neutral' : tone}
+		size="sm"
+		format={() => pctText(v)}
+		caption={detail || undefined}
+	/>
+{/snippet}
+
 {#if rows.length > 0}
 	<span class="strip">
 		{#each rows as r (r.machine_id)}
@@ -93,26 +105,30 @@
 					</span>
 				{/snippet}
 				<div class="panel">
-					<Text size="sm" weight="semibold">{machineLabel(r)}</Text>
+					<span class="panel-name" style={`--hue: ${hueOf(r)}`}
+						><Text size="sm" weight="semibold" tone="inherit">{machineLabel(r)}</Text></span
+					>
 					{#if !res}
 						<Text size="sm" tone="faint">{m.resource_gauge_unknown()}</Text>
 					{:else}
-						<div class="grid">
-							<Text size="sm" tone="faint">{m.resource_gauge_cpu()}</Text>
-							<Text size="sm" numeric>{pctText(res.cpu_pct)}</Text>
-							<Text size="sm" tone="faint">{m.resource_gauge_mem()}</Text>
-							<Text size="sm" numeric
-								>{pctText(res.mem_pct)} · {fmtBytes(res.mem_used_bytes)} / {fmtBytes(
-									res.mem_total_bytes
-								)}</Text
-							>
-							<Text size="sm" tone="faint">{m.resource_gauge_disk()}</Text>
-							<Text size="sm" numeric
-								>{pctText(res.disk_pct)} · {fmtBytes(res.disk_used_bytes)} / {fmtBytes(
-									res.disk_total_bytes
-								)}</Text
-							>
+						{@const load =
+							typeof res.load1 === 'number' ? m.resource_gauge_load({ load: res.load1.toFixed(2) }) : ''}
+						<div class="stats">
+							{@render stat(m.resource_gauge_cpu(), res.cpu_pct, stale, load)}
+							{@render stat(
+								m.resource_gauge_mem(),
+								res.mem_pct,
+								stale,
+								`${fmtBytes(res.mem_used_bytes)} / ${fmtBytes(res.mem_total_bytes)}`
+							)}
+							{@render stat(
+								m.resource_gauge_disk(),
+								res.disk_pct,
+								stale,
+								`${fmtBytes(res.disk_used_bytes)} / ${fmtBytes(res.disk_total_bytes)}`
+							)}
 						</div>
+						{#if res.disk_path}<Text size="xs" tone="faint" mono truncate>{res.disk_path}</Text>{/if}
 						{#if stale}<Text size="xs" tone="danger">{m.resource_gauge_stale()}</Text>{/if}
 					{/if}
 				</div>
@@ -221,13 +237,15 @@
 		display: flex;
 		flex-direction: column;
 		gap: var(--sp-2);
-		min-width: 14rem;
+		min-width: 18rem;
 		max-width: 100%;
 	}
-	.grid {
-		display: grid;
-		grid-template-columns: auto 1fr;
-		gap: var(--sp-1) var(--sp-3);
-		align-items: baseline;
+	.panel-name {
+		color: hsl(var(--hue) 60% 60%);
+	}
+	.stats {
+		display: flex;
+		flex-direction: column;
+		gap: var(--sp-3);
 	}
 </style>

@@ -33,30 +33,46 @@ describe('drawer header control chrome', () => {
 		expect(header).not.toContain('--pop-trigger-');
 	});
 
-	it('keeps only back, title, search and ⋯; rename and archive live in ⋯', () => {
-		for (const icon of ['edit', 'archive', 'stop']) {
+	it('keeps archive inline, drops the inline rename and search buttons', () => {
+		for (const icon of ['edit', 'search']) {
 			expect(markup, icon).not.toMatch(new RegExp(`<IconButton[^>]*icon="${icon}"`));
 		}
+		expect(markup).toContain(
+			'<IconButton {box} variant="ghost" tone="warn" icon="archive" label={m.drawer_archive()} onclick={onarchive} />'
+		);
 		const items = menu.slice(menu.indexOf('const overflowItems'));
 		expect(items).toContain("{ label: m.drawer_rename(), icon: 'edit' as const, onselect: onrename }");
-		expect(items).toContain("...(archived ? [] : [{ label: m.drawer_archive(), icon: 'archive' as const, onselect: onarchive }])");
 	});
 
-	it('offers Stop only while a turn runs, outlined with a spinner', () => {
-		expect(header).toContain('working = false');
-		expect(header).toContain('const canStop = $derived(working && !archived && !compact)');
-		const stop = markup.slice(markup.indexOf('{#if canStop}'), markup.indexOf('{/if}', markup.indexOf('{#if canStop}')));
-		expect(stop).toContain('<Button size="sm"');
-		expect(stop).not.toMatch(/variant=|tone=/);
-		expect(stop).toContain('<Spinner size={12} label="" />');
-		expect(stop).toContain('{m.drawer_stop()}');
-		expect(stop).toContain('onclick={oninterrupt}');
+	it('renames by clicking the title', async () => {
+		const title = (await import('./DrawerTitle.svelte?raw')).default;
+		expect(header).toContain('onrename={startRename} />');
+		expect(title).toMatch(/<button type="button" class="tname" title=\{m\.drawer_rename\(\)\} onclick=\{onrename\}/);
+		expect(title).toContain('<Icon name="edit" size={14} />');
+		expect(title).toMatch(/\.tname:hover \.pen/);
 	});
 
-	it('moves the title to its own line when the bar collapses, never in a tile', () => {
-		expect(header).toContain('const titleOwnLine = $derived(collapsed && !compact)');
-		expect(markup).toMatch(/\{#if titleOwnLine\}\s*<div class="trow">\{@render title\(\)\}<\/div>/);
+	it('always offers Stop beside Archive as one red icon that spins until acknowledged', () => {
+		expect(header).not.toContain('canStop');
+		expect(header).not.toMatch(/\bworking\b/);
+		const block = markup.slice(markup.indexOf('{#if !archived && !compact}'), markup.indexOf('{/if}', markup.indexOf('{#if !archived && !compact}')));
+		expect(block).toContain('icon="archive"');
+		const stop = block.slice(block.indexOf('icon="stop"') - 80);
+		expect(stop).toContain('tone="danger"');
+		expect(stop).toContain('loading={stopping}');
+		expect(stop).toContain('onclick={stop}');
+		expect(header).toMatch(/stopping = true;\s*try \{\s*await oninterrupt\(\);\s*\} finally \{\s*stopping = false;/);
+	});
+
+	it('orders Archive before Stop', () => {
+		expect(markup.indexOf('icon="archive"')).toBeLessThan(markup.indexOf('icon="stop"'));
+	});
+
+	it('keeps the title in the one action row at every width', () => {
+		expect(header).not.toContain('titleOwnLine');
+		expect(markup).not.toContain('class="trow"');
 		expect(markup.split('<DrawerTitle')).toHaveLength(2);
+		expect(markup.indexOf('<DrawerTitle')).toBeLessThan(markup.indexOf('</Toolbar>'));
 	});
 
 	it('leaves text size to Settings, not the drawer header', () => {

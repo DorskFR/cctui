@@ -82,31 +82,33 @@ async function open(props: Record<string, unknown> = {}) {
 }
 
 const row = () => document.querySelector<HTMLElement>(".foot-row");
-const growers = () =>
-  Array.from(row()?.children ?? []).map((n) =>
-    (n as HTMLElement).style.flex.replace(/\s+/g, " ").trim(),
-  );
+const quiet = () =>
+  Array.from(row()?.querySelectorAll<HTMLButtonElement>(".foot-quiet > button") ?? []);
 
 describe("SpawnModal footer row", () => {
-  it("holds every action in one row, each growing with its content", async () => {
+  it("puts Clear and Draft as small ghost buttons beside the primary", async () => {
     await open();
-    expect(row()).not.toBeNull();
-    const flexes = growers();
-    expect(flexes.length).toBeGreaterThanOrEqual(2);
-    expect(flexes.every((f) => f.startsWith("1 1"))).toBe(true);
-    expect(flexes.some((f) => f === "1 1 auto")).toBe(true);
-    expect(flexes.at(-1)).toBe("1 1 11rem");
+    const buttons = quiet();
+    expect(buttons.map((b) => b.textContent?.trim())).toEqual(["Clear", "Draft"]);
+    for (const b of buttons) {
+      expect(b.className).toMatch(/\bbtn-ghost\b/);
+      expect(b.className).toMatch(/\bbtn-sm\b/);
+    }
+    const primary = row()?.lastElementChild as HTMLElement | null;
+    expect(primary?.getAttribute("data-journey")).toBe("submit");
+    expect(primary?.style.marginInlineStart).toBe("auto");
   });
 
-  it("keeps the caret attached to a growing primary segment", async () => {
+  it("drops the auto-archive checkbox and its paragraph", async () => {
     await open();
-    const split = row()?.querySelector<HTMLElement>('[data-tsu="SplitButton"]');
-    expect(split).not.toBeNull();
-    expect(split?.style.gridTemplateColumns).toBe("1fr auto");
+    expect(document.querySelector('input[type="checkbox"][data-journey="auto-archive"]')).toBeNull();
+    expect(document.body.textContent).not.toContain(
+      "Archives the session once it finishes cleanly",
+    );
   });
 
-  it("fills the row when the dock renders it", async () => {
+  it("fills the dock footer", async () => {
     await open({ docked: "right" });
-    expect(document.querySelector(".dock-foot .foot-row")).not.toBeNull();
+    expect(document.querySelector(".dock-foot .spawn-foot .foot-row")).not.toBeNull();
   });
 });

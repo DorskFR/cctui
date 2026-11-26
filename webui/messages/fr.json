@@ -330,7 +330,6 @@
 	"composer_schedule_custom_invalid": "Choisissez un moment dans les 30 prochains jours",
 	"composer_schedule_confirm": "Programmer",
 	"conversation_dock_empty": "Choisissez une session dans la liste pour l’ouvrir ici.",
-	"conversation_line_actions": "Actions du message",
 	"conversation_scheduled_for": "Programmé pour {time}",
 	"device_approve": "Approuver",
 	"device_approved": "Approuvé — l'appareil peut terminer sa connexion.",
@@ -713,18 +712,30 @@
 	"drawer_fork_title": "Bifurquer vers une nouvelle conversation (avec changement de modèle optionnel)",
 	"drawer_interrupt_label": "Interrompre le tour",
 	"drawer_interrupt_title": "Interrompre le tour en cours",
-	"drawer_stop": "Arrêter",
 	"drawer_menu_group_share": "Partager",
 	"drawer_menu_group_branch": "Dériver",
 	"drawer_menu_group_collaborate": "Collaborer",
 	"drawer_menu_group_session": "Session",
 	"drawer_meta_details": "Détails de la session",
-	"drawer_meta_tokens": "{tokens} jetons",
-	"drawer_meta_tokens_title": "Entrée {in} · sortie {out} · cache {cache}",
 	"drawer_cost_with_source": "{cost} · {source}",
 	"drawer_cost_source_langfuse": "Langfuse",
 	"drawer_cost_source_harness": "harnais",
 	"drawer_cost_plan": "Facturé au forfait",
+	"sessions_langfuse_calls_short": [
+		{
+			"declarations": [
+				"input count",
+				"local countPlural = count: plural"
+			],
+			"selectors": [
+				"countPlural"
+			],
+			"match": {
+				"countPlural=one": "· {count} appel",
+				"countPlural=other": "· {count} appels"
+			}
+		}
+	],
 	"drawer_thread_previous": "Session précédente du fil",
 	"drawer_thread_next": "Session suivante du fil",
 	"drawer_thread_menu": "Sessions du fil",
@@ -1082,7 +1093,6 @@
 	"nav_harness_mode_tooltip": "Mode d'exécution Claude : {mode} — modifiable dans les Réglages (les sessions Codex l'ignorent)",
 	"nav_instance_name": "Nom de l'instance",
 	"nav_log_out": "Se déconnecter",
-	"nav_appearance": "Apparence…",
 	"header_status_label": "Machines et utilisation",
 	"header_status_label_usage": "Machines et utilisation, pire valeur {usage}",
 	"header_status_machines": "Machines",
@@ -1474,6 +1484,7 @@
 	"resource_gauge_cpu": "CPU",
 	"resource_gauge_disk": "Disque",
 	"resource_gauge_mem": "Mémoire",
+	"resource_gauge_load": "charge {load}",
 	"resource_gauge_stale": "Périmé : aucun battement depuis quelques minutes.",
 	"resource_gauge_unknown": "Aucune donnée pour l'instant : le daemon est trop ancien pour les remonter, ou la machine n'a pas de /proc.",
 	"search_field_account": "Compte",
@@ -1656,23 +1667,6 @@
 	"sessions_rebind_reason_outage": "incident {family}",
 	"sessions_rebinds_tip": "Cette session a changé de compte en cours d'exécution",
 	"sessions_search_placeholder": "Rechercher des sessions",
-	"sessions_row_tokens": [
-		{
-			"declarations": [
-				"input count",
-				"input tokens",
-				"local countPlural = count: plural"
-			],
-			"selectors": [
-				"countPlural"
-			],
-			"match": {
-				"countPlural=one": "{tokens} token",
-				"countPlural=other": "{tokens} tokens"
-			}
-		}
-	],
-	"sessions_row_tokens_title": "{total} tokens : {input} en entrée, {output} en sortie, {cache} en cache",
 	"sessions_search_failed": "Impossible de rechercher : {error}",
 	"sessions_search_live_only_hint": "(sessions actives uniquement — cochez Archivées pour tout rechercher).",
 	"sessions_search_no_match": "Aucune conversation ne correspond à « {query} »",
@@ -1689,7 +1683,7 @@
 	"sessions_section_unread": "Non lues seulement",
 	"sessions_sections_aria": "Sections",
 	"sessions_select_all": "Tout sélectionner",
-	"sessions_select_multiple": "Sélectionner plusieurs à archiver",
+	"sessions_select_multiple": "Sélection multiple",
 	"sessions_select_range_hint": "Maj+clic pour sélectionner une plage",
 	"sessions_selected_count": "{count} sélectionnée(s)",
 	"sessions_sort_asc": "Croissant",
@@ -2241,6 +2235,8 @@
 	"settings_sort_name": "Nom",
 	"settings_sound_label": "Son",
 	"settings_spawn_dock_help": "Remplace le bouton « + Nouveau » par le formulaire complet de nouvelle session, ancré sur un côté de l’écran Sessions. Sur écran étroit, le bouton et la fenêtre reviennent.",
+	"settings_spawn_dock_fold_label": "Réduire le panneau de lancement pendant une conversation",
+	"settings_spawn_dock_fold_help": "Quand une conversation est ouverte, le formulaire de lancement ancré se réduit à une barre étroite sur son côté ; le brouillon est conservé et le formulaire revient à la fermeture de la conversation.",
 	"settings_spawn_dock_label": "Panneau de lancement permanent",
 	"settings_spawn_dock_side_label": "Côté du panneau",
 	"settings_spawn_dock_side_left": "Gauche",
@@ -2318,6 +2314,7 @@
 	"spawn_action_dispatch": "Dispatcher",
 	"spawn_action_spawn": "Lancer",
 	"spawn_action_spawn_profile": "Lancer · {profile}",
+	"spawn_add_context": "Contexte",
 	"spawn_add_env_vars": "Env vars",
 	"spawn_add_files": "Fichiers",
 	"spawn_add_label": "Libellés",
@@ -2335,6 +2332,8 @@
 	"spawn_cwd_suggestions_aria": "Suggestions de répertoires",
 	"spawn_cwd_worktree_badge": "worktree",
 	"spawn_cwd_worktree_title": "Worktree lié sur la branche {branch}",
+	"spawn_dock_expand": "Déplier le panneau de lancement",
+	"spawn_dock_minify": "Réduire le panneau de lancement",
 	"spawn_draft": "Brouillon",
 	"spawn_draft_incomplete": "un brouillon nécessite une machine, un répertoire de travail et un prompt",
 	"spawn_dropzone_label": "Déposez des fichiers à joindre",
@@ -2377,7 +2376,6 @@
 	"spawn_profile_model_aria": "Modèle",
 	"spawn_profile_name_aria": "Nom du profil",
 	"spawn_profile_name_taken": "Un profil porte déjà ce nom",
-	"spawn_profile_manage": "Gérer les profils…",
 	"spawn_profile_new": "Nouveau profil",
 	"spawn_profile_save": "Enregistrer le profil",
 	"spawn_profile_toast_failed": "Impossible de mettre à jour le profil : {error}",
@@ -3422,10 +3420,7 @@
 	"error_not_found_body": "Rien ne se trouve à l'adresse {path}.",
 	"error_not_found_title": "Page introuvable",
 	"error_recent_sessions": "Sessions récentes",
-	"error_search_archived": "Rechercher dans les sessions archivées",
-	"error_search_archived_none": "Aucune session archivée ne correspond.",
-	"error_search_archived_placeholder": "Nom, dossier ou identifiant",
-	"error_session_missing_body": "Cette session a été archivée ou supprimée. Cherchez-la dans les sessions archivées, ou revenez à vos sessions.",
+	"error_session_missing_body": "Cette session a été archivée ou supprimée.",
 	"error_session_missing_title": "Session introuvable",
 	"list_auto_approve": "approbation auto"
 }

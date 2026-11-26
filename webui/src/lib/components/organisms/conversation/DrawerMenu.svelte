@@ -14,7 +14,6 @@
 	let {
 		session,
 		archived,
-		collapsed,
 		box,
 		onrename,
 		onsearch,
@@ -32,7 +31,6 @@
 	}: {
 		session: SessionListItem;
 		archived: boolean;
-		collapsed: boolean;
 		box: 'sm' | 'md';
 		onrename: () => void;
 		onsearch?: () => void;
@@ -134,7 +132,7 @@
 				: [])
 		]),
 		...group(m.drawer_menu_group_session(), [
-			...(collapsed && onsearch
+			...(onsearch
 				? [
 						{
 							label: m.conversation_search_label(),

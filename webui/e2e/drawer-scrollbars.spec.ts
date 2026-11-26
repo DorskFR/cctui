@@ -67,7 +67,7 @@ test('desktop: closing the drawer restores the page scrollbar without shifting',
 
 test('800px: the full-bleed drawer fits the viewport', async ({ page }) => {
 	await openDrawer(page, NARROW);
-	const panel = await page.locator('.panel').first().boundingBox();
+	const panel = await page.locator('.panel:visible').first().boundingBox();
 	const inner = await page.evaluate(() => window.innerWidth);
 	expect(panel!.x).toBeGreaterThanOrEqual(0);
 	expect(panel!.x + panel!.width).toBeLessThanOrEqual(inner);

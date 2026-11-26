@@ -157,6 +157,12 @@
 				</tbody>
 			</table>
 		</SettingRow>
+		<SettingRow label={m.settings_spawn_dock_fold_label()} help={m.settings_spawn_dock_fold_help()}>
+			<Switch
+				bind:checked={() => settings.spawnDock.foldOnChat !== false, (v) => settings.setSpawnDock({ foldOnChat: v })}
+				label={m.settings_spawn_dock_fold_label()}
+			/>
+		</SettingRow>
 	</SettingGroup>
 
 	{#if hasFeature('machine_spawn')}

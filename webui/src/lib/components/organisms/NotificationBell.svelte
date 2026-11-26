@@ -19,10 +19,12 @@
 	let {
 		store = notifications,
 		open = $bindable(false),
+		bell = true,
 		redispatch = failedDispatchEndpoints.redispatch
 	}: {
 		store?: NotificationStore;
 		open?: boolean;
+		bell?: boolean;
 		redispatch?: (record: string) => Promise<unknown>;
 	} = $props();
 
@@ -98,6 +100,7 @@
 	loading={store.loading}
 	hasMore={store.hasMore}
 	bind:open
+	{bell}
 	title={m.notif_center_title()}
 	markAllLabel={m.notif_center_mark_all()}
 	closeLabel={m.notif_center_close()}

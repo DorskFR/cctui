@@ -61,6 +61,7 @@
 	icon="◫"
 	title={m.settings_server_storage_title()}
 	description={m.settings_server_storage_desc()}
+	admin
 >
 	{#if overview.isPending}
 		<EmptyState size="compact" loading title={m.common_loading()} />

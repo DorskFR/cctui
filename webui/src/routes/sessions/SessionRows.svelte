@@ -157,9 +157,10 @@
 	.parent-row {
 		position: relative;
 	}
-	/* One shaded list; rows draw their own bottom hairline and the last one is
+	/* One bordered list; rows draw their own bottom hairline and the last one is
 	   clipped under the frame. */
 	.sl {
+		border: 1px solid var(--border);
 		border-radius: var(--r-md);
 		overflow: hidden;
 		background: var(--bg-elevated);

@@ -106,7 +106,7 @@
 		{/if}
 	</SettingRow>
 	{#if isAdmin}
-		<SettingRow label={m.settings_uploads_apply_label()} help={m.settings_uploads_apply_help()} selfLabelled>
+		<SettingRow label={m.settings_uploads_apply_label()} help={m.settings_uploads_apply_help()} server admin selfLabelled>
 			<div class="actions">
 				{#if info}
 					<Badge size="sm">{sourceLabel(info.source)}</Badge>

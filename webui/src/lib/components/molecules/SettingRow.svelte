@@ -47,8 +47,12 @@
 {#snippet lblLine()}
 	<span class="lbl-line">
 		{label}
-		{#if server}<Badge tone="info" size="sm" uppercase border>{m.settings_scope_server()}</Badge>{/if}
-		{#if admin}<Badge tone="warn" size="sm" uppercase border>{m.settings_scope_admin()}</Badge>{/if}
+		{#if server || admin}
+			<span class="pills">
+				{#if server}<Badge tone="info" size="sm" uppercase border>{m.settings_scope_server()}</Badge>{/if}
+				{#if admin}<Badge tone="warn" size="sm" uppercase border>{m.settings_scope_admin()}</Badge>{/if}
+			</span>
+		{/if}
 	</span>
 {/snippet}
 
@@ -104,6 +108,10 @@
 		align-items: center;
 		gap: var(--sp-2);
 		flex-wrap: wrap;
+	}
+	.pills {
+		display: inline-flex;
+		gap: var(--sp-2);
 	}
 	.ctl {
 		display: flex;

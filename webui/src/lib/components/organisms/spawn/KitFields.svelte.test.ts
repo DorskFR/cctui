@@ -85,14 +85,22 @@ describe('KitFields account pick follows the harness', () => {
 });
 
 describe('KitFields harness choice', () => {
-	it('is a segmented control whose checked segment follows the draft', () => {
+	it('is a radio group of option cards whose checked card follows the draft', () => {
 		const draft = render({ harness: 'codex' });
-		const group = document.querySelector('[data-tsu="SegmentedControl"]');
+		const group = document.querySelector('[role="radiogroup"]');
 		expect(group?.getAttribute('aria-label')).toBeTruthy();
 		expect(harnessCard('Codex').getAttribute('aria-checked')).toBe('true');
 		harnessCard('Claude Code').click();
 		flushSync();
 		expect(draft.harness).toBe('claude-code');
 		expect(harnessCard('Claude Code').getAttribute('aria-checked')).toBe('true');
+	});
+
+	it('lays every harness on one row of equal tiles', () => {
+		render({ harness: 'codex' });
+		const group = document.querySelector<HTMLElement>('[role="radiogroup"]');
+		const count = group?.querySelectorAll('[role="radio"]').length ?? 0;
+		expect(count).toBeGreaterThan(2);
+		expect(group?.style.gridTemplateColumns).toBe(`repeat(${count}, minmax(0, 1fr))`);
 	});
 });

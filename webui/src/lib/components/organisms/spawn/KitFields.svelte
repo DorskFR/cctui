@@ -6,8 +6,8 @@
 	import type { AccountUsageEntry, OAuthAccount } from '#lib/queries/index.ts';
 	import { useHarnessModels, useHarnesses, useMachineAdapters } from '#lib/queries/index.ts';
 	import { harnessTable } from '#lib/harnesses.svelte.ts';
-	import { pickableHarnesses } from '#lib/harnesses.ts';
-	import { AutoGrid, Field, SegmentedControl, Select, Switch, Text } from '@dorsk/tsumikit';
+	import { familyAccent, pickableHarnesses } from '#lib/harnesses.ts';
+	import { AutoGrid, Field, OptionButton, Select, Switch, Text } from '@dorsk/tsumikit';
 	import type { SelectOption } from '@dorsk/tsumikit';
 	import BrandLogo from '#lib/components/atoms/BrandLogo.svelte';
 	import CodexModelsRefresh from '#lib/components/molecules/CodexModelsRefresh.svelte';
@@ -131,18 +131,31 @@
 
 <div class="kit">
 	<Field label={m.spawn_field_harness()}>
-		<SegmentedControl
-			block
-			label={m.spawn_profile_harness_aria()}
-			options={harnesses.map((h) => ({ value: h.id, label: h.label }))}
-			value={draft.harness}
-			onchange={pickHarness}
-		>
-			{#snippet option(o)}
-				<BrandLogo adapter={o.value} size={18} />
-				<span class="seg-text">{o.label}</span>
-			{/snippet}
-		</SegmentedControl>
+		<div class="harnesses">
+			<AutoGrid
+				template="repeat({harnesses.length}, minmax(0, 1fr))"
+				align="stretch"
+				gap="var(--sp-2)"
+				role="radiogroup"
+				aria-label={m.spawn_profile_harness_aria()}
+			>
+				{#each harnesses as h (h.id)}
+					<OptionButton
+						row
+						selected={draft.harness === h.id}
+						role="radio"
+						aria-checked={draft.harness === h.id}
+						style="--accent: {familyAccent(h.family)}"
+						onclick={() => pickHarness(h.id)}
+					>
+						<span class="tile">
+							<BrandLogo adapter={h.id} size={18} />
+							<Text>{h.label}</Text>
+						</span>
+					</OptionButton>
+				{/each}
+			</AutoGrid>
+		</div>
 	</Field>
 
 	<AutoGrid min="8rem" maxCols={2} gap="var(--sp-2)">
@@ -220,10 +233,21 @@
 		flex: 1;
 		min-width: 0;
 	}
-	.seg-text {
+	.harnesses {
+		container-type: inline-size;
+	}
+	.tile {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		gap: var(--sp-2);
 		min-width: 0;
-		overflow: hidden;
-		white-space: nowrap;
-		text-overflow: ellipsis;
+	}
+	@container (width < 26rem) {
+		.tile {
+			flex-direction: column;
+			gap: var(--sp-1);
+			text-align: center;
+		}
 	}
 </style>

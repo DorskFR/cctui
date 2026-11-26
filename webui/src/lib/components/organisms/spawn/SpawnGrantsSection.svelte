@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { tick } from 'svelte';
 	import { Checkbox } from '@dorsk/tsumikit';
 	import { m } from '#lib/paraglide/messages.js';
 	import SpawnAddons from './SpawnAddons.svelte';
@@ -6,6 +7,21 @@
 	import type { SpawnForm } from './spawnForm.svelte';
 
 	let { sf }: { sf: SpawnForm } = $props();
+
+	let contextOpen = $state(false);
+	const contextAvailable = $derived(sf.target === 'machine' && !!sf.form.machine_id && sf.canUseContext);
+	const contextShown = $derived(
+		contextOpen ||
+			sf.form.context_items.length > 0 ||
+			sf.contextPins.length > 0 ||
+			(sf.profileSpec?.context_items?.length ?? 0) > 0
+	);
+
+	async function openContext() {
+		contextOpen = true;
+		await tick();
+		document.getElementById('sp-context')?.focus();
+	}
 </script>
 
 <SpawnAddons
@@ -18,8 +34,9 @@
 	attachments={sf.target === 'machine' && sf.canAttach}
 	machineId={sf.target === 'machine' ? sf.form.machine_id : undefined}
 	labelActions={sf.actions}
+	oncontext={contextAvailable && !contextShown ? openContext : undefined}
 />
-{#if sf.target === 'machine' && sf.form.machine_id && sf.canUseContext}
+{#if contextAvailable && contextShown}
 	<SpawnContextRow
 		bind:items={sf.form.context_items}
 		bind:pins={sf.contextPins}

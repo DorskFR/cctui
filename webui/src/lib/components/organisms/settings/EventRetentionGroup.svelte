@@ -49,10 +49,12 @@
 	<SettingRow
 		label={m.settings_event_retention_label()}
 		help={m.settings_event_retention_help({ days: info?.default_days ?? 90 })}
+		server
+		admin
 		journey="setting"
 		journeyKey="event-retention"
 	>
-		<span class="ctl">
+		<div class="ctl">
 			<Input
 				type="number"
 				min="0"
@@ -63,21 +65,23 @@
 				data-testid="event-retention-days"
 			/>
 			{#if info}
-				<Badge size="sm">{sourceLabel(info.source)}</Badge>
+				<div class="acts" data-testid="event-retention-actions">
+					<Badge size="sm">{sourceLabel(info.source)}</Badge>
+					{#if shortens}
+						<Button size="sm" variant="danger" onclick={() => request(Math.trunc(days), false)}>
+							{m.settings_event_retention_shorten({ days: Math.trunc(days) })}
+						</Button>
+					{:else if info.source === 'settings'}
+						<Button
+							size="sm"
+							variant="ghost"
+							disabled={serverSave.status === 'pending'}
+							onclick={() => info && request(info.default_days, true)}>{m.settings_reset()}</Button
+						>
+					{/if}
+				</div>
 			{/if}
-			{#if shortens}
-				<Button variant="danger" onclick={() => request(Math.trunc(days), false)}>
-					{m.settings_event_retention_shorten({ days: Math.trunc(days) })}
-				</Button>
-			{/if}
-			{#if info?.source === 'settings'}
-				<Button
-					variant="ghost"
-					disabled={serverSave.status === 'pending'}
-					onclick={() => info && request(info.default_days, true)}>{m.settings_reset()}</Button
-				>
-			{/if}
-		</span>
+		</div>
 	</SettingRow>
 </SettingGroup>
 
@@ -97,9 +101,14 @@
 <style>
 	.ctl {
 		display: flex;
+		flex-direction: column;
+		gap: var(--sp-2);
+		width: 100%;
+	}
+	.acts {
+		display: flex;
 		align-items: center;
 		justify-content: flex-end;
 		gap: var(--sp-2);
-		flex-wrap: wrap;
 	}
 </style>

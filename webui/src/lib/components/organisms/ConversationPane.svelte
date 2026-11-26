@@ -131,7 +131,6 @@
 			<DrawerHeader
 				{session}
 				{archived}
-				working={stream.working}
 				isCodexSession={p.isCodexSession}
 				livenessClass={livenessClass(session)}
 				{showStatusBadge}

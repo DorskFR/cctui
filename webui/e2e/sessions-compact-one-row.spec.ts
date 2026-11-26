@@ -74,3 +74,55 @@ for (const width of [472, 400, 320]) {
 		expect(errors).toEqual([]);
 	});
 }
+
+function labelled(i: number) {
+	return {
+		...loaded(i),
+		machine_name: 'dev1',
+		account_name: 'pumpkin',
+		labels: [
+			{ id: 'l1', name: 'cctui', color: '#a855f7' },
+			{ id: 'l2', name: 'design-wave', color: '#22c55e' }
+		]
+	};
+}
+const parent = labelled(1);
+const withSubagents = [
+	parent,
+	...Array.from({ length: 22 }, (_, k) => ({ ...session(100 + k), parent_id: parent.id, name: `agent ${k}` }))
+];
+
+for (const width of [1148, 900, 700, 560, 372]) {
+	test(`a compact row keeps its label chips whole beside the next item at ${width}px`, async ({ page }) => {
+		const errors = watch(page);
+		await stubApi(page, withSubagents, { settings: { sessionList: { density: 'compact' } } });
+		await page.setViewportSize({ width: 1600, height: 900 });
+		await page.goto('/sessions?view=list');
+		await page.locator('[data-journey="session"] .l1 .labels').first().waitFor();
+
+		const row = await page.evaluate((w) => {
+			for (const wrap of document.querySelectorAll<HTMLElement>('.sc-wrap.compact')) wrap.style.width = `${w}px`;
+			const card = document.querySelector<HTMLElement>('[data-journey="session"]:has(.l1 .labels)')!;
+			const box = (el: Element) => el.getBoundingClientRect();
+			const shown = (b: DOMRect) => b.width > 0 && b.height > 0;
+			const labels = card.querySelector<HTMLElement>('.l1 > .labels')!;
+			const chips = [...labels.querySelectorAll('.name, .dots')].map(box).filter(shown);
+			const next = [...card.querySelectorAll('.l2 .who > *, .l2 > :not(.who), .m1 > *')].map(box).filter(shown);
+			const lb = box(labels);
+			const meets = (a: DOMRect, b: DOMRect) =>
+				a.left < b.right - 0.5 && b.left < a.right - 0.5 && a.top < b.bottom && b.top < a.bottom;
+			return {
+				chips: chips.length,
+				clipped: labels.scrollWidth > labels.clientWidth + 1 || chips.some((c) => c.right > lb.right + 0.5),
+				overlaps: next.filter((b) => meets(lb, b)).length,
+				title: Math.round(box(card.querySelector('.title')!).width)
+			};
+		}, width);
+
+		expect(row.chips).toBeGreaterThan(0);
+		expect(row.clipped).toBe(false);
+		expect(row.overlaps).toBe(0);
+		expect(row.title).toBeGreaterThanOrEqual(width >= 1100 ? 200 : 60);
+		expect(errors).toEqual([]);
+	});
+}

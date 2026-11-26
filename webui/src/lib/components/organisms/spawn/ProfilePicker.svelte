@@ -23,9 +23,7 @@
 		badgeOf,
 		onselect,
 		onedit,
-		onnew,
-		manageHref,
-		onmanage
+		onnew
 	}: {
 		/** Already in display order. */
 		profiles: SessionProfile[];
@@ -39,13 +37,9 @@
 		chainOf: (spec: ProfileSpecForm) => string;
 		badgeOf: (spec: ProfileSpecForm) => BadgeLook;
 		onselect: (id: string) => void;
-		onedit?: () => void;
-		onnew?: () => void;
-		/** Picker only: the footer links to where profiles are edited instead of creating one here. */
-		manageHref?: string;
-		onmanage?: () => void;
+		onedit: () => void;
+		onnew: () => void;
 	} = $props();
-	const editable = $derived(!manageHref);
 
 	const uid = Math.random().toString(36).slice(2, 8);
 	const listId = `pp-list-${uid}`;
@@ -142,13 +136,14 @@
 	}
 
 	// The kit places the panel against the viewport; keep it inside the form's
-	// scroll area so it never spills over the dialog or dock footer.
+	// scroll area so it never spills over the dialog or dock footer, and below
+	// the label of the field above so an upward sheet never cuts through it.
 	function fitToScrollArea() {
 		const card = cardEl;
 		if (!card || open) return;
 		const area = scrollArea(card);
 		const box = card.getBoundingClientRect();
-		const top = area ? area.getBoundingClientRect().top : 0;
+		const top = Math.max(area ? area.getBoundingClientRect().top : 0, labelBottomAbove(card, area ?? document.body, box.top));
 		const bottom = area ? area.getBoundingClientRect().bottom : innerHeight;
 		const below = bottom - box.bottom - 8;
 		const above = box.top - top - 8;
@@ -193,6 +188,16 @@
 				typeahead(action.char);
 				break;
 		}
+	}
+
+	function labelBottomAbove(card: HTMLElement, root: ParentNode, limit: number): number {
+		let bottom = -Infinity;
+		for (const label of root.querySelectorAll('label')) {
+			if (card.contains(label)) continue;
+			const b = label.getBoundingClientRect().bottom;
+			if (b <= limit && b > bottom) bottom = b;
+		}
+		return bottom;
 	}
 
 	function scrollArea(el: HTMLElement): HTMLElement | null {
@@ -246,7 +251,7 @@
 				{:else}
 					<span class="placeholder">{m.spawn_profiles_aria()}</span>
 				{/if}
-				<span class="chevron" class:open class:tooled={editable && !!current} aria-hidden="true"><Icon name="chevron-down" /></span>
+				<span class="chevron" class:open aria-hidden="true"><Icon name="chevron-down" /></span>
 			</span>
 		{/snippet}
 		<div class="sheet" class:top={side === 'top'}>
@@ -270,33 +275,20 @@
 				{/each}
 			</div>
 			<div class="footer">
-				{#if manageHref}
-					<Button
-						data-journey="manage-profiles"
-						variant="link"
-						size="sm"
-						href={manageHref}
-						onclick={() => {
-							open = false;
-							onmanage?.();
-						}}>{m.spawn_profile_manage()}</Button
-					>
-				{:else}
-					<Button
-						data-journey="new-profile"
-						variant="link"
-						size="sm"
-						disabled={busy}
-						onclick={() => {
-							open = false;
-							onnew?.();
-						}}>{m.spawn_profile_new()}</Button
-					>
-				{/if}
+				<Button
+					data-journey="new-profile"
+					variant="link"
+					size="sm"
+					disabled={busy}
+					onclick={() => {
+						open = false;
+						onnew();
+					}}>{m.spawn_profile_new()}</Button
+				>
 			</div>
 		</div>
 	</Popover>
-	{#if current && editable}
+	{#if current}
 		<span class="tools">
 			<span class="cog">
 				<IconButton
@@ -309,7 +301,7 @@
 					onclick={onedit}
 				/>
 			</span>
-			<span class="divider" aria-hidden="true"></span>
+			<span class="split" aria-hidden="true"></span>
 		</span>
 	{/if}
 </div>
@@ -357,11 +349,9 @@
 		display: inline-flex;
 		flex: none;
 		color: color-mix(in srgb, var(--accent) 70%, var(--text-muted));
+		margin-inline-start: var(--tools-w);
 		font-size: var(--control-icon-md);
 		transition: rotate var(--dur-fast) var(--ease-out);
-	}
-	.chevron.tooled {
-		margin-inline-start: var(--tools-w);
 	}
 	.chevron.open {
 		rotate: 180deg;
@@ -382,7 +372,7 @@
 		display: inline-flex;
 		pointer-events: auto;
 	}
-	.divider {
+	.split {
 		align-self: stretch;
 		width: 1px;
 		margin-block: var(--sp-2);

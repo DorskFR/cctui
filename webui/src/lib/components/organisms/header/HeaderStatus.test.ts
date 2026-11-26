@@ -40,6 +40,7 @@ vi.mock('#lib/queries/index.ts', () => ({
 vi.mock('#lib/settings.svelte.ts', () => ({ settings: { monitoredMachines: ['m1'] } }));
 
 import HeaderStatus from './HeaderStatus.svelte';
+import source from './HeaderStatus.svelte?raw';
 
 let comp: ReturnType<typeof mount> | null = null;
 afterEach(() => {
@@ -70,5 +71,22 @@ describe('the mobile status button', () => {
 		expect(panel.textContent).toContain('box');
 		expect(panel.textContent).toContain('95%');
 		expect(panel.querySelector('a[href="/accounts"]')).not.toBeNull();
+	});
+
+	it('gives machine names the panel width before truncating them', async () => {
+		comp = mount(HeaderStatus, { target: document.body });
+		flushSync();
+		const panel = document.querySelector('[popover]') as HTMLElement;
+		panel.dispatchEvent(Object.assign(new Event('toggle'), { newState: 'open' }));
+		flushSync();
+		await Promise.resolve();
+		flushSync();
+		expect(panel.style.maxWidth).toContain('30rem');
+		const row = panel.querySelector('.machines li') as HTMLElement;
+		expect(row.querySelector('.name')?.textContent).toBe('box');
+		expect(row.querySelector('.stats')?.textContent).toContain('95%');
+		const css = source.slice(source.indexOf('<style>'));
+		expect(css).toMatch(/\.panel \{[^}]*width: max-content;/);
+		expect(css).toMatch(/\.machines li \{[^}]*flex-wrap: wrap;/);
 	});
 });

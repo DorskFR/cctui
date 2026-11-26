@@ -223,6 +223,51 @@ describe("SpawnModal schedule split-button", () => {
     expect(scheduleDraftLaunch).not.toHaveBeenCalled();
   });
 
+  it("ends the menu with an auto-archive toggle that launches with it", async () => {
+    await open();
+    await typeInto(field("sp-prompt"), "do the thing");
+    await openMenu();
+    const toggle = document.querySelector<HTMLElement>(
+      '[role="menuitemcheckbox"][data-journey="auto-archive"]',
+    );
+    expect(toggle).not.toBeNull();
+    expect(toggle?.parentElement?.lastElementChild).toBe(toggle);
+    expect(toggle?.parentElement?.querySelector('[role="menuitem"]')).not.toBeNull();
+    expect(toggle?.textContent).toContain("Auto-archive when done");
+    expect(toggle?.title).toContain("Archives the session once it finishes cleanly");
+    expect(toggle?.getAttribute("aria-checked")).toBe("false");
+    expect(document.querySelector('[data-journey="auto-archive-on"]')).toBeNull();
+
+    toggle?.click();
+    await tick();
+    flushSync();
+    const on = document.querySelector<HTMLElement>('[role="menuitemcheckbox"][data-journey="auto-archive"]');
+    expect(on?.getAttribute("aria-checked")).toBe("true");
+    expect(document.querySelector('[data-journey="auto-archive-on"]')).not.toBeNull();
+
+    document
+      .querySelector<HTMLButtonElement>('[data-journey="submit"] .split-main button')
+      ?.click();
+    await tick(120);
+    expect(spawn).toHaveBeenCalledTimes(1);
+    expect(spawn.mock.calls[0][0]).toMatchObject({ auto_archive: true });
+  });
+
+  it("toggles auto-archive back off from the menu", async () => {
+    await open();
+    await typeInto(field("sp-prompt"), "do the thing");
+    await openMenu();
+    const toggle = () =>
+      document.querySelector<HTMLElement>('[role="menuitemcheckbox"][data-journey="auto-archive"]');
+    toggle()?.click();
+    await tick();
+    toggle()?.click();
+    await tick();
+    flushSync();
+    expect(toggle()?.getAttribute("aria-checked")).toBe("false");
+    expect(document.querySelector('[data-journey="auto-archive-on"]')).toBeNull();
+  });
+
   it("falls back to a plain titled Spawn button with no machines", async () => {
     machineList = [];
     await open({ seedSlot: false });

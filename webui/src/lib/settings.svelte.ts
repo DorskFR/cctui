@@ -136,6 +136,10 @@ export interface SpawnDockSettings {
   side: SpawnDockSide;
   /** Width in px once the user has dragged the panel's grip; unset = default. */
   width?: number;
+  /** Minify to the rail while a conversation is open. */
+  foldOnChat?: boolean;
+  /** Shown as the narrow rail instead of the form. */
+  minified?: boolean;
 }
 
 // Docked stats panel: the per-account usage gauges, the rolling token windows
@@ -648,7 +652,7 @@ const DEFAULTS: SettingsState = {
     notifyEnabled: false,
     nav: DEFAULT_NAV_POSITION,
   },
-  spawnDock: { enabled: false, side: DEFAULT_SPAWN_DOCK_SIDE },
+  spawnDock: { enabled: false, side: DEFAULT_SPAWN_DOCK_SIDE, foldOnChat: true, minified: false },
   statsDock: { enabled: false, side: DEFAULT_SPAWN_DOCK_SIDE },
   conversationDock: { enabled: false, side: DEFAULT_SPAWN_DOCK_SIDE },
   resourceMonitor: { machines: [] },
@@ -730,6 +734,8 @@ export function mergeDefaults(
       enabled: p.spawnDock?.enabled === true,
       side: clampSpawnDockSide(p.spawnDock?.side),
       width: clampDockWidth(p.spawnDock?.width),
+      foldOnChat: p.spawnDock?.foldOnChat !== false,
+      minified: p.spawnDock?.minified === true,
     },
     statsDock: {
       enabled: p.statsDock?.enabled === true,
@@ -1065,6 +1071,8 @@ class Settings {
       enabled: this.state.spawnDock.enabled === true,
       side: clampSpawnDockSide(this.state.spawnDock.side),
       width: clampDockWidth(this.state.spawnDock.width),
+      foldOnChat: this.state.spawnDock.foldOnChat !== false,
+      minified: this.state.spawnDock.minified === true,
     };
   }
 

@@ -60,7 +60,7 @@
 />
 {#snippet headerLead()}
 	{#if machine}
-		<MachineBadge name={machine} id={machine} {hue} />
+		<MachineBadge name={machine} id={machine} {hue} mono />
 		{#if liveness}
 			<span class="liveness" class:online={liveness === 'online'}>
 				<Dot status={liveness === 'online' ? 'active' : liveness === 'stale' ? 'stale' : 'dead'} />

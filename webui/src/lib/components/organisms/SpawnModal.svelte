@@ -23,6 +23,8 @@
 		docked = null,
 		stacked = false,
 		dockWidth = SPAWN_DOCK_WIDTH,
+		dockMinified = false,
+		dockOffset = null,
 		autosaveDelay = 2000
 	}: {
 		// Modal: close the dialog. Docked: the form is done with (spawned, saved
@@ -37,6 +39,10 @@
 		stacked?: boolean;
 		// Docked: the width the layout reserved on that edge (resolveDocks).
 		dockWidth?: string;
+		// Docked: show the rail; the form stays mounted under it.
+		dockMinified?: boolean;
+		// Docked: distance of the rail from its edge (resolveDocks).
+		dockOffset?: string | null;
 		// "New session from same script" / "Edit draft": seed the form from a
 		// session's config or a draft row. Non-empty prefill values win over the
 		// target's local slot; empty ones never clear what the slot holds.
@@ -72,7 +78,15 @@
 <!-- The form body and the action row are snippets so the Modal and the docked
      panel render the very same markup; only the chrome around them differs. -->
 {#if docked}
-	<SpawnDock side={docked} {stacked} width={dockWidth} {body} {footer} />
+	<SpawnDock
+		side={docked}
+		{stacked}
+		width={dockWidth}
+		minified={dockMinified}
+		offset={dockOffset}
+		{body}
+		{footer}
+	/>
 {:else}
 	<Modal
 		title={m.spawn_modal_title()}

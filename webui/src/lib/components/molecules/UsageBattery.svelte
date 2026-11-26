@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { Popover, Text } from '@dorsk/tsumikit';
+	import { Popover, Progress, Text } from '@dorsk/tsumikit';
 	import { useQueryClient } from '@tanstack/svelte-query';
 	import { ws } from '#lib/ws.svelte.ts';
 	import { usageKeys } from '#lib/queries/index.ts';
@@ -35,7 +35,7 @@
 	>
 		{#snippet trigger()}
 			<span class="gauge" data-tone={w.tone}>
-				<span class="track"><span class="fill" style={`width: ${w.pct}%`}></span></span>
+				<span class="meter" aria-hidden="true"><Progress value={w.pct} tone={w.tone} size="sm" /></span>
 				<Text size="xs" numeric nowrap tone="inherit">{readingText(w)}</Text>
 			</span>
 		{/snippet}
@@ -67,30 +67,14 @@
 			min-width: 44px;
 		}
 	}
-	.track {
+	.meter {
 		display: block;
-		width: 24px;
-		height: 4px;
-		border-radius: 2px;
-		background: var(--border);
-		overflow: hidden;
-	}
-	.fill {
-		display: block;
-		height: 100%;
-		border-radius: 2px;
-		background: var(--text-faint);
+		width: 36px;
 	}
 	.gauge[data-tone='warn'] {
 		color: var(--warn);
 	}
-	.gauge[data-tone='warn'] .fill {
-		background: var(--warn);
-	}
 	.gauge[data-tone='danger'] {
 		color: var(--danger);
-	}
-	.gauge[data-tone='danger'] .fill {
-		background: var(--danger);
 	}
 </style>

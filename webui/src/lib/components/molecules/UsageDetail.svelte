@@ -1,12 +1,11 @@
 <script lang="ts">
-	import { Link, Text } from '@dorsk/tsumikit';
+	import { Link, Progress, Text } from '@dorsk/tsumikit';
 	import AdapterIcon from '#lib/components/atoms/AdapterIcon.svelte';
 	import { now as clockNow } from '#lib/clock.svelte.ts';
-	import { providerLabel } from '#lib/providers.ts';
 	import { m } from '#lib/paraglide/messages.js';
 	import { countdown } from './usage-battery.logic.ts';
 	import type { GaugeReading } from './usage-gauge.logic.ts';
-	import { readingText, type GaugeRow } from './usageGauge.svelte.ts';
+	import { windowShort, type GaugeRow } from './usageGauge.svelte.ts';
 
 	let { rows, onnavigate }: { rows: GaugeRow[]; onnavigate?: () => void } = $props();
 
@@ -24,13 +23,16 @@
 				<span class="who">
 					<AdapterIcon provider={row.entry.provider} size={14} />
 					<Text size="sm" truncate>{row.entry.accountName}</Text>
-					<Text size="xs" tone="faint">{providerLabel(row.entry.provider)}</Text>
 				</span>
 				<span class="vals">
 					{#each row.readings as r (r.window)}
-						<Text size="sm" numeric tone={r.tone === 'ok' ? 'default' : r.tone} title={resetTitle(r)}
-							>{readingText(r)}</Text
-						>
+						<span class="reading" title={resetTitle(r)}>
+							<Text size="xs" tone="muted">{windowShort(r.window)}</Text>
+							<span class="meter" aria-hidden="true"><Progress value={r.pct} tone={r.tone} size="sm" /></span>
+							<span class="pct"
+								><Text size="sm" numeric tone={r.tone === 'ok' ? 'default' : r.tone}>{r.pct}%</Text></span
+							>
+						</span>
 					{/each}
 				</span>
 			</li>
@@ -69,7 +71,20 @@
 	}
 	.vals {
 		display: inline-flex;
-		gap: var(--sp-3);
+		gap: var(--sp-4);
 		flex: none;
+	}
+	.reading {
+		display: inline-flex;
+		align-items: center;
+		gap: var(--sp-2);
+	}
+	.meter {
+		display: block;
+		width: 32px;
+	}
+	.pct {
+		min-width: 3.5ch;
+		text-align: right;
 	}
 </style>

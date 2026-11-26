@@ -12,6 +12,8 @@ export type DockSide = SpawnDockSide;
 export const SPAWN_DOCK_WIDTH = '30rem';
 export const STATS_DOCK_WIDTH = '24rem';
 export const CONVERSATION_DOCK_WIDTH = '40rem';
+/** Width of the minified spawn panel: a rail holding the expand and new-session buttons. */
+export const SPAWN_DOCK_RAIL_WIDTH = '2.75rem';
 
 // Bounds for a dragged width. The floor keeps the form usable; the ceiling is
 // a sanity clamp on a stored value (the drag itself also stops at a share of
@@ -47,9 +49,17 @@ export interface DockLayout {
 	spawn: DockSide | null;
 	/** Edge the stats panel is pinned to, or `null` when hidden. */
 	stats: DockSide | null;
+	/** The spawn panel shows as its narrow rail. */
+	spawnMinified: boolean;
 	/** Both panels share an edge: the spawn form takes the top half of that
-	 *  column and the stats panel the bottom half, at the spawn panel's width. */
+	 *  column and the stats panel the bottom half, at the spawn panel's width.
+	 *  A minified spawn rail never stacks: it sits inward of the stats panel. */
 	stacked: boolean;
+	/** Width each panel renders at (`null` when it is not docked). */
+	spawnWidth: string | null;
+	statsWidth: string | null;
+	/** Distance of the spawn rail from its edge when the stats panel shares it. */
+	spawnOffset: string | null;
 	/** Width the content must keep clear on each edge (`null` = nothing docked). */
 	left: string | null;
 	right: string | null;
@@ -59,6 +69,8 @@ export interface DockRequest {
 	enabled: boolean;
 	side: DockSide;
 	width?: number;
+	/** Spawn panel only: show the rail instead of the form. */
+	minified?: boolean;
 }
 
 export interface DockInputs {
@@ -84,7 +96,8 @@ export interface DockInputs {
  *  A docked conversation owns its edge outright: a spawn form or stats panel
  *  asked for the same edge moves to the opposite one, where the two stack as
  *  usual. The conversation is the one you came for, so below `veryWide` it is
- *  the other panels that yield and the "+ New" button comes back. */
+ *  the other panels that yield and the "+ New" button comes back. A minified
+ *  spawn rail is narrow enough to stay, and leaves room for the stats panel. */
 export function resolveDocks({
 	spawn,
 	stats,
@@ -97,7 +110,11 @@ export function resolveDocks({
 		conversation: null,
 		spawn: null,
 		stats: null,
+		spawnMinified: false,
 		stacked: false,
+		spawnWidth: null,
+		statsWidth: null,
+		spawnOffset: null,
 		left: null,
 		right: null
 	};
@@ -105,30 +122,47 @@ export function resolveDocks({
 	const convSide = conversation?.enabled ? conversation.side : null;
 	const awayFromConv = (side: DockSide): DockSide =>
 		side === convSide ? (side === 'left' ? 'right' : 'left') : side;
+	const rail = spawn.enabled && spawn.minified === true;
 	let spawnSide = spawn.enabled ? awayFromConv(spawn.side) : null;
 	let statsSide = stats.enabled ? awayFromConv(stats.side) : null;
 	if (convSide && !veryWide) {
-		spawnSide = null;
+		if (!rail) spawnSide = null;
 		statsSide = null;
 	}
-	if (spawnSide && statsSide && spawnSide !== statsSide && !veryWide) statsSide = null;
-	const stacked = spawnSide !== null && spawnSide === statsSide;
+	if (spawnSide && statsSide && spawnSide !== statsSide && !veryWide && !rail) statsSide = null;
+	const shared = spawnSide !== null && spawnSide === statsSide;
+	const stacked = shared && !rail;
 	const px = (w: number | undefined, fallback: string) => {
 		const c = clampDockWidth(w);
 		return c === undefined ? fallback : `${c}px`;
 	};
 	// A stacked column is sized by the spawn panel (the one you type into).
+	const spawnWidth = spawnSide
+		? rail
+			? SPAWN_DOCK_RAIL_WIDTH
+			: px(spawn.width, SPAWN_DOCK_WIDTH)
+		: null;
+	const statsWidth = statsSide
+		? stacked
+			? spawnWidth
+			: px(stats.width, STATS_DOCK_WIDTH)
+		: null;
 	const widthOn = (side: DockSide): string | null => {
 		if (convSide === side) return px(conversation?.width, CONVERSATION_DOCK_WIDTH);
-		if (spawnSide === side) return px(spawn.width, SPAWN_DOCK_WIDTH);
-		if (statsSide === side) return px(stats.width, STATS_DOCK_WIDTH);
+		if (shared && rail && spawnSide === side) return `calc(${statsWidth} + ${SPAWN_DOCK_RAIL_WIDTH})`;
+		if (spawnSide === side) return spawnWidth;
+		if (statsSide === side) return statsWidth;
 		return null;
 	};
 	return {
 		conversation: convSide,
 		spawn: spawnSide,
 		stats: statsSide,
+		spawnMinified: spawnSide !== null && rail,
 		stacked,
+		spawnWidth,
+		statsWidth,
+		spawnOffset: shared && rail ? statsWidth : null,
 		left: widthOn('left'),
 		right: widthOn('right')
 	};

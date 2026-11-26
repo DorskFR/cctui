@@ -1,16 +1,9 @@
 <script lang="ts">
 	import { updated } from '$app/state';
 	import { ws } from '#lib/ws.svelte.ts';
-	import { useVersion } from '#lib/queries/index.ts';
-	import { versionLine } from '#lib/releaseChannel.ts';
 	import { Text } from '@dorsk/tsumikit';
 	import NavLink from '#lib/components/atoms/NavLink.svelte';
 	import { m } from '#lib/paraglide/messages.js';
-	import { needsReload } from './version-chip.logic.ts';
-
-	const version = useVersion();
-	const srv = $derived(version.data?.version);
-	const reload = $derived(needsReload(__CLIENT_VERSION__, srv, updated.current));
 </script>
 
 <div class="lead">
@@ -26,11 +19,11 @@
 		class:mid={ws.status === 'connecting'}
 		title={m.nav_ws_status({ status: ws.status })}
 	></span>
-	{#if reload}
+	{#if updated.current}
 		<button
 			type="button"
 			class="reload"
-			title={`${versionLine(__CLIENT_VERSION__, srv)} · ${m.reload_new_ui_title()}`}
+			title={m.reload_new_ui_title()}
 			onclick={() => location.reload()}
 		>
 			<Text size="xs" tone="accent" weight="semibold" nowrap>{m.version_chip_reload()}</Text>

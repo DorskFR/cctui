@@ -20,15 +20,3 @@ export function recentSessions(list: SessionListItem[], n: number): SessionListI
 		.slice().sort((a, b) => lastSeen(b) - lastSeen(a))
 		.slice(0, n);
 }
-
-export function matchSessions(
-	list: SessionListItem[],
-	query: string,
-	nameOf: (s: SessionListItem) => string
-): SessionListItem[] {
-	const q = query.trim().toLowerCase();
-	if (!q) return [];
-	return list.filter((s) =>
-		[nameOf(s), s.working_dir, s.id].some((v) => v.toLowerCase().includes(q))
-	);
-}

@@ -19,7 +19,8 @@
 		envInvalid,
 		attachments,
 		machineId,
-		labelActions
+		labelActions,
+		oncontext
 	}: {
 		labelIds: string[];
 		envRows: EnvRow[];
@@ -35,6 +36,8 @@
 			updateLabel: (id: string, patch: { name?: string; color?: string }) => Promise<Label>;
 			deleteLabel: (id: string) => Promise<void>;
 		};
+		/** Reveals the context picker; omitted when it is shown or unavailable. */
+		oncontext?: () => void;
 	} = $props();
 
 	const selectedLabels = $derived(allLabels.filter((l) => labelIds.includes(l.id)));
@@ -98,6 +101,11 @@
 			/>
 		{/if}
 		<Button variant="ghost" size="sm" onclick={addEnvRow}><Icon name="plus" />{m.spawn_add_env_vars()}</Button>
+		{#if oncontext}
+			<Button variant="ghost" size="sm" data-journey="add-context" onclick={oncontext}
+				><Icon name="plus" />{m.spawn_add_context()}</Button
+			>
+		{/if}
 	</div>
 
 	{#if labelable && selectedLabels.length}
@@ -124,12 +132,18 @@
 		display: flex;
 		flex-direction: column;
 		gap: var(--sp-2);
+		container: spawn-addons / inline-size;
 	}
 	.addon-row {
 		display: flex;
 		flex-wrap: wrap;
 		align-items: center;
 		gap: var(--sp-1);
+	}
+	@container spawn-addons (max-width: 24rem) {
+		.addon-row {
+			--btn-px-sm: var(--sp-2);
+		}
 	}
 	.addon-labels {
 		display: flex;

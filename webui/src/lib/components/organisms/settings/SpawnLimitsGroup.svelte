@@ -59,7 +59,7 @@
 
 <div id="spawn-limits">
 	<SettingGroup title={m.settings_spawn_limits_label()}>
-		<SettingRow label={m.settings_spawn_limits_label()} help={m.settings_spawn_limits_help()} wide selfLabelled>
+		<SettingRow label={m.settings_spawn_limits_label()} help={m.settings_spawn_limits_help()} server admin wide selfLabelled>
 			<div class="fields">
 				{#each FIELDS as f (f.key)}
 					<div class="field">

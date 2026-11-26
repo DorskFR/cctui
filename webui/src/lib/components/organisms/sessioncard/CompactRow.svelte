@@ -12,17 +12,16 @@
 	import SessionDot from '#lib/components/molecules/SessionDot.svelte';
 	import { tokenUsageLayout } from '#lib/components/molecules/TokenUsage.logic.ts';
 	import { m } from '#lib/paraglide/messages.js';
-	import { hashHue, machineInitial, modelShort, statusBadgeTone } from '#lib/format.ts';
+	import { compact, hashHue, machineInitial, modelShort, statusBadgeTone } from '#lib/format.ts';
 	import { settings } from '#lib/settings.svelte.ts';
 	import { accountTrafficWarning } from '../../../../routes/sessions/sessions.logic';
 	import Badges from './Badges.svelte';
 	import DraftActions from './DraftActions.svelte';
 	import Gutter from './Gutter.svelte';
-	import TokenTotal from './TokenTotal.svelte';
 	import { projectOf, statusLabel, type SessionActions, type SessionView } from './view';
 
 	// Comfortable: a 2-line grid. gutter (star) · line 1 identity · line 1 attention,
-	// then line 2 context + preview · line 2 run (model · tokens · provider).
+	// then line 2 context + preview · line 2 run (model · Σ · provider).
 	// Compact density and subagent children collapse to one line.
 	let { view, actions }: { view: SessionView; actions: SessionActions } = $props();
 	const s = $derived(view.s);
@@ -38,7 +37,9 @@
 	let labelsOpen = $state(false);
 	let hovered = $state(false);
 	const showAddLabel = $derived(!fineHover.current || hovered || labelsOpen);
-	const usage = $derived(tokenUsageLayout(s.token_usage, { sum: view.rollup ? view.rollup.tokens : null }));
+	const usage = $derived(
+		tokenUsageLayout(s.token_usage, { sum: view.rollup ? view.rollup.tokens : null, cold: s.cache_cold })
+	);
 
 	function pin(e: Event) {
 		e.stopPropagation();
@@ -48,10 +49,13 @@
 
 {#snippet tokens()}
 	{#if !view.draft && usage.total > 0}
-		<span class="tokens"
-			><TokenTotal usage={s.token_usage} sum={view.rollup ? view.rollup.tokens : null} cold={s.cache_cold} /><span class="prov"
-				><AdapterIcon adapter={s.adapter_id} size={14} /></span
-			></span
+		<span class="tokens" title="Σ {usage.total.toLocaleString()}"
+			>{compact(usage.total)}{#if usage.showCold}<span
+					class="cold"
+					role="img"
+					aria-label={m.sessions_token_cold_hint()}
+					title={m.sessions_token_cold_hint()}>❄️</span
+				>{/if}<span class="prov"><AdapterIcon adapter={s.adapter_id} size={14} /></span></span
 		>
 	{/if}
 {/snippet}
@@ -232,9 +236,6 @@
 		text-overflow: ellipsis;
 		min-width: 0;
 	}
-	.idle .title {
-		color: var(--text-muted);
-	}
 	.sub {
 		appearance: none;
 		background: none;
@@ -268,9 +269,7 @@
 	}
 	.labels {
 		display: inline-flex;
-		flex: 0 100 auto;
-		min-width: 0;
-		overflow: hidden;
+		flex: none;
 	}
 	.star {
 		display: inline-flex;
@@ -347,7 +346,12 @@
 		display: inline-flex;
 		align-items: center;
 		gap: 5px;
+		font-family: var(--font-mono);
 		color: var(--warn);
+	}
+	.cold {
+		font-size: 0.85em;
+		cursor: help;
 	}
 	.idle .tokens {
 		color: var(--text-faint);
@@ -372,11 +376,23 @@
 		flex: 0 1 auto;
 		max-width: 46%;
 	}
+	/* Grid, not flex: lets min-content floor the title at 6em so labels never clip. */
+	.one:not(.child) .l1 {
+		display: grid;
+		grid-auto-flow: column;
+		grid-template-columns: auto minmax(6em, max-content);
+		grid-auto-columns: max-content;
+		min-width: min-content;
+	}
 	.one .title {
 		max-width: 300px;
 	}
 	.one .l2 {
 		flex: 1 1 0;
+		min-width: min-content;
+	}
+	.one .preview {
+		width: 0;
 	}
 	.one .cwd,
 	.one .branch {
@@ -453,15 +469,6 @@
 		}
 		.one .title {
 			max-width: none;
-		}
-		.one .l2 {
-			flex: 1 1 0;
-			min-width: min-content;
-		}
-	}
-	@container sess-row (max-width: 40rem) {
-		.labels {
-			flex: none;
 		}
 	}
 	@container sess-row (max-width: 28em) {

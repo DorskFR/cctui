@@ -1,14 +1,15 @@
 <script lang="ts">
 	import { settings } from '#lib/settings.svelte.ts';
+	import { ThemePicker, FontScalePicker } from '@dorsk/tsumikit';
 	import MainNav from '#lib/components/organisms/MainNav.svelte';
 	import UsageBattery from '#lib/components/molecules/UsageBattery.svelte';
 	import ResourceBattery from '#lib/components/molecules/ResourceBattery.svelte';
 	import ProviderStatusDot from '#lib/components/molecules/ProviderStatusDot.svelte';
-	import NotificationBell from '#lib/components/organisms/NotificationBell.svelte';
 	import HeaderBrand from './header/HeaderBrand.svelte';
 	import AccountMenu from './header/AccountMenu.svelte';
 	import HeaderStatus from './header/HeaderStatus.svelte';
 	import { installShellWatchers } from './header/shellWatchers.svelte.ts';
+	import { m } from '#lib/paraglide/messages.js';
 
 	installShellWatchers();
 </script>
@@ -26,7 +27,18 @@
 				><ProviderStatusDot /><span class="wide"><ResourceBattery /><UsageBattery /></span
 				><span class="narrow"><HeaderStatus /></span></span
 			>
-			<NotificationBell />
+			<span class="prefs">
+				<ThemePicker
+					auto
+					autoLabel={m.theme_auto_label()}
+					autoHelp={m.theme_auto_help()}
+					lightLabel={m.theme_group_light()}
+					darkLabel={m.theme_group_dark()}
+					box="md"
+					placement="bottom-end"
+				/>
+				<FontScalePicker />
+			</span>
 			<AccountMenu />
 		</div>
 	</div>
@@ -64,12 +76,11 @@
 		width: 100%;
 		padding-inline: max(var(--sp-4), var(--safe-left)) max(var(--sp-4), var(--safe-right));
 		height: var(--header-h);
-		/* The brand and the account cluster take the width they need; the nav
-		   centres in what is left. Equal thirds put the nav on the header's true
-		   centre but capped the cluster at a third, which the usage strip
-		   outgrows — it then spilled back over the nav. */
+		/* Side tracks share what the nav leaves equally, so the nav sits on the
+		   bar's centre; a side never shrinks below its content, which pushes the
+		   nav off-centre rather than under the account cluster. */
 		display: grid;
-		grid-template-columns: auto minmax(0, 1fr) auto;
+		grid-template-columns: minmax(max-content, 1fr) minmax(0, 576px) minmax(max-content, 1fr);
 		align-items: center;
 		gap: var(--sp-2);
 	}
@@ -96,6 +107,12 @@
 		.hd-inner {
 			grid-template-columns: auto minmax(0, 1fr);
 		}
+	}
+	.prefs {
+		display: inline-flex;
+		align-items: center;
+		gap: var(--sp-1);
+		flex: none;
 	}
 	.batt {
 		display: inline-flex;

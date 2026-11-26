@@ -7,7 +7,7 @@
 	import type { LabelHandlers } from './headerLabels';
 	import RebindTrail from '#lib/components/molecules/RebindTrail.svelte';
 	import SessionGlyphs from '#lib/components/molecules/SessionGlyphs.svelte';
-	import { Button, IconButton, Spinner, Toolbar } from '@dorsk/tsumikit';
+	import { IconButton, Toolbar } from '@dorsk/tsumikit';
 	import HeaderMeta from './HeaderMeta.svelte';
 	import HeaderLabels from './HeaderLabels.svelte';
 	import DrawerTitle from './DrawerTitle.svelte';
@@ -25,7 +25,6 @@
 		showStatusBadge,
 		maximized = false,
 		compact = false,
-		working = false,
 		onmaximize,
 		onclose,
 		onrename,
@@ -61,8 +60,6 @@
 		/** Tile chrome: one row only — no meta row, no label strip, every action
 		 *  but maximize behind the ⋯ menu. */
 		compact?: boolean;
-		/** A turn is running: the only time Stop is offered. */
-		working?: boolean;
 		onmaximize?: () => void;
 		/** Omitted in a tile, which has nothing to close back to. */
 		onclose?: () => void;
@@ -87,7 +84,8 @@
 		/** Multi-select-to-fork mode; omitted → plain fork. */
 		onforkselect?: () => void;
 		forkSelectActive?: boolean;
-		oninterrupt: () => void;
+		/** Its promise settles once the interrupt is acknowledged. */
+		oninterrupt: () => void | Promise<void>;
 		onarchive: () => void;
 		/** Stop-then-archive, fired by the ⌘/Ctrl+E chord. */
 		onstoparchive: () => void;
@@ -117,8 +115,6 @@
 		onrename(n);
 	}
 
-	// Mirrors the Toolbar's `collapseBelow`: search joins the menu only while
-	// its inline button is hidden.
 	const COLLAPSE_BELOW = 640;
 	let barWidth = $state(Infinity);
 	const collapsed = $derived(compact || barWidth < COLLAPSE_BELOW);
@@ -126,10 +122,15 @@
 	// One square per density for every control in the bar, so they share a
 	// height and a top edge whatever glyph they carry.
 	const box: 'sm' | 'md' = $derived(collapsed ? 'sm' : 'md');
-	const canStop = $derived(working && !archived && !compact);
-	// A narrow drawer gives the title its own line so the action row keeps
-	// only Back and ⋯ (search folds into ⋯ below COLLAPSE_BELOW).
-	const titleOwnLine = $derived(collapsed && !compact);
+	let stopping = $state(false);
+	async function stop() {
+		stopping = true;
+		try {
+			await oninterrupt();
+		} finally {
+			stopping = false;
+		}
+	}
 
 	let headEl = $state<HTMLElement>();
 	const composer = new ComposerFocus();
@@ -148,13 +149,9 @@
 
 <svelte:window onkeydown={onWinKey} />
 
-{#snippet title()}
-	<DrawerTitle {session} {compact} {showLabels} {labels} {renaming} bind:name={newName} onsubmit={doRename} />
-{/snippet}
-
 <div class="dhead" class:compact class:typing={!compact && composer.collapse} bind:this={headEl} data-journey="header">
 	<div class="dbar" bind:clientWidth={barWidth}>
-	<Toolbar collapseBelow="{COLLAPSE_BELOW}px" density={collapsed ? 'compact' : 'default'}>
+	<Toolbar density={collapsed ? 'compact' : 'default'}>
 		{#if onclose}
 			<IconButton icon="chevron-left" label={m.drawer_back()} {box} onclick={onclose} />
 		{/if}
@@ -167,17 +164,7 @@
 			{onAccountClick}
 		/>
 		<RebindTrail sessionId={session.id} />
-		{#if titleOwnLine}
-			<span class="grow"></span>
-		{:else}
-			{@render title()}
-		{/if}
-		{#if canStop}
-			<Button size="sm" title={m.drawer_interrupt_title()} onclick={oninterrupt} data-journey="stop">
-				<Spinner size={12} label="" />
-				{m.drawer_stop()}
-			</Button>
-		{/if}
+		<DrawerTitle {session} {compact} {showLabels} {labels} {renaming} bind:name={newName} onsubmit={doRename} onrename={startRename} />
 		{#if renaming}
 			<IconButton {box} variant="ghost" icon="check" label={m.common_save()} onclick={doRename} />
 		{/if}
@@ -190,22 +177,23 @@
 				onclick={onmaximize}
 			/>
 		{/if}
-		{#if onsearch}
+		{#if !archived && !compact}
+			<IconButton {box} variant="ghost" tone="warn" icon="archive" label={m.drawer_archive()} onclick={onarchive} />
 			<IconButton
-				data-overflow
-				data-journey="find"
 				{box}
 				variant="ghost"
-				icon="search"
-				label={m.conversation_search_label()}
-				title={m.conversation_search_title()}
-				onclick={onsearch}
+				tone="danger"
+				icon="stop"
+				label={m.drawer_interrupt_label()}
+				title={m.drawer_interrupt_title()}
+				loading={stopping}
+				onclick={stop}
+				data-journey="stop"
 			/>
 		{/if}
 		<DrawerMenu
 			{session}
 			{archived}
-			{collapsed}
 			{box}
 			onrename={startRename}
 			{onsearch}
@@ -223,9 +211,6 @@
 		/>
 	</Toolbar>
 	</div>
-	{#if titleOwnLine}
-		<div class="trow">{@render title()}</div>
-	{/if}
 	{#if showLabels && session.labels.length > 0 && !compact}
 		<div class="hlabels">
 			<HeaderLabels {session} handlers={labels} />
@@ -270,10 +255,6 @@
 	.dbar {
 		min-width: 0;
 	}
-	.grow {
-		flex: 1;
-	}
-	.trow,
 	.hlabels {
 		display: flex;
 		min-width: 0;
