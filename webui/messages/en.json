@@ -2461,7 +2461,21 @@
 	"dispatch_failed_history": "Failed dispatches",
 	"dispatch_failed_history_subtitle": "The last 7 days, dismissed ones included.",
 	"dispatch_failed_history_empty": "No failed dispatch in the last 7 days.",
-	"dispatch_failed_link": "{count} failed dispatches →",
+	"dispatch_failed_link": [
+		{
+			"declarations": [
+				"input count",
+				"local countPlural = count: plural"
+			],
+			"selectors": [
+				"countPlural"
+			],
+			"match": {
+				"countPlural=one": "{count} failed dispatch →",
+				"countPlural=other": "{count} failed dispatches →"
+			}
+		}
+	],
 	"spawn_toast_save_draft_failed": "Could not save the draft: {error}",
 	"spawn_toast_saved_draft": "Saved as draft",
 	"spawn_toast_schedule_failed": "Could not schedule the launch: {error}",
