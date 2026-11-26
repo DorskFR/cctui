@@ -1082,7 +1082,6 @@
 	"nav_harness_mode_tooltip": "Mode d'exécution Claude : {mode} — modifiable dans les Réglages (les sessions Codex l'ignorent)",
 	"nav_instance_name": "Nom de l'instance",
 	"nav_log_out": "Se déconnecter",
-	"nav_appearance": "Apparence…",
 	"header_status_label": "Machines et utilisation",
 	"header_status_label_usage": "Machines et utilisation, pire valeur {usage}",
 	"header_status_machines": "Machines",
@@ -1656,23 +1655,6 @@
 	"sessions_rebind_reason_outage": "incident {family}",
 	"sessions_rebinds_tip": "Cette session a changé de compte en cours d'exécution",
 	"sessions_search_placeholder": "Rechercher des sessions",
-	"sessions_row_tokens": [
-		{
-			"declarations": [
-				"input count",
-				"input tokens",
-				"local countPlural = count: plural"
-			],
-			"selectors": [
-				"countPlural"
-			],
-			"match": {
-				"countPlural=one": "{tokens} token",
-				"countPlural=other": "{tokens} tokens"
-			}
-		}
-	],
-	"sessions_row_tokens_title": "{total} tokens : {input} en entrée, {output} en sortie, {cache} en cache",
 	"sessions_search_failed": "Impossible de rechercher : {error}",
 	"sessions_search_live_only_hint": "(sessions actives uniquement — cochez Archivées pour tout rechercher).",
 	"sessions_search_no_match": "Aucune conversation ne correspond à « {query} »",
@@ -2377,7 +2359,6 @@
 	"spawn_profile_model_aria": "Modèle",
 	"spawn_profile_name_aria": "Nom du profil",
 	"spawn_profile_name_taken": "Un profil porte déjà ce nom",
-	"spawn_profile_manage": "Gérer les profils…",
 	"spawn_profile_new": "Nouveau profil",
 	"spawn_profile_save": "Enregistrer le profil",
 	"spawn_profile_toast_failed": "Impossible de mettre à jour le profil : {error}",
@@ -3427,5 +3408,23 @@
 	"error_search_archived_placeholder": "Nom, dossier ou identifiant",
 	"error_session_missing_body": "Cette session a été archivée ou supprimée. Cherchez-la dans les sessions archivées, ou revenez à vos sessions.",
 	"error_session_missing_title": "Session introuvable",
-	"list_auto_approve": "approbation auto"
+	"list_auto_approve": "approbation auto",
+	"sessions_row_tokens": [
+		{
+			"declarations": [
+				"input count",
+				"input tokens",
+				"local countPlural = count: plural"
+			],
+			"selectors": [
+				"countPlural"
+			],
+			"match": {
+				"countPlural=one": "{tokens} token",
+				"countPlural=other": "{tokens} tokens"
+			}
+		}
+	],
+	"sessions_row_tokens_title": "{total} tokens : {input} en entrée, {output} en sortie, {cache} en cache",
+	"spawn_profile_manage": "Gérer les profils…"
 }
