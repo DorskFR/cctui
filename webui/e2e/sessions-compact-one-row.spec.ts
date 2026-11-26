@@ -98,7 +98,7 @@ for (const width of [1148, 900, 700, 560, 372]) {
 		await stubApi(page, withSubagents, { settings: { sessionList: { density: 'compact' } } });
 		await page.setViewportSize({ width: 1600, height: 900 });
 		await page.goto('/sessions?view=list');
-		await page.locator('[data-journey="session"] .l1 .labels').first().waitFor();
+		await page.locator('[data-journey="session"] .l1 .labels').first().waitFor({ state: 'attached' });
 
 		const row = await page.evaluate((w) => {
 			for (const wrap of document.querySelectorAll<HTMLElement>('.sc-wrap.compact')) wrap.style.width = `${w}px`;
@@ -125,4 +125,49 @@ for (const width of [1148, 900, 700, 560, 372]) {
 		expect(row.title).toBeGreaterThanOrEqual(width >= 1100 ? 200 : 60);
 		expect(errors).toEqual([]);
 	});
+}
+
+const unlabelled = { ...labelled(200), labels: [] };
+
+for (const density of ['compact', 'normal'] as const) {
+	for (const [vw, vh] of [
+		[1600, 900],
+		[412, 915]
+	] as const) {
+		test(`a ${density} row keeps its height when hovered or focused at ${vw}x${vh}`, async ({ page }) => {
+			const errors = watch(page);
+			await stubApi(page, [...withSubagents, unlabelled], { settings: { sessionList: { density } } });
+			await page.setViewportSize({ width: vw, height: vh });
+			await page.goto('/sessions?view=list');
+			const rows = page.locator('.sc-wrap:not(.child) [data-journey="session"]');
+			await expect(rows).toHaveCount(2);
+
+			const heights: Record<string, number>[] = [];
+			for (const row of await rows.all()) {
+				const height = () => row.evaluate((el) => el.getBoundingClientRect().height);
+				const tag = row.getByRole('button', { name: 'Edit labels', exact: true });
+				await page.mouse.move(0, 0);
+				await expect(tag).toHaveCount(0);
+				const rest = await height();
+				await row.locator('.title').hover();
+				await expect(tag).toBeVisible();
+				const hovered = await height();
+				await page.mouse.move(0, 0);
+				let focused = rest;
+				const sub = row.locator('.sub');
+				if (await sub.count()) {
+					await sub.focus();
+					await expect(tag).toBeVisible();
+					focused = await height();
+				}
+				heights.push({ rest, hovered, focused });
+			}
+
+			for (const h of heights) {
+				expect(Math.abs(h.hovered - h.rest), JSON.stringify(heights)).toBeLessThanOrEqual(0.5);
+				expect(Math.abs(h.focused - h.rest), JSON.stringify(heights)).toBeLessThanOrEqual(0.5);
+			}
+			expect(errors).toEqual([]);
+		});
+	}
 }

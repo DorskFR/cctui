@@ -43,6 +43,20 @@ function render() {
 }
 
 describe('PendingSpawnRows', () => {
+	it('pluralizes the failed dispatch count', () => {
+		failures.list = [failure('a')];
+		render();
+		expect(document.querySelector('a[href="/dispatch-failures"]')?.textContent).toContain(
+			'1 failed dispatch →'
+		);
+		unmount(comp!);
+		failures.list = [failure('a'), failure('b')];
+		render();
+		expect(document.querySelector('a[href="/dispatch-failures"]')?.textContent).toContain(
+			'2 failed dispatches →'
+		);
+	});
+
 	it('links to the failed dispatches instead of rendering their cards', () => {
 		failures.list = [
 			failure('a'),
