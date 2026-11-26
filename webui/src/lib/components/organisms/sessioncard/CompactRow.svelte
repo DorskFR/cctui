@@ -269,9 +269,7 @@
 	}
 	.labels {
 		display: inline-flex;
-		flex: 0 100 auto;
-		min-width: 0;
-		overflow: hidden;
+		flex: none;
 	}
 	.star {
 		display: inline-flex;
@@ -378,11 +376,23 @@
 		flex: 0 1 auto;
 		max-width: 46%;
 	}
+	/* Grid, not flex: lets min-content floor the title at 6em so labels never clip. */
+	.one:not(.child) .l1 {
+		display: grid;
+		grid-auto-flow: column;
+		grid-template-columns: auto minmax(6em, max-content);
+		grid-auto-columns: max-content;
+		min-width: min-content;
+	}
 	.one .title {
 		max-width: 300px;
 	}
 	.one .l2 {
 		flex: 1 1 0;
+		min-width: min-content;
+	}
+	.one .preview {
+		width: 0;
 	}
 	.one .cwd,
 	.one .branch {
@@ -459,15 +469,6 @@
 		}
 		.one .title {
 			max-width: none;
-		}
-		.one .l2 {
-			flex: 1 1 0;
-			min-width: min-content;
-		}
-	}
-	@container sess-row (max-width: 40rem) {
-		.labels {
-			flex: none;
 		}
 	}
 	@container sess-row (max-width: 28em) {
