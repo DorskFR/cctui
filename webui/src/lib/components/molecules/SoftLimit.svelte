@@ -139,6 +139,7 @@
 		readoutWidth={isDense ? 'auto' : USAGE_READOUT_W}
 		readout={showReset || paceKind === 'flame' ? readoutSnippet : readoutText}
 		{readonly}
+		style="--track-edge: transparent"
 		tooltip={readonly
 			? m.capbar_tooltip_readonly({ pct: tooltipPct })
 			: m.capbar_tooltip({ pct: tooltipPct })}

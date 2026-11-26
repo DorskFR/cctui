@@ -48,3 +48,13 @@ describe('SoftLimit column widths', () => {
 		expect(wide.querySelector('.label')?.textContent).toBe('Weekly');
 	});
 });
+
+describe('SoftLimit cap', () => {
+	it('keeps the stretch past a cap flush with the track, without an outline of its own', () => {
+		for (const dense of [true, false]) {
+			const bar = render({ utilization: 9, cap: 95, dense });
+			expect(bar.querySelector<HTMLElement>('.handle')?.style.left).toBe('95%');
+			expect(bar.style.getPropertyValue('--track-edge').trim()).toBe('transparent');
+		}
+	});
+});

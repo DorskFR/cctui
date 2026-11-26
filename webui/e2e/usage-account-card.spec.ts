@@ -198,6 +198,7 @@ test.describe('account card', () => {
 		if (SHOTS) await card.screenshot({ path: `${SHOTS}/dock-460.png` });
 		expect.soft(l.head).not.toMatch(/Claude|Codex/);
 		assertSeparators(l, 'dock', 'stacked');
+		assertCapZone(l, 'dock');
 		expect(errors).toEqual([]);
 	});
 
@@ -213,5 +214,6 @@ test.describe('account card', () => {
 		if (SHOTS) await card.screenshot({ path: `${SHOTS}/page-1600.png` });
 		expect.soft(l.head).not.toMatch(/Claude|Codex/);
 		assertSeparators(l, 'page', 'side');
+		assertCapZone(l, 'page');
 	});
 });
