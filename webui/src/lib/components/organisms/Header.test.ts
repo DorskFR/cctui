@@ -32,6 +32,11 @@ vi.mock('@tanstack/svelte-query', () => ({
 }));
 const { goto } = vi.hoisted(() => ({ goto: vi.fn() }));
 vi.mock('$app/navigation', () => ({ goto }));
+const updated = vi.hoisted(() => ({ current: false }));
+vi.mock('$app/state', async (importOriginal) => ({
+	...(await importOriginal<typeof import('$app/state')>()),
+	updated
+}));
 vi.mock('#lib/ws.svelte.ts', () => ({
 	ws: {
 		status: 'open',
@@ -71,6 +76,7 @@ beforeEach(() => {
 	versionData.version = '0.11.0';
 	sessionsData.sessions = [];
 	notify.enabled = false;
+	updated.current = false;
 });
 
 const render = () => {
@@ -187,12 +193,32 @@ describe('versions stay out of the bar', () => {
 		expect(hd.querySelector('.reload')).toBeNull();
 	});
 
-	it('shows a reload chip only when the ui and server builds differ', () => {
+	it('shows no reload chip when the server runs another version but no newer ui was deployed', () => {
+		vi.stubGlobal('__CLIENT_VERSION__', '0.33.0-beta.1');
+		versionData.version = '0.32.0';
+		render();
+		expect(document.querySelector('header.hd .reload')).toBeNull();
+		vi.stubGlobal('__CLIENT_VERSION__', '0.11.0');
+	});
+
+	it('shows the reload chip once a newer ui build is deployed, and reloads on click', () => {
+		const reload = vi.fn();
+		vi.stubGlobal('location', { ...window.location, reload });
+		updated.current = true;
+		render();
+		const chip = document.querySelector('header.hd .reload') as HTMLButtonElement;
+		expect(chip).not.toBeNull();
+		chip.click();
+		expect(reload).toHaveBeenCalledOnce();
+		vi.unstubAllGlobals();
+		vi.stubGlobal('__CLIENT_VERSION__', '0.11.0');
+	});
+
+	it('names a ui and server mismatch as plain text in the account menu', async () => {
 		versionData.version = '0.12.0';
 		render();
-		const chip = document.querySelector('header.hd .reload') as HTMLElement;
-		expect(chip).not.toBeNull();
-		expect(chip.title).toContain('ui v0.11.0 · srv v0.12.0');
+		await openUserMenu();
+		expect(rowByText('ui v0.11.0 · srv v0.12.0')).not.toBeNull();
 	});
 
 	it('keeps the version in the account menu', async () => {
