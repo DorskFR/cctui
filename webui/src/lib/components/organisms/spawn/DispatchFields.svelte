@@ -309,8 +309,8 @@
 		flex-direction: column;
 		gap: var(--sp-2);
 		padding: var(--sp-2);
+		border: 1px solid var(--border);
 		border-radius: var(--r-md);
-		background: var(--bg-elevated-2);
 	}
 	@media (pointer: coarse) {
 		.chord-hint {

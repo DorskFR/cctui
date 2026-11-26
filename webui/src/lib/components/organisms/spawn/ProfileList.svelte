@@ -233,7 +233,7 @@
 	}
 	.draft {
 		padding: var(--sp-2);
-		border: var(--edge-width) solid var(--accent);
+		border: var(--edge-width) dashed var(--accent);
 		border-end-start-radius: 0;
 		border-end-end-radius: 0;
 		border-start-start-radius: var(--r-md);
