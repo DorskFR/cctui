@@ -252,15 +252,16 @@
 
 	<div class="columns">
 		{#each a.providers as p (p.id)}
-			<ProviderColumn
-				provider={p}
-				usageEnabled={enabled}
-				canManage={canEditProvider(p, owned) && !compact}
-				dense={compact}
-				divided
-				onedit={() => oneditprovider?.(p)}
-				onreauth={() => onreauthprovider?.(p)}
-			/>
+			<div class="cell">
+				<ProviderColumn
+					provider={p}
+					usageEnabled={enabled}
+					canManage={canEditProvider(p, owned) && !compact}
+					dense={compact}
+					onedit={() => oneditprovider?.(p)}
+					onreauth={() => onreauthprovider?.(p)}
+				/>
+			</div>
 		{:else}
 			<div class="none"><Text tone="faint" size="sm">{m.accounts_no_credentials()}</Text></div>
 		{/each}
@@ -375,6 +376,13 @@
 		display: grid;
 		grid-template-columns: repeat(3, minmax(0, 1fr));
 	}
+	.cell {
+		display: grid;
+		min-width: 0;
+	}
+	.cell:not(:nth-child(3n + 1)) {
+		border-left: 1px solid var(--border);
+	}
 	.none {
 		padding: var(--sp-3) var(--sp-4);
 	}
@@ -393,6 +401,12 @@
 		.columns {
 			grid-template-columns: repeat(2, minmax(0, 1fr));
 		}
+		.cell:nth-child(3n + 1) {
+			border-left: 1px solid var(--border);
+		}
+		.cell:nth-child(2n + 1) {
+			border-left: none;
+		}
 	}
 	.actions {
 		display: inline-flex;
@@ -402,6 +416,9 @@
 	@container acct-row (max-width: 34rem) {
 		.columns {
 			grid-template-columns: minmax(0, 1fr);
+		}
+		.cell:nth-child(n) {
+			border-left: none;
 		}
 	}
 </style>
