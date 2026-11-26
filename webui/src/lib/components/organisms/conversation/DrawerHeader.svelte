@@ -124,6 +124,7 @@
 	const box: 'sm' | 'md' = $derived(collapsed ? 'sm' : 'md');
 	let stopping = $state(false);
 	async function stop() {
+		if (stopping) return;
 		stopping = true;
 		try {
 			await oninterrupt();
@@ -186,7 +187,7 @@
 				icon="stop"
 				label={m.drawer_interrupt_label()}
 				title={m.drawer_interrupt_title()}
-				loading={stopping}
+				spin={stopping}
 				onclick={stop}
 				data-journey="stop"
 			/>
