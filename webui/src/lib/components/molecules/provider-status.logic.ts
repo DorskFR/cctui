@@ -34,11 +34,6 @@ export const severityLabel = (i: ProviderIndicator) =>
 export const familyLabel = (family: string) =>
   family === "anthropic" ? "Claude" : family === "openai" ? "Codex" : family;
 
-/** The affected component names, capped so a badge cannot grow without bound. */
-export function componentNames(status: ProviderStatus, max = 3): string[] {
-  return status.components.slice(0, max).map((c) => c.name);
-}
-
 /** The status reading for one account provider id, and only when it is degraded.
  *  Mirrors the server: a `*-compatible` credential points at somebody else's
  *  endpoint, so it never inherits a first-party incident. */
