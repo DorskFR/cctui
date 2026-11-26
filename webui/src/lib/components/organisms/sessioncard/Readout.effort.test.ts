@@ -24,6 +24,33 @@ describe('card readout', () => {
 		expect(document.querySelector('.effort')?.textContent).toBe(' · medium');
 	});
 
+	it('shows the Σ ↑ ↓ ⚡ readout with the cold-cache marker', () => {
+		const view = {
+			s: {
+				model: 'claude-opus-4-5',
+				effort: 'medium',
+				cache_cold: true,
+				adapter_id: 'claude-code',
+				token_usage: {
+					tokens_in: 7_300,
+					tokens_out: 1_400,
+					cost_usd: 0,
+					cache_read_tokens: 147_000,
+					cache_creation_tokens: 0
+				}
+			},
+			rollup: null,
+			draft: false
+		} as unknown as SessionView;
+		comp = mount(Readout, { target: document.body, props: { view } });
+		flushSync();
+		const text = document.body.textContent ?? '';
+		expect(text).toMatch(/Σ156k/);
+		expect(text).toMatch(/↑7\.3k/);
+		expect(text).toContain('❄️');
+		expect(document.querySelector('.tt')).toBeNull();
+	});
+
 	it('keeps the same spacing in the drawer header', () => {
 		expect(headerMeta).toMatch(/<span class="m-effort">\{` · \$\{session\.effort\}`\}<\/span>/);
 	});
