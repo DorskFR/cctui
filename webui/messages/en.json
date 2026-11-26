@@ -1470,6 +1470,7 @@
 	"resource_gauge_cpu": "CPU",
 	"resource_gauge_disk": "Disk",
 	"resource_gauge_mem": "Memory",
+	"resource_gauge_load": "load {load}",
 	"resource_gauge_stale": "Stale: no heartbeat for a few minutes.",
 	"resource_gauge_unknown": "No figures yet: the daemon is too old to report them, or the machine has no /proc.",
 	"search_field_account": "Account",

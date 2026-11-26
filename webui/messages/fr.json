@@ -1470,6 +1470,7 @@
 	"resource_gauge_cpu": "CPU",
 	"resource_gauge_disk": "Disque",
 	"resource_gauge_mem": "Mémoire",
+	"resource_gauge_load": "charge {load}",
 	"resource_gauge_stale": "Périmé : aucun battement depuis quelques minutes.",
 	"resource_gauge_unknown": "Aucune donnée pour l'instant : le daemon est trop ancien pour les remonter, ou la machine n'a pas de /proc.",
 	"search_field_account": "Compte",
