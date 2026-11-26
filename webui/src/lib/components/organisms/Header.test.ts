@@ -2,6 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mount, unmount, flushSync } from 'svelte';
 import type { SessionListItem } from '@bindings/SessionListItem';
+import type { ProviderStatus } from '@bindings/ProviderStatus';
 
 const versionData = {
 	version: '0.11.0',
@@ -14,6 +15,7 @@ const versionData = {
 	self_update_hook: null
 };
 const sessionsData = { sessions: [] as SessionListItem[] };
+const providerData = { list: [] as ProviderStatus[] };
 
 vi.mock('#lib/queries/index.ts', () => ({
 	qk: { sessions: (a: boolean) => ['sessions', a], sessionsAll: ['sessions'] },
@@ -22,7 +24,7 @@ vi.mock('#lib/queries/index.ts', () => ({
 	useSessions: () => ({ data: sessionsData }),
 	useAccounts: () => ({ data: [] }),
 	useAllAccountsUsage: () => ({ data: [] }),
-	useProviderStatus: () => ({ data: [] }),
+	useProviderStatus: () => ({ data: providerData.list }),
 	useRedirectChips: () => ({ data: [] }),
 	useMachineResources: () => ({ data: [] }),
 	usePlugins: () => ({ data: [] })
@@ -75,6 +77,7 @@ beforeEach(() => {
 	versionData.latest_version = null;
 	versionData.version = '0.11.0';
 	sessionsData.sessions = [];
+	providerData.list = [];
 	notify.enabled = false;
 	updated.current = false;
 });
@@ -258,5 +261,59 @@ describe('the user pill avatar', () => {
 		expect(av.textContent?.trim()).toBe('D');
 		expect(av.getAttribute('aria-hidden')).toBe('true');
 		expect(av.getAttribute('role')).toBeNull();
+	});
+});
+
+const provider = (p: Partial<ProviderStatus>): ProviderStatus => ({
+	family: 'anthropic',
+	indicator: 'none',
+	description: '',
+	url: 'https://status.claude.com',
+	components: [],
+	incidents: [],
+	...p
+});
+
+describe('provider status', () => {
+	const alert = () => document.querySelector('[data-testid="provider-status-alert"]');
+
+	it('keeps no status trigger in the bar tail', () => {
+		providerData.list = [provider({ indicator: 'minor' })];
+		render();
+		const tail = document.querySelector('.tail') as HTMLElement;
+		expect(tail.querySelector('[data-testid="provider-status-alert"], .ind')).toBeNull();
+	});
+
+	it('shows a warning icon beside the logo when a provider is degraded', () => {
+		providerData.list = [
+			provider({ indicator: 'minor' }),
+			provider({ family: 'openai', indicator: 'minor' })
+		];
+		render();
+		const icon = alert() as HTMLElement;
+		expect(icon).not.toBeNull();
+		expect(icon.closest('.lead')).not.toBeNull();
+		expect(icon.dataset.tone).toBe('warn');
+		expect(icon.querySelector('svg')).not.toBeNull();
+		const button = icon.closest('button') as HTMLButtonElement;
+		expect(button.getAttribute('aria-label')).toBe(
+			'Provider status: Claude degraded, Codex degraded'
+		);
+	});
+
+	it('turns the icon to danger on a major outage', () => {
+		providerData.list = [provider({ indicator: 'major' })];
+		render();
+		expect((alert() as HTMLElement).dataset.tone).toBe('danger');
+	});
+
+	it('renders nothing when every provider is operational', () => {
+		providerData.list = [
+			provider({ indicator: 'none' }),
+			provider({ family: 'openai', indicator: 'unknown' })
+		];
+		render();
+		expect(alert()).toBeNull();
+		expect(document.querySelector('.lead button')).toBeNull();
 	});
 });

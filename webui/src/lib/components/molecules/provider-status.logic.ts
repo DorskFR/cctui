@@ -1,4 +1,5 @@
 import type { ProviderIndicator, ProviderStatus } from "#lib/queries/index.ts";
+import { m } from "#lib/paraglide/messages.js";
 
 /** Severity order, worst last. `unknown` is not a severity — it never ranks. */
 const ORDER: ProviderIndicator[] = ["none", "minor", "major", "critical"];
@@ -21,6 +22,13 @@ export function worstIndicator(list: ProviderStatus[] | undefined): ProviderIndi
 /** Tone token for an indicator: `minor` is a warning, worse is a danger. */
 export const indicatorTone = (i: ProviderIndicator | null): "warn" | "danger" | null =>
   i === "minor" ? "warn" : i === "major" || i === "critical" ? "danger" : null;
+
+export const severityLabel = (i: ProviderIndicator) =>
+  i === "critical"
+    ? m.provider_status_critical()
+    : i === "major"
+      ? m.provider_status_major()
+      : m.provider_status_minor();
 
 /** Display name for a polled family. */
 export const familyLabel = (family: string) =>
