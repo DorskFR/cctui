@@ -330,7 +330,6 @@
 	"composer_schedule_custom_invalid": "Choisissez un moment dans les 30 prochains jours",
 	"composer_schedule_confirm": "Programmer",
 	"conversation_dock_empty": "Choisissez une session dans la liste pour l’ouvrir ici.",
-	"conversation_line_actions": "Actions du message",
 	"conversation_scheduled_for": "Programmé pour {time}",
 	"device_approve": "Approuver",
 	"device_approved": "Approuvé — l'appareil peut terminer sa connexion.",
@@ -3419,10 +3418,10 @@
 	"error_not_found_body": "Rien ne se trouve à l'adresse {path}.",
 	"error_not_found_title": "Page introuvable",
 	"error_recent_sessions": "Sessions récentes",
-	"error_search_archived": "Rechercher dans les sessions archivées",
-	"error_search_archived_none": "Aucune session archivée ne correspond.",
-	"error_search_archived_placeholder": "Nom, dossier ou identifiant",
 	"error_session_missing_body": "Cette session a été archivée ou supprimée. Cherchez-la dans les sessions archivées, ou revenez à vos sessions.",
 	"error_session_missing_title": "Session introuvable",
-	"list_auto_approve": "approbation auto"
+	"list_auto_approve": "approbation auto",
+	"error_search_archived": "Rechercher dans les sessions archivées",
+	"error_search_archived_none": "Aucune session archivée ne correspond.",
+	"error_search_archived_placeholder": "Nom, dossier ou identifiant"
 }

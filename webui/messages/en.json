@@ -330,7 +330,6 @@
 	"composer_schedule_custom_invalid": "Pick a time in the next 30 days",
 	"composer_schedule_confirm": "Schedule",
 	"conversation_dock_empty": "Pick a session in the list to open it here.",
-	"conversation_line_actions": "Message actions",
 	"conversation_scheduled_for": "Scheduled for {time}",
 	"device_approve": "Approve",
 	"device_approved": "Approved — the device can finish signing in.",
@@ -3419,10 +3418,10 @@
 	"error_not_found_body": "Nothing lives at {path}.",
 	"error_not_found_title": "Page not found",
 	"error_recent_sessions": "Recent sessions",
-	"error_search_archived": "Search archived sessions",
-	"error_search_archived_none": "No archived session matches.",
-	"error_search_archived_placeholder": "Name, folder or id",
 	"error_session_missing_body": "This session was archived or deleted. Search the archived sessions, or go back to your sessions.",
 	"error_session_missing_title": "Session not found",
-	"list_auto_approve": "auto-approve"
+	"list_auto_approve": "auto-approve",
+	"error_search_archived": "Search archived sessions",
+	"error_search_archived_none": "No archived session matches.",
+	"error_search_archived_placeholder": "Name, folder or id"
 }
