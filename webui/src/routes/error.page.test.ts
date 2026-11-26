@@ -52,3 +52,16 @@ describe('the not-found page', () => {
 		expect(document.querySelector('.mark .code')?.textContent).toBe('500');
 	});
 });
+
+describe('the deleted-session page', () => {
+	it('uses the same centred layout, with no button and no archived search', () => {
+		state.page.error = { message: 'session_missing' };
+		render();
+		const err = document.querySelector('.err') as HTMLElement;
+		expect(err.querySelector('.mark .code')?.textContent).toBe('404');
+		expect(err.querySelector('h1')?.textContent).toBe('Session not found');
+		expect(err.textContent).toContain('This session was archived or deleted.');
+		expect(err.querySelector('a[href="/sessions"]')).toBeNull();
+		expect(err.querySelector('input')).toBeNull();
+	});
+});

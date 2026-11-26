@@ -3418,10 +3418,7 @@
 	"error_not_found_body": "Nothing lives at {path}.",
 	"error_not_found_title": "Page not found",
 	"error_recent_sessions": "Recent sessions",
-	"error_session_missing_body": "This session was archived or deleted. Search the archived sessions, or go back to your sessions.",
+	"error_session_missing_body": "This session was archived or deleted.",
 	"error_session_missing_title": "Session not found",
-	"list_auto_approve": "auto-approve",
-	"error_search_archived": "Search archived sessions",
-	"error_search_archived_none": "No archived session matches.",
-	"error_search_archived_placeholder": "Name, folder or id"
+	"list_auto_approve": "auto-approve"
 }

@@ -3418,10 +3418,7 @@
 	"error_not_found_body": "Rien ne se trouve à l'adresse {path}.",
 	"error_not_found_title": "Page introuvable",
 	"error_recent_sessions": "Sessions récentes",
-	"error_session_missing_body": "Cette session a été archivée ou supprimée. Cherchez-la dans les sessions archivées, ou revenez à vos sessions.",
+	"error_session_missing_body": "Cette session a été archivée ou supprimée.",
 	"error_session_missing_title": "Session introuvable",
-	"list_auto_approve": "approbation auto",
-	"error_search_archived": "Rechercher dans les sessions archivées",
-	"error_search_archived_none": "Aucune session archivée ne correspond.",
-	"error_search_archived_placeholder": "Nom, dossier ou identifiant"
+	"list_auto_approve": "approbation auto"
 }
