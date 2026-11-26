@@ -131,21 +131,31 @@
 
 <div class="kit">
 	<Field label={m.spawn_field_harness()}>
-		<AutoGrid min="8rem" maxCols={2} gap="var(--sp-2)" role="radiogroup" aria-label={m.spawn_profile_harness_aria()}>
-			{#each harnesses as h (h.id)}
-				<OptionButton
-					row
-					selected={draft.harness === h.id}
-					role="radio"
-					aria-checked={draft.harness === h.id}
-					style="--accent: {familyAccent(h.family)}"
-					onclick={() => pickHarness(h.id)}
-				>
-					<BrandLogo adapter={h.id} size={18} />
-					<Text>{h.label}</Text>
-				</OptionButton>
-			{/each}
-		</AutoGrid>
+		<div class="harnesses">
+			<AutoGrid
+				template="repeat({harnesses.length}, minmax(0, 1fr))"
+				align="stretch"
+				gap="var(--sp-2)"
+				role="radiogroup"
+				aria-label={m.spawn_profile_harness_aria()}
+			>
+				{#each harnesses as h (h.id)}
+					<OptionButton
+						row
+						selected={draft.harness === h.id}
+						role="radio"
+						aria-checked={draft.harness === h.id}
+						style="--accent: {familyAccent(h.family)}"
+						onclick={() => pickHarness(h.id)}
+					>
+						<span class="tile">
+							<BrandLogo adapter={h.id} size={18} />
+							<Text>{h.label}</Text>
+						</span>
+					</OptionButton>
+				{/each}
+			</AutoGrid>
+		</div>
 	</Field>
 
 	<AutoGrid min="8rem" maxCols={2} gap="var(--sp-2)">
@@ -222,5 +232,22 @@
 	.grow {
 		flex: 1;
 		min-width: 0;
+	}
+	.harnesses {
+		container-type: inline-size;
+	}
+	.tile {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		gap: var(--sp-2);
+		min-width: 0;
+	}
+	@container (width < 26rem) {
+		.tile {
+			flex-direction: column;
+			gap: var(--sp-1);
+			text-align: center;
+		}
 	}
 </style>

@@ -95,4 +95,12 @@ describe('KitFields harness choice', () => {
 		expect(draft.harness).toBe('claude-code');
 		expect(harnessCard('Claude Code').getAttribute('aria-checked')).toBe('true');
 	});
+
+	it('lays every harness on one row of equal tiles', () => {
+		render({ harness: 'codex' });
+		const group = document.querySelector<HTMLElement>('[role="radiogroup"]');
+		const count = group?.querySelectorAll('[role="radio"]').length ?? 0;
+		expect(count).toBeGreaterThan(2);
+		expect(group?.style.gridTemplateColumns).toBe(`repeat(${count}, minmax(0, 1fr))`);
+	});
 });
