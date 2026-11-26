@@ -84,7 +84,7 @@
 		</Badge>
 	</SettingRow>
 
-	<SettingRow label={m.settings_server_storage_trim_label()} help={m.settings_server_storage_trim_help()}>
+	<SettingRow label={m.settings_server_storage_trim_label()} help={m.settings_server_storage_trim_help()} server admin>
 		<Switch bind:checked={trimOn} label={m.settings_server_storage_trim_label()} />
 	</SettingRow>
 	{#if trimOn}
@@ -113,7 +113,7 @@
 		</SettingRow>
 	{/if}
 
-	<SettingRow label={m.settings_server_storage_drop_label()} help={m.settings_server_storage_drop_help()}>
+	<SettingRow label={m.settings_server_storage_drop_label()} help={m.settings_server_storage_drop_help()} server admin>
 		<Switch bind:checked={dropOn} label={m.settings_server_storage_drop_label()} />
 	</SettingRow>
 	{#if dropOn}

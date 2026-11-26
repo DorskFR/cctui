@@ -3,13 +3,15 @@
 	// description, then its groups. `id` is what the sticky table of contents
 	// links to and what the scroll spy reports.
 	import type { Snippet } from 'svelte';
-	import { Heading, Text } from '@dorsk/tsumikit';
+	import { Badge, Heading, Text } from '@dorsk/tsumikit';
+	import { m } from '#lib/paraglide/messages.js';
 
 	let {
 		id,
 		icon,
 		title,
 		description,
+		admin = false,
 		children,
 		descriptionSlot
 	}: {
@@ -17,6 +19,7 @@
 		icon: string;
 		title: string;
 		description?: string;
+		admin?: boolean;
 		children?: Snippet;
 		descriptionSlot?: Snippet;
 	} = $props();
@@ -26,6 +29,7 @@
 	<div class="sec-h">
 		<Text tone="accent" as="span">{icon}</Text>
 		<Heading level={2} size="md">{title}</Heading>
+		{#if admin}<Badge tone="warn" size="sm" uppercase border>{m.settings_scope_admin()}</Badge>{/if}
 	</div>
 	{#if descriptionSlot}
 		<Text size="sm" tone="faint" as="p" class="sec-d">{@render descriptionSlot()}</Text>

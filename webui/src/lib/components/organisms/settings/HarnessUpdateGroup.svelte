@@ -124,6 +124,8 @@
 	<SettingRow
 		label={m.settings_harness_update_enable()}
 		help={m.settings_harness_update_help()}
+		server
+		admin
 		wide
 		selfLabelled
 	>

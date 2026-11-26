@@ -49,6 +49,8 @@
 	<SettingRow
 		label={m.settings_event_retention_label()}
 		help={m.settings_event_retention_help({ days: info?.default_days ?? 90 })}
+		server
+		admin
 		journey="setting"
 		journeyKey="event-retention"
 	>

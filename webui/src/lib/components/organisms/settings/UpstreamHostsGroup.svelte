@@ -38,7 +38,7 @@
 
 <div id="upstreams">
 	<SettingGroup title={m.settings_upstreams_label()}>
-		<SettingRow label={m.settings_upstreams_label()} help={m.settings_upstreams_help()} wide selfLabelled>
+		<SettingRow label={m.settings_upstreams_label()} help={m.settings_upstreams_help()} server admin wide selfLabelled>
 			<div class="hosts">
 				{#if info}
 					{#if info.hosts.length === 0 && info.env.length === 0 && info.managed.length === 0}

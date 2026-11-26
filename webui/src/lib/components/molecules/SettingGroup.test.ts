@@ -9,7 +9,7 @@ describe('setting surfaces', () => {
 		expect(style).not.toMatch(/border(-bottom)?:\s*1px/);
 	});
 
-	it('leaves scope badges to the nav, not section headings', () => {
-		expect(section).not.toContain('settings_scope_admin');
+	it('can mark a section heading as admin-only', () => {
+		expect(section).toContain('settings_scope_admin');
 	});
 });

@@ -104,12 +104,14 @@
 	);
 </script>
 
-<SettingSection id="instance-general" icon="⚙" title={m.settings_sec_general()}>
+<SettingSection id="instance-general" icon="⚙" title={m.settings_sec_general()} admin>
 	{#if isAdmin}
 		<SettingGroup>
 			<SettingRow
 				label={m.settings_admin_instance_name_label()}
 				help={m.settings_admin_instance_name_help()}
+				server
+				admin
 			>
 				<Input
 					bind:value={instanceDraft}
