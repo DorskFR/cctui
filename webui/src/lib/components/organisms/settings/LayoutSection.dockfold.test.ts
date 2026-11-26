@@ -15,14 +15,14 @@ afterEach(() => {
 });
 
 describe('Layout settings launch panel fold', () => {
-	it('turns off folding the launch panel during a conversation', () => {
+	it('turns off minifying the launch panel during a conversation', () => {
 		component = mount(SectionHost, {
 			target: document.body,
 			props: { section: LayoutSection as Component<Record<string, never>> }
 		});
 		flushSync();
 		const toggle = document.querySelector<HTMLButtonElement>(
-			'[role="switch"][aria-label="Fold the launch panel during a conversation"]'
+			'[role="switch"][aria-label="Minify the launch panel during a conversation"]'
 		);
 		expect(toggle).not.toBeNull();
 		expect(toggle?.getAttribute('aria-checked')).toBe('true');

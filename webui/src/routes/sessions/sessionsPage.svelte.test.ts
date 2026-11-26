@@ -112,7 +112,11 @@ function harness(over: Partial<SessionsPageDeps> = {}, stored: Record<string, st
 			conversation: null,
 			spawn: null,
 			stats: null,
+			spawnMinified: false,
 			stacked: false,
+			spawnWidth: null,
+			statsWidth: null,
+			spawnOffset: null,
 			left: null,
 			right: null
 		}),
@@ -759,7 +763,11 @@ describe('SessionsPage — spawn form and drafts', () => {
 				conversation: null,
 				spawn: 'right',
 				stats: null,
+				spawnMinified: false,
 				stacked: false,
+				spawnWidth: '30rem',
+				statsWidth: null,
+				spawnOffset: null,
 				left: null,
 				right: '30rem'
 			})

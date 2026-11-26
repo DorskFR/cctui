@@ -265,11 +265,20 @@ describe("Settings save → load round-trip through the blob", () => {
     settings.setSpawnDock({ foldOnChat: true });
   });
 
+  it("a minified spawn panel is saved with the other dock settings", () => {
+    expect(mergeDefaults({ spawnDock: { enabled: true, minified: "yes" } } as unknown as Record<string, unknown>).spawnDock.minified).toBe(false);
+    settings.setSpawnDock({ minified: true });
+    expect(loadFromCache().spawnDock.minified).toBe(true);
+    expect(settings.spawnDock.minified).toBe(true);
+    settings.setSpawnDock({ minified: false });
+  });
+
   it("the docked spawn panel defaults off on the right and clamps an unknown side", () => {
     expect(mergeDefaults(null).spawnDock).toEqual({
       enabled: false,
       side: "right",
       foldOnChat: true,
+      minified: false,
     });
     const merged = mergeDefaults({
       spawnDock: { enabled: "yes", side: "top" },

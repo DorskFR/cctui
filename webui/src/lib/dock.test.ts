@@ -6,6 +6,7 @@ import {
 	DOCK_MIN_PX,
 	maxDockWidth,
 	resolveDocks,
+	SPAWN_DOCK_RAIL_WIDTH,
 	SPAWN_DOCK_WIDTH,
 	storedDockWidth,
 	STATS_DOCK_WIDTH
@@ -21,7 +22,11 @@ describe('resolveDocks', () => {
 			conversation: null,
 			spawn: null,
 			stats: null,
+			spawnMinified: false,
 			stacked: false,
+			spawnWidth: null,
+			statsWidth: null,
+			spawnOffset: null,
 			left: null,
 			right: null
 		});
@@ -38,7 +43,11 @@ describe('resolveDocks', () => {
 			conversation: null,
 			spawn: null,
 			stats: null,
+			spawnMinified: false,
 			stacked: false,
+			spawnWidth: null,
+			statsWidth: null,
+			spawnOffset: null,
 			left: null,
 			right: null
 		});
@@ -186,6 +195,73 @@ describe('resolveDocks with a docked conversation', () => {
 			}).right;
 		expect(at(720)).toBe('720px');
 		expect(at(5)).toBe(`${DOCK_MIN_PX}px`);
+	});
+});
+
+describe('resolveDocks with a minified spawn panel', () => {
+	const rail = (side: 'left' | 'right') => ({ ...on(side), width: 500, minified: true });
+
+	it('reserves only the rail width on its edge', () => {
+		const r = resolveDocks({ spawn: rail('left'), stats: off, wide: true, veryWide: false });
+		expect(r.spawn).toBe('left');
+		expect(r.spawnMinified).toBe(true);
+		expect(r.spawnWidth).toBe(SPAWN_DOCK_RAIL_WIDTH);
+		expect(r.left).toBe(SPAWN_DOCK_RAIL_WIDTH);
+	});
+
+	it('sits inward of a stats panel on the same edge instead of stacking', () => {
+		const r = resolveDocks({
+			spawn: rail('right'),
+			stats: { ...on('right'), width: 300 },
+			wide: true,
+			veryWide: false
+		});
+		expect(r.stacked).toBe(false);
+		expect(r.statsWidth).toBe('300px');
+		expect(r.spawnOffset).toBe('300px');
+		expect(r.right).toBe(`calc(300px + ${SPAWN_DOCK_RAIL_WIDTH})`);
+	});
+
+	it('leaves room for a stats panel on the opposite edge below veryWide', () => {
+		const r = resolveDocks({ spawn: rail('left'), stats: on('right'), wide: true, veryWide: false });
+		expect(r.stats).toBe('right');
+		expect(r.right).toBe(STATS_DOCK_WIDTH);
+	});
+
+	it('stays beside a docked conversation that has no room for a full panel', () => {
+		const r = resolveDocks({
+			spawn: rail('right'),
+			stats: on('left'),
+			conversation: on('right'),
+			wide: true,
+			veryWide: false
+		});
+		expect(r.spawn).toBe('left');
+		expect(r.left).toBe(SPAWN_DOCK_RAIL_WIDTH);
+		expect(r.stats).toBeNull();
+	});
+
+	it('is ignored while the panel is off', () => {
+		const r = resolveDocks({
+			spawn: { ...off, minified: true },
+			stats: off,
+			wide: true,
+			veryWide: true
+		});
+		expect(r.spawn).toBeNull();
+		expect(r.spawnMinified).toBe(false);
+	});
+
+	it('an expanded stacked column still sizes both panels by the spawn width', () => {
+		const r = resolveDocks({
+			spawn: { ...on('left'), width: 500 },
+			stats: { ...on('left'), width: 300 },
+			wide: true,
+			veryWide: false
+		});
+		expect(r.spawnWidth).toBe('500px');
+		expect(r.statsWidth).toBe('500px');
+		expect(r.spawnOffset).toBeNull();
 	});
 });
 

@@ -10,7 +10,15 @@ vi.hoisted(() => {
 	})) as unknown as typeof window.matchMedia;
 });
 
-import { dockLayout, spawnDockHold, spawnDockSide } from './spawnDock.svelte.ts';
+import { SPAWN_DOCK_RAIL_WIDTH } from './dock.ts';
+import {
+	dockLayout,
+	expandSpawnDock,
+	minifySpawnDock,
+	spawnDockHold,
+	spawnDockMinified,
+	spawnDockSide
+} from './spawnDock.svelte.ts';
 import { settings } from './settings.svelte.ts';
 
 beforeAll(() => {
@@ -18,27 +26,60 @@ beforeAll(() => {
 });
 
 afterEach(() => {
-	spawnDockHold.collapsed = false;
-	settings.setSpawnDock({ foldOnChat: true });
+	spawnDockHold.chat = false;
+	spawnDockHold.expanded = false;
+	settings.setSpawnDock({ foldOnChat: true, minified: false });
 });
 
-describe('spawn dock collapse', () => {
-	it('docks the spawn form when nothing holds it', () => {
+describe('spawn dock minify', () => {
+	it('docks the full form when nothing minifies it', () => {
 		expect(spawnDockSide()).toBe('left');
-		expect(dockLayout().left).not.toBeNull();
+		expect(dockLayout().spawnMinified).toBe(false);
+		expect(dockLayout().left).not.toBe(SPAWN_DOCK_RAIL_WIDTH);
 	});
 
-	it('folds the spawn form back to the button and frees its edge while collapsed', () => {
-		spawnDockHold.collapsed = true;
-		expect(spawnDockSide()).toBeNull();
-		expect(dockLayout().left).toBeNull();
-		expect(settings.spawnDock.enabled).toBe(true);
+	it('minifies to the rail on click and keeps it across reloads', () => {
+		minifySpawnDock();
+		expect(settings.spawnDock.minified).toBe(true);
+		expect(spawnDockSide()).toBe('left');
+		expect(dockLayout().left).toBe(SPAWN_DOCK_RAIL_WIDTH);
+		expandSpawnDock();
+		expect(settings.spawnDock.minified).toBe(false);
+		expect(dockLayout().spawnMinified).toBe(false);
 	});
 
-	it('keeps the spawn form docked while held when folding is turned off', () => {
+	it('minifies to the rail while a conversation is open, keeping its edge', () => {
+		spawnDockHold.chat = true;
+		expect(spawnDockMinified()).toBe(true);
+		expect(spawnDockSide()).toBe('left');
+		expect(dockLayout().left).toBe(SPAWN_DOCK_RAIL_WIDTH);
+		expect(settings.spawnDock.minified).toBe(false);
+		spawnDockHold.chat = false;
+		expect(spawnDockMinified()).toBe(false);
+	});
+
+	it('stays expanded during a conversation when folding is turned off', () => {
 		settings.setSpawnDock({ foldOnChat: false });
-		spawnDockHold.collapsed = true;
-		expect(spawnDockSide()).toBe('left');
-		expect(dockLayout().left).not.toBeNull();
+		spawnDockHold.chat = true;
+		expect(spawnDockMinified()).toBe(false);
+	});
+
+	it('expanding during a conversation does not touch the saved state, and minifying refolds it', () => {
+		spawnDockHold.chat = true;
+		expandSpawnDock();
+		expect(spawnDockMinified()).toBe(false);
+		minifySpawnDock();
+		expect(spawnDockMinified()).toBe(true);
+		expect(settings.spawnDock.minified).toBe(false);
+		spawnDockHold.chat = false;
+		expect(spawnDockMinified()).toBe(false);
+	});
+
+	it('stays minified after the conversation when the user had minified it before', () => {
+		minifySpawnDock();
+		spawnDockHold.chat = true;
+		expect(spawnDockMinified()).toBe(true);
+		spawnDockHold.chat = false;
+		expect(spawnDockMinified()).toBe(true);
 	});
 });

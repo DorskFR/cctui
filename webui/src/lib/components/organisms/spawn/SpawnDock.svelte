@@ -1,23 +1,53 @@
 <script lang="ts">
 	import type { Snippet } from 'svelte';
-	import { resizeHandle } from '@dorsk/tsumikit';
+	import { IconButton, resizeHandle } from '@dorsk/tsumikit';
+	import { tick } from 'svelte';
 	import { settings, type SpawnDockSide } from '#lib/settings.svelte.ts';
 	import { DOCK_MIN_PX, maxDockWidth } from '#lib/dock.ts';
+	import { expandSpawnDock, minifySpawnDock } from '#lib/spawnDock.svelte.ts';
 	import { m } from '#lib/paraglide/messages.js';
 
 	let {
 		side,
 		stacked = false,
 		width,
+		minified = false,
+		offset = null,
 		body,
 		footer
 	}: {
 		side: SpawnDockSide;
 		stacked?: boolean;
 		width: string;
+		/** Show the rail; the form stays mounted underneath so its draft survives. */
+		minified?: boolean;
+		/** Distance from the edge when the stats panel shares it. */
+		offset?: string | null;
 		body: Snippet;
 		footer: Snippet;
 	} = $props();
+
+	const bodyId = $props.id();
+	let dockEl = $state<HTMLElement>();
+	let bodyEl = $state<HTMLElement>();
+	const towardEdge = $derived(side === 'left' ? '«' : '»');
+	const awayFromEdge = $derived(side === 'left' ? '»' : '«');
+
+	async function toggle(expand: boolean) {
+		if (expand) expandSpawnDock();
+		else minifySpawnDock();
+		await tick();
+		dockEl?.querySelector<HTMLElement>('[data-dock-toggle]')?.focus();
+	}
+
+	async function startNew() {
+		expandSpawnDock();
+		await tick();
+		const field =
+			bodyEl?.querySelector<HTMLElement>('textarea') ??
+			bodyEl?.querySelector<HTMLElement>('input:not([type="hidden"])');
+		field?.focus();
+	}
 
 	let dragging = $state(false);
 	let viewportWidth = $state(0);
@@ -27,41 +57,70 @@
 <svelte:window bind:innerWidth={viewportWidth} />
 
 <aside
+	bind:this={dockEl}
 	class="dock"
 	class:dock-left={side === 'left'}
 	class:stacked
+	class:minified
 	aria-label={m.spawn_modal_title()}
 	style:--spawn-dock-w={width}
+	style:--spawn-dock-offset={offset ?? undefined}
 >
-	<!-- svelte-ignore a11y_no_noninteractive_tabindex -->
-	<div
-		class="grip"
-		class:grip-left={side === 'left'}
-		class:dragging
-		role="separator"
-		tabindex="0"
-		aria-orientation="vertical"
-		aria-valuemin={DOCK_MIN_PX}
-		aria-valuemax={maxPx}
-		aria-label={m.dock_resize_grip()}
-		title={m.dock_resize_grip()}
-		use:resizeHandle={{
-			side,
-			min: DOCK_MIN_PX,
-			max: maxPx,
-			onwidth: (px) => settings.setSpawnDock({ width: px }),
-			onreset: () => settings.setSpawnDock({ width: undefined }),
-			onactive: (a) => {
-				dragging = a;
-				document.body.classList.toggle('dock-resizing', a);
-			}
-		}}
-	></div>
-	<div class="dock-head">
-		<span>{m.spawn_modal_title()}</span>
+	{#if minified}
+		<div class="rail">
+			<IconButton
+				emoji={awayFromEdge}
+				variant="ghost"
+				label={m.spawn_dock_expand()}
+				aria-expanded="false"
+				aria-controls={bodyId}
+				data-dock-toggle
+				onclick={() => toggle(true)}
+			/>
+			<IconButton icon="plus" variant="ghost" label={m.spawn_modal_title()} onclick={startNew} />
+		</div>
+	{:else}
+		<!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+		<div
+			class="grip"
+			class:grip-left={side === 'left'}
+			class:dragging
+			role="separator"
+			tabindex="0"
+			aria-orientation="vertical"
+			aria-valuemin={DOCK_MIN_PX}
+			aria-valuemax={maxPx}
+			aria-label={m.dock_resize_grip()}
+			title={m.dock_resize_grip()}
+			use:resizeHandle={{
+				side,
+				min: DOCK_MIN_PX,
+				max: maxPx,
+				onwidth: (px) => settings.setSpawnDock({ width: px }),
+				onreset: () => settings.setSpawnDock({ width: undefined }),
+				onactive: (a) => {
+					dragging = a;
+					document.body.classList.toggle('dock-resizing', a);
+				}
+			}}
+		></div>
+		<div class="dock-head">
+			<span>{m.spawn_modal_title()}</span>
+			<IconButton
+				emoji={towardEdge}
+				variant="ghost"
+				label={m.spawn_dock_minify()}
+				aria-expanded="true"
+				aria-controls={bodyId}
+				data-dock-toggle
+				onclick={() => toggle(false)}
+			/>
+		</div>
+	{/if}
+	<div class="dock-body" id={bodyId} bind:this={bodyEl} hidden={minified} inert={minified}>
+		{@render body()}
 	</div>
-	<div class="dock-body">{@render body()}</div>
-	<div class="dock-foot">{@render footer()}</div>
+	<div class="dock-foot" hidden={minified} inert={minified}>{@render footer()}</div>
 </aside>
 
 <style>
@@ -79,14 +138,31 @@
 		border-left: 1px solid var(--border);
 		z-index: 4;
 	}
+	.dock.minified {
+		right: var(--spawn-dock-offset, 0);
+	}
 	.dock.dock-left {
 		right: auto;
 		left: 0;
 		border-left: 0;
 		border-right: 1px solid var(--border);
 	}
+	.dock.dock-left.minified {
+		left: var(--spawn-dock-offset, 0);
+	}
 	.dock.stacked {
 		bottom: 50%;
+	}
+	.rail {
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		gap: var(--sp-2);
+		padding: var(--sp-2) 0;
+	}
+	.dock-body[hidden],
+	.dock-foot[hidden] {
+		display: none;
 	}
 	/* A 10px hit area straddling the panel's border, with a 2px line that only
 	   shows on hover, focus or while dragging. */

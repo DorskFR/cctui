@@ -18,7 +18,7 @@
 	import ConversationDrawer from '#lib/components/organisms/ConversationDrawer.svelte';
 	import ConversationDock from '#lib/components/organisms/ConversationDock.svelte';
 	import SpawnModal from '#lib/components/organisms/SpawnModal.svelte';
-	import { dockLayout, spawnDockHold } from '#lib/spawnDock.svelte.ts';
+	import { dockLayout, expandSpawnDock, spawnDockHold } from '#lib/spawnDock.svelte.ts';
 	import StatsDock from '#lib/components/organisms/statsdock/StatsDock.svelte';
 	import SessionControls from '#lib/components/organisms/SessionControls.svelte';
 	import { Callout, ConfirmModal } from '@dorsk/tsumikit';
@@ -42,7 +42,6 @@
 	import { settings } from '#lib/settings.svelte.ts';
 	import { m } from '#lib/paraglide/messages.js';
 	import {
-		foldedPrefill,
 		sessionIdFromLocation,
 		sessionHrefFor,
 		sessionNavState,
@@ -261,18 +260,25 @@
 		sp.openSession = null;
 	};
 
+	const chatOpen = $derived(!!sp.liveOpen);
 	$effect(() => {
-		const open = !!sp.liveOpen && settings.spawnDock.foldOnChat !== false;
+		const open = chatOpen;
 		untrack(() => {
-			if (open && sp.dockSide) sp.spawnPrefill = foldedPrefill(sp.spawnPrefill);
-			const wasHeld = spawnDockHold.collapsed;
-			spawnDockHold.collapsed = open;
-			// The dock returning takes over a modal opened while it was folded.
-			if (!open && wasHeld && sp.dockSide) sp.showSpawn = false;
+			spawnDockHold.chat = open;
+			if (!open) spawnDockHold.expanded = false;
 		});
 	});
 	$effect(() => () => {
-		spawnDockHold.collapsed = false;
+		spawnDockHold.chat = false;
+		spawnDockHold.expanded = false;
+	});
+	// A form asked for (follow-up, new from script, draft edit) shows expanded.
+	let seenDockEpoch = untrack(() => sp.dockEpoch);
+	$effect(() => {
+		const epoch = sp.dockEpoch;
+		if (epoch === seenDockEpoch) return;
+		seenDockEpoch = epoch;
+		untrack(expandSpawnDock);
 	});
 
 	// live status changes from the websocket → refetch the list
@@ -413,7 +419,9 @@
 			bind:this={sp.spawnModal}
 			docked={sp.dockSide}
 			stacked={sp.docks.stacked}
-			dockWidth={sp.docks[sp.dockSide] ?? undefined}
+			dockWidth={sp.docks.spawnWidth ?? undefined}
+			dockMinified={sp.docks.spawnMinified}
+			dockOffset={sp.docks.spawnOffset}
 			prefill={sp.spawnPrefill}
 			onclose={() => {
 				sp.spawnPrefill = null;
@@ -463,6 +471,6 @@
 	/>
 {/if}
 
-{#if sp.docks.stats && sp.docks[sp.docks.stats]}
-	<StatsDock side={sp.docks.stats} stacked={sp.docks.stacked} width={sp.docks[sp.docks.stats] ?? ''} />
+{#if sp.docks.stats && sp.docks.statsWidth}
+	<StatsDock side={sp.docks.stats} stacked={sp.docks.stacked} width={sp.docks.statsWidth ?? ''} />
 {/if}
