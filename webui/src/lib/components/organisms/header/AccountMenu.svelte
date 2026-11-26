@@ -91,7 +91,6 @@
 {/snippet}
 
 <span class="acct">
-	<span class="inbox-anchor"><NotificationBell bind:open={inboxOpen} /></span>
 	<Menu label={m.nav_user_menu()} {items} bare placement="bottom-end">
 		{#snippet trigger()}
 			<span class="pill">
@@ -113,6 +112,8 @@
 	</Menu>
 </span>
 
+<NotificationBell bind:open={inboxOpen} bell={false} />
+
 {#if updateOpen && canUpdate && version.data?.latest_version}
 	<UpdateModal
 		latestVersion={version.data.latest_version}
@@ -125,24 +126,7 @@
 
 <style>
 	.acct {
-		position: relative;
 		display: inline-flex;
-		isolation: isolate;
-	}
-	/* The notification centre opens from the account menu; its own bell stays
-	   mounted under the pill only as the panel's anchor and shows when focused. */
-	.inbox-anchor {
-		position: absolute;
-		inset: 0;
-		z-index: -1;
-		display: flex;
-		align-items: center;
-		justify-content: flex-end;
-		opacity: 0;
-	}
-	.inbox-anchor:focus-within {
-		z-index: 1;
-		opacity: 1;
 	}
 	.pill {
 		display: inline-flex;

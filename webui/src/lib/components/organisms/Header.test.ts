@@ -159,12 +159,24 @@ describe('notifications', () => {
 	it('keeps the bell out of the bar and the toggle in the user menu', async () => {
 		notify.enabled = false;
 		render();
-		const tail = document.querySelector('header.hd .tail') as HTMLElement;
-		const anchor = tail.querySelector('.inbox-anchor') as HTMLElement;
-		expect(anchor.querySelector('[data-tsu="NotificationCenter"]')).not.toBeNull();
-		expect(tail.querySelectorAll('[data-tsu="NotificationCenter"]')).toHaveLength(1);
+		expect(document.querySelectorAll('[data-tsu="NotificationCenter"]')).toHaveLength(1);
+		expect(document.querySelector('[data-tsu="NotificationCenter"] [aria-haspopup="dialog"]')).toBeNull();
+		expect(document.querySelector('.inbox-anchor')).toBeNull();
 		await openUserMenu();
 		expect(rowByText('Notify me when a session needs input')).toBeTruthy();
+	});
+
+	it('opens the notification panel from the Notifications row', async () => {
+		render();
+		const drawer = document.querySelector('[data-tsu="NotificationCenter"] [data-tsu="Drawer"]') as HTMLDialogElement;
+		expect(drawer.open).toBe(false);
+		await openUserMenu();
+		rowByText('Notifications')?.click();
+		flushSync();
+		await Promise.resolve();
+		flushSync();
+		expect(drawer.open).toBe(true);
+		expect(drawer.getAttribute('aria-label')).toBe('Notifications');
 	});
 
 	it('shows no unread count when everything is read', async () => {
