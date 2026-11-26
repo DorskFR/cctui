@@ -1689,7 +1689,7 @@
 	"sessions_section_unread": "Unread only",
 	"sessions_sections_aria": "Sections",
 	"sessions_select_all": "Select all",
-	"sessions_select_multiple": "Select multiple to archive",
+	"sessions_select_multiple": "Select multiple",
 	"sessions_select_range_hint": "Shift-click to select a range",
 	"sessions_selected_count": "{count} selected",
 	"sessions_sort_asc": "Ascending",
