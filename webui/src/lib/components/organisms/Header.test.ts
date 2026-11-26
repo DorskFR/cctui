@@ -50,6 +50,7 @@ vi.mock('#lib/toast.svelte.ts', () => ({
 vi.stubGlobal('__CLIENT_VERSION__', '0.11.0');
 
 import { notify } from '#lib/notify.svelte.ts';
+import { notifications } from '#lib/notifications.svelte.ts';
 import { setCapabilitiesForTest } from '#lib/features.svelte.ts';
 import Header from './Header.svelte';
 
@@ -130,28 +131,50 @@ describe('the system bar carries no ? button', () => {
 });
 
 describe('appearance', () => {
-	it('keeps the theme and text size pickers out of the bar', () => {
+	it('keeps the theme and text size pickers in the bar', () => {
 		render();
-		const hd = document.querySelector('header.hd') as HTMLElement;
-		expect(hd.querySelector('[data-tsu="ThemePicker"], [data-tsu="FontScalePicker"]')).toBeNull();
-		expect(hd.querySelector('.prefs')).toBeNull();
+		const prefs = document.querySelector('header.hd .tail .prefs') as HTMLElement;
+		expect(prefs.querySelector('[data-tsu="ThemePicker"]')).not.toBeNull();
+		expect(prefs.querySelector('[data-tsu="FontScalePicker"]')).not.toBeNull();
 	});
 
-	it('opens Settings › Interface › Theme from the account menu', async () => {
+	it('drops the Appearance row from the account menu', async () => {
 		render();
 		await openUserMenu();
-		rowByText('Appearance…')?.click();
-		expect(goto).toHaveBeenCalledWith('/settings/interface#theme');
+		expect(rowByText('Appearance')).toBeNull();
 	});
 });
 
 describe('notifications', () => {
-	it('keep no indicator on the pill; the toggle lives in the user menu', async () => {
+	afterEach(() => {
+		notifications.unread = 0;
+	});
+
+	it('keeps the bell out of the bar and the toggle in the user menu', async () => {
 		notify.enabled = false;
 		render();
-		expect(document.querySelector('.pill .bell')).toBeNull();
+		const tail = document.querySelector('header.hd .tail') as HTMLElement;
+		const anchor = tail.querySelector('.inbox-anchor') as HTMLElement;
+		expect(anchor.querySelector('[data-tsu="NotificationCenter"]')).not.toBeNull();
+		expect(tail.querySelectorAll('[data-tsu="NotificationCenter"]')).toHaveLength(1);
 		await openUserMenu();
 		expect(rowByText('Notify me when a session needs input')).toBeTruthy();
+	});
+
+	it('shows no unread count when everything is read', async () => {
+		render();
+		expect(document.querySelector('.pill [data-tsu="Badge"]')).toBeNull();
+		await openUserMenu();
+		expect(rowByText('Notifications')?.querySelector('[data-tsu="Badge"]')).toBeNull();
+	});
+
+	it('carries the unread count on the pill and the Notifications row', async () => {
+		notifications.unread = 3;
+		render();
+		expect(document.querySelector('.pill [data-tsu="Badge"]')?.textContent?.trim()).toBe('3');
+		await openUserMenu();
+		const row = rowByText('Notifications');
+		expect(row?.querySelector('[data-tsu="Badge"]')?.textContent?.trim()).toBe('3');
 	});
 });
 

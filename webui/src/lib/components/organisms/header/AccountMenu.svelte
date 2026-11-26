@@ -1,21 +1,23 @@
 <script lang="ts">
 	import { useMe, useVersion } from '#lib/queries/index.ts';
 	import { releaseChannel, versionLine } from '#lib/releaseChannel.ts';
-	import { goto } from '$app/navigation';
 	import { auth } from '#lib/auth.svelte.ts';
-	import { settingsHref } from '#lib/components/organisms/settings/settings.logic.ts';
 	import { hasFeature } from '#lib/features.svelte.ts';
 	import { notify } from '#lib/notify.svelte.ts';
+	import { notifications } from '#lib/notifications.svelte.ts';
 	import { settings } from '#lib/settings.svelte.ts';
 	import { toasts } from '#lib/toast.svelte.ts';
-	import { Avatar, Dot, Menu } from '@dorsk/tsumikit';
+	import { Avatar, Badge, Dot, Menu } from '@dorsk/tsumikit';
 	import type { MenuItem } from '@dorsk/tsumikit';
 	import UpdateModal from '#lib/components/organisms/UpdateModal.svelte';
+	import NotificationBell from '#lib/components/organisms/NotificationBell.svelte';
 	import { m } from '#lib/paraglide/messages.js';
 
 	const version = useVersion();
 	const me = useMe();
 	let updateOpen = $state(false);
+	let inboxOpen = $state(false);
+	const unread = $derived(notifications.unread);
 
 	async function toggleNotify() {
 		if (settings.notifyEnabled) {
@@ -68,9 +70,11 @@
 				? [{ label: m.nav_update_available({ version: latest }), icon: 'arrow-up' as const, disabled: true }]
 				: []),
 		{
-			label: m.nav_appearance(),
-			icon: 'palette' as const,
-			onselect: () => void goto(settingsHref('interface', 'theme'))
+			label: m.notif_center_title(),
+			icon: 'bell' as const,
+			tag: unread > 0 ? String(unread) : undefined,
+			tagTone: 'accent' as const,
+			onselect: () => (inboxOpen = true)
 		},
 		{
 			label: notifyLabel,
@@ -86,24 +90,28 @@
 	<Dot color="var(--danger)" />
 {/snippet}
 
-<Menu label={m.nav_user_menu()} {items} bare placement="bottom-end">
-	{#snippet trigger()}
-		<span class="pill">
-			<Avatar
-				name={userName || userRole}
-				tone="accent"
-				size={24}
-				decorative
-				status={latest ? alertDot : undefined}
-			/>
-			<span class="who">
-				{#if userName}<span class="who-name">{userName}</span>{/if}
-				{#if userName && roleSuffix}<span class="who-sep">·</span>{/if}
-				{#if roleSuffix}<span class="who-role">{roleSuffix}</span>{/if}
+<span class="acct">
+	<span class="inbox-anchor"><NotificationBell bind:open={inboxOpen} /></span>
+	<Menu label={m.nav_user_menu()} {items} bare placement="bottom-end">
+		{#snippet trigger()}
+			<span class="pill">
+				<Avatar
+					name={userName || userRole}
+					tone="accent"
+					size={24}
+					decorative
+					status={latest ? alertDot : undefined}
+				/>
+				<span class="who">
+					{#if userName}<span class="who-name">{userName}</span>{/if}
+					{#if userName && roleSuffix}<span class="who-sep">·</span>{/if}
+					{#if roleSuffix}<span class="who-role">{roleSuffix}</span>{/if}
+				</span>
+				{#if unread > 0}<Badge size="xs" numeric tone="accent" border={false}>{unread}</Badge>{/if}
 			</span>
-		</span>
-	{/snippet}
-</Menu>
+		{/snippet}
+	</Menu>
+</span>
 
 {#if updateOpen && canUpdate && version.data?.latest_version}
 	<UpdateModal
@@ -116,6 +124,26 @@
 {/if}
 
 <style>
+	.acct {
+		position: relative;
+		display: inline-flex;
+		isolation: isolate;
+	}
+	/* The notification centre opens from the account menu; its own bell stays
+	   mounted under the pill only as the panel's anchor and shows when focused. */
+	.inbox-anchor {
+		position: absolute;
+		inset: 0;
+		z-index: -1;
+		display: flex;
+		align-items: center;
+		justify-content: flex-end;
+		opacity: 0;
+	}
+	.inbox-anchor:focus-within {
+		z-index: 1;
+		opacity: 1;
+	}
 	.pill {
 		display: inline-flex;
 		align-items: center;
