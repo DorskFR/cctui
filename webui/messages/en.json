@@ -718,8 +718,6 @@
 	"drawer_menu_group_collaborate": "Collaborate",
 	"drawer_menu_group_session": "Session",
 	"drawer_meta_details": "Session details",
-	"drawer_meta_tokens": "{tokens} tokens",
-	"drawer_meta_tokens_title": "In {in} · out {out} · cache {cache}",
 	"drawer_cost_with_source": "{cost} · {source}",
 	"drawer_cost_source_langfuse": "Langfuse",
 	"drawer_cost_source_harness": "harness",
@@ -2301,6 +2299,7 @@
 	"spawn_action_dispatch": "Dispatch",
 	"spawn_action_spawn": "Launch",
 	"spawn_action_spawn_profile": "Launch · {profile}",
+	"spawn_add_context": "Context",
 	"spawn_add_env_vars": "Env vars",
 	"spawn_add_files": "Files",
 	"spawn_add_label": "Labels",
@@ -3409,5 +3408,7 @@
 	"error_search_archived_placeholder": "Name, folder or id",
 	"error_session_missing_body": "This session was archived or deleted. Search the archived sessions, or go back to your sessions.",
 	"error_session_missing_title": "Session not found",
-	"list_auto_approve": "auto-approve"
+	"list_auto_approve": "auto-approve",
+	"drawer_meta_tokens": "{tokens} tokens",
+	"drawer_meta_tokens_title": "In {in} · out {out} · cache {cache}"
 }

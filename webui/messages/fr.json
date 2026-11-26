@@ -718,8 +718,6 @@
 	"drawer_menu_group_collaborate": "Collaborer",
 	"drawer_menu_group_session": "Session",
 	"drawer_meta_details": "Détails de la session",
-	"drawer_meta_tokens": "{tokens} jetons",
-	"drawer_meta_tokens_title": "Entrée {in} · sortie {out} · cache {cache}",
 	"drawer_cost_with_source": "{cost} · {source}",
 	"drawer_cost_source_langfuse": "Langfuse",
 	"drawer_cost_source_harness": "harnais",
@@ -2301,6 +2299,7 @@
 	"spawn_action_dispatch": "Dispatcher",
 	"spawn_action_spawn": "Lancer",
 	"spawn_action_spawn_profile": "Lancer · {profile}",
+	"spawn_add_context": "Contexte",
 	"spawn_add_env_vars": "Env vars",
 	"spawn_add_files": "Fichiers",
 	"spawn_add_label": "Libellés",
@@ -3409,5 +3408,7 @@
 	"error_search_archived_placeholder": "Nom, dossier ou identifiant",
 	"error_session_missing_body": "Cette session a été archivée ou supprimée. Cherchez-la dans les sessions archivées, ou revenez à vos sessions.",
 	"error_session_missing_title": "Session introuvable",
-	"list_auto_approve": "approbation auto"
+	"list_auto_approve": "approbation auto",
+	"drawer_meta_tokens": "{tokens} jetons",
+	"drawer_meta_tokens_title": "Entrée {in} · sortie {out} · cache {cache}"
 }

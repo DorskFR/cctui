@@ -248,6 +248,25 @@ describe("SpawnModal machine tab with a feature off", () => {
     expect(document.querySelector('[data-journey="spawn-dictation"]')).toBeNull();
   });
 
+  it("keeps the context row behind + Context until asked for", async () => {
+    only([]);
+    await open();
+    expect(document.querySelector("#sp-context")).toBeNull();
+    const add = document.querySelector<HTMLButtonElement>('[data-journey="add-context"]');
+    expect(add?.closest('[data-journey="spawn-addons"]')).toBeTruthy();
+    add?.click();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(document.querySelector("#sp-context")).toBeTruthy();
+    expect(document.activeElement?.id).toBe("sp-context");
+    expect(document.querySelector('[data-journey="add-context"]')).toBeNull();
+  });
+
+  it("offers no + Context without context", async () => {
+    only(["context"]);
+    await open();
+    expect(document.querySelector('[data-journey="add-context"]')).toBeNull();
+  });
+
   it("mounts no context row without context", async () => {
     only(["context"]);
     await open();
