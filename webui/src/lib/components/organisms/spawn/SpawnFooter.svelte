@@ -1,83 +1,88 @@
 <script lang="ts">
-	import { Button, Callout, SplitButton } from '@dorsk/tsumikit';
+	import { Button, Callout, Icon, SplitButton } from '@dorsk/tsumikit';
 	import { m } from '#lib/paraglide/messages.js';
-	import SpawnAutoArchive from './SpawnAutoArchive.svelte';
 	import type { SpawnForm } from './spawnForm.svelte';
 	import type { SpawnSchedule } from './spawnSchedule.svelte';
 
 	let { sf, schedule }: { sf: SpawnForm; schedule: SpawnSchedule } = $props();
 
-	// The kit's Button/SplitButton take no flex prop whose basis is the content
-	// (`grow` is `1 1 0`, i.e. equal columns), so the footer buttons carry theirs
-	// inline. The primary's basis is the width below which it would be squeezed:
-	// past it the row wraps and it spans the whole footer.
-	const FOOT_GROW = 'flex: 1 1 auto';
-	const FOOT_PRIMARY_GROW = 'flex: 1 1 11rem';
-	// SplitButton packs its two segments at the start of its box, so a stretched
-	// root would leave slack after the caret; a grid root hands the slack to the
-	// main segment and keeps the caret glued to it.
-	const FOOT_SPLIT_GROW = `${FOOT_PRIMARY_GROW}; display: grid; grid-template-columns: 1fr auto`;
+	// The kit's buttons take no margin prop; the primary is pushed to the end of
+	// the row, and to the end of its own line once the row wraps.
+	const PRIMARY_END = 'margin-inline-start: auto';
 	const CHORD = 'Control+Enter Meta+Enter';
 </script>
 
-{#if sf.spawnFailure}
-	<Callout tone="danger" title={m.spawn_failure_inline()} style="flex-basis:100%">
-		<pre class="spawn-failure-detail">{sf.spawnFailure}</pre>
-	</Callout>
-{/if}
-{#if sf.target === 'machine' && !sf.noMachines}
-	<SpawnAutoArchive bind:checked={sf.form.auto_archive} />
-{/if}
-<div class="foot-row">
-	<Button style={FOOT_GROW} onclick={sf.clearForm}>{m.spawn_clear()}</Button>
-	{#if sf.target === 'machine' && sf.canDraft}
-		<Button
-			data-journey="draft"
-			style={FOOT_GROW}
-			disabled={sf.busy || !sf.draftValid}
-			title={sf.disabledReason}
-			onclick={sf.submitDraft}
-		>
-			{m.spawn_draft()}
-		</Button>
+<div class="spawn-foot">
+	{#if sf.spawnFailure}
+		<Callout tone="danger" title={m.spawn_failure_inline()}>
+			<pre class="spawn-failure-detail">{sf.spawnFailure}</pre>
+		</Callout>
 	{/if}
-	<!-- No machines or no scheduling: nothing to schedule, and only a plain
-	     Button can carry the disabled reason as its own title. -->
-	{#if sf.target === 'machine' && !sf.noMachines && sf.canSchedule}
-		<SplitButton
-			data-journey="submit"
-			variant="primary"
-			caret="half"
-			style={FOOT_SPLIT_GROW}
-			placement="top-end"
-			label={m.spawn_schedule_menu()}
-			items={schedule.items}
-			loading={sf.busy}
-			disabled={sf.busy || !sf.valid}
-			menuDisabled={!sf.draftValid}
-			title={sf.disabledReason}
-			primaryProps={{ 'aria-keyshortcuts': CHORD }}
-			onclick={sf.submit}
-		>
-			{sf.spawnLabel}
-		</SplitButton>
-	{:else}
-		<Button
-			data-journey="submit"
-			variant="primary"
-			style={FOOT_PRIMARY_GROW}
-			loading={sf.busy}
-			disabled={sf.busy || !sf.valid}
-			title={sf.disabledReason}
-			aria-keyshortcuts={CHORD}
-			onclick={sf.submit}
-		>
-			{sf.spawnLabel}
-		</Button>
-	{/if}
+	<div class="foot-row">
+		<div class="foot-quiet">
+			<Button variant="ghost" size="sm" onclick={sf.clearForm}>{m.spawn_clear()}</Button>
+			{#if sf.target === 'machine' && sf.canDraft}
+				<Button
+					data-journey="draft"
+					variant="ghost"
+					size="sm"
+					disabled={sf.busy || !sf.draftValid}
+					title={sf.disabledReason}
+					onclick={sf.submitDraft}
+				>
+					{m.spawn_draft()}
+				</Button>
+			{/if}
+		</div>
+		<!-- With no machines only a plain Button can carry the disabled reason as its own title. -->
+		{#if sf.target === 'machine' && !sf.noMachines}
+			<SplitButton
+				data-journey="submit"
+				variant="primary"
+				caret="half"
+				style={PRIMARY_END}
+				placement="top-end"
+				label={m.spawn_schedule_menu()}
+				items={schedule.items}
+				loading={sf.busy}
+				disabled={sf.busy || !sf.valid}
+				title={sf.disabledReason}
+				primaryProps={{ 'aria-keyshortcuts': CHORD }}
+				onclick={sf.submit}
+			>
+				{#if sf.form.auto_archive}
+					<span class="archive-mark" data-journey="auto-archive-on">
+						<Icon name="archive" />
+						<span class="sr-only">{m.spawn_auto_archive()}</span>
+					</span>
+				{/if}
+				{sf.spawnLabel}
+			</SplitButton>
+		{:else}
+			<Button
+				data-journey="submit"
+				variant="primary"
+				style={PRIMARY_END}
+				loading={sf.busy}
+				disabled={sf.busy || !sf.valid}
+				title={sf.disabledReason}
+				aria-keyshortcuts={CHORD}
+				onclick={sf.submit}
+			>
+				{sf.spawnLabel}
+			</Button>
+		{/if}
+	</div>
 </div>
 
 <style>
+	.spawn-foot {
+		display: flex;
+		flex-direction: column;
+		gap: var(--sp-2);
+		flex: 1 1 100%;
+		min-width: 0;
+	}
 	.spawn-failure-detail {
 		margin: var(--sp-1) 0 0;
 		max-height: 8rem;
@@ -90,8 +95,17 @@
 	.foot-row {
 		display: flex;
 		flex-wrap: wrap;
+		align-items: center;
 		gap: var(--sp-2);
-		flex: 1 1 auto;
-		width: 100%;
+	}
+	.foot-quiet {
+		display: flex;
+		align-items: center;
+		gap: var(--sp-1);
+		flex: none;
+	}
+	.archive-mark {
+		display: inline-flex;
+		margin-inline-end: var(--sp-1);
 	}
 </style>

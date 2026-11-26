@@ -216,13 +216,28 @@ describe("SpawnModal machine tab with a feature off", () => {
     expect(document.querySelector('input[type="file"]')).toBeTruthy();
   });
 
+  // The caret stays for the auto-archive toggle; only the schedule rows go.
+  const menuRows = async () => {
+    const trigger = document.querySelector<HTMLButtonElement>(
+      'button[aria-label="More spawn options"]',
+    );
+    const id = trigger?.getAttribute("popovertarget");
+    const panel = id ? document.getElementById(id) : null;
+    if (!panel) throw new Error("caret panel did not render");
+    (panel as HTMLElement & { hidePopover?: () => void }).hidePopover = () => {};
+    panel.dispatchEvent(Object.assign(new Event("toggle"), { newState: "open" }));
+    await new Promise((r) => setTimeout(r, 50));
+    const toggle = document.querySelector('[data-journey="auto-archive"]');
+    return [...(toggle?.parentElement?.children ?? [])].map(
+      (r) => r.getAttribute("data-journey") ?? r.textContent?.trim(),
+    );
+  };
+
   it("drops Draft and the schedule menu without drafts", async () => {
     only(["drafts"]);
     await open();
     expect(button("Draft")).toBeUndefined();
-    expect(
-      document.querySelector('[aria-label="More spawn options"]'),
-    ).toBeNull();
+    expect(await menuRows()).toEqual(["auto-archive"]);
     expect(button("Launch")).toBeTruthy();
   });
 
@@ -230,9 +245,7 @@ describe("SpawnModal machine tab with a feature off", () => {
     only(["scheduling"]);
     await open();
     expect(button("Draft")).toBeTruthy();
-    expect(
-      document.querySelector('[aria-label="More spawn options"]'),
-    ).toBeNull();
+    expect(await menuRows()).toEqual(["auto-archive"]);
   });
 
   it("asks for no profile without profiles", async () => {

@@ -24,28 +24,43 @@ export class SpawnSchedule {
 
 	items = $derived.by<MenuItem[]>(() => {
 		const sf = this.#sf;
-		const items = scheduleMenuItems({
-			now: this.#now,
-			canSchedule: sf.draftValid && !sf.busy,
-			onpreset: (at) => void sf.scheduleLaunch(at),
-			oncustom: () => {
-				this.customValue = toLocalInput(new Date(Date.now() + 3_600_000));
-				this.customOpen = true;
+		const items: MenuItem[] = [];
+		if (sf.canSchedule) {
+			items.push(
+				...scheduleMenuItems({
+					now: this.#now,
+					canSchedule: sf.draftValid && !sf.busy,
+					onpreset: (at) => void sf.scheduleLaunch(at),
+					oncustom: () => {
+						this.customValue = toLocalInput(new Date(Date.now() + 3_600_000));
+						this.customOpen = true;
+					}
+				})
+			);
+			if (sf.canRepeat) {
+				items.push({
+					id: 'repeat',
+					label: m.spawn_schedule_repeat(),
+					icon: 'calendar',
+					disabled: !sf.draftValid || sf.busy,
+					onselect: () => {
+						this.repeatOpen = true;
+					}
+				});
+			}
+		}
+		items.push({
+			id: 'auto-archive',
+			label: m.spawn_auto_archive(),
+			icon: 'archive',
+			pressed: sf.form.auto_archive,
+			keepOpen: true,
+			attrs: { title: m.spawn_auto_archive_hint(), 'data-journey': 'auto-archive' },
+			onselect: () => {
+				sf.form.auto_archive = !sf.form.auto_archive;
 			}
 		});
-		if (!sf.canRepeat) return items;
-		return [
-			...items,
-			{
-				id: 'repeat',
-				label: m.spawn_schedule_repeat(),
-				icon: 'calendar',
-				disabled: !sf.draftValid || sf.busy,
-				onselect: () => {
-					this.repeatOpen = true;
-				}
-			}
-		];
+		return items;
 	});
 
 	confirmCustom = () => {
