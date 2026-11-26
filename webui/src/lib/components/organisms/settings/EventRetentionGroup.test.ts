@@ -63,4 +63,19 @@ describe('EventRetentionGroup', () => {
 		await vi.runAllTimersAsync();
 		expect(api.setEventRetention).toHaveBeenCalledWith(7);
 	});
+
+	it('puts the shorten action alone beside the source badge, on one line', async () => {
+		await render();
+		setDays('7');
+		const acts = document.querySelector('[data-testid="event-retention-actions"]');
+		const buttons = [...(acts?.querySelectorAll('button') ?? [])].map((b) => b.textContent?.trim());
+		expect(buttons).toEqual([m.settings_event_retention_shorten({ days: 7 })]);
+		expect(acts?.textContent).toContain(m.settings_source_settings());
+	});
+
+	it('offers Reset once nothing is being shortened', async () => {
+		await render();
+		expect(buttonText(m.settings_reset())).toBeDefined();
+		expect(buttonText(m.settings_event_retention_shorten({ days: 7 }))).toBeUndefined();
+	});
 });
