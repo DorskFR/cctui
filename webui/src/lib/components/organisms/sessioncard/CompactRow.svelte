@@ -267,9 +267,14 @@
 		background: color-mix(in srgb, var(--info) 30%, transparent);
 		color: var(--text);
 	}
+	/* Zero block size: the 24px chips and hover-revealed tag trigger overhang the
+	   title line instead of growing the row on hover. */
 	.labels {
 		display: inline-flex;
 		flex: none;
+		align-items: center;
+		align-self: center;
+		height: 0;
 	}
 	.star {
 		display: inline-flex;
