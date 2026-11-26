@@ -54,6 +54,7 @@ describe('drawer header control chrome', () => {
 
 	it('always offers Stop beside Archive as one red icon that spins until acknowledged', () => {
 		expect(header).not.toContain('canStop');
+		expect(header).not.toMatch(/\bworking\b/);
 		const block = markup.slice(markup.indexOf('{#if !archived && !compact}'), markup.indexOf('{/if}', markup.indexOf('{#if !archived && !compact}')));
 		expect(block).toContain('icon="archive"');
 		const stop = block.slice(block.indexOf('icon="stop"') - 80);

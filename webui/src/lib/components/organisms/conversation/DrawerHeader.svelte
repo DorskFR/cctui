@@ -25,7 +25,6 @@
 		showStatusBadge,
 		maximized = false,
 		compact = false,
-		working: _working,
 		onmaximize,
 		onclose,
 		onrename,
@@ -61,8 +60,6 @@
 		/** Tile chrome: one row only — no meta row, no label strip, every action
 		 *  but maximize behind the ⋯ menu. */
 		compact?: boolean;
-		/** Ignored: Stop is offered whatever the turn state. */
-		working?: boolean;
 		onmaximize?: () => void;
 		/** Omitted in a tile, which has nothing to close back to. */
 		onclose?: () => void;
