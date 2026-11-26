@@ -61,16 +61,8 @@ pre-push:
     forbidden-terms:
       use_stdin: true
       run: bash scripts/check-forbidden-terms.sh --pre-push
-    # Each check runs only when the pushed commits touch its area (see
-    # scripts/ci-changes.sh), and the tests only for the affected crates (see
-    # scripts/affected-crates.sh); pushes to main and version branches run
-    # the full suites in CI.
-    clippy:
-      run: bash scripts/ci-prepush.sh clippy
-    test:
-      run: bash scripts/ci-prepush.sh rust
-    webui-test:
-      run: bash scripts/ci-prepush.sh webui
+    # Pre-push holds only checks that take seconds. Tests, clippy and builds
+    # run in CI on the PR.
     # Mirror of the schema-drift workflow, against the vendored schema.
     schema-drift:
       run: bash scripts/ci-prepush.sh schema
