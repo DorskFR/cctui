@@ -118,5 +118,4 @@ test('Stop turns its own square while the interrupt is in flight', async ({ page
 	await expect(stop.locator('svg')).toHaveCount(1);
 	await expect(stop.locator('.btn-spinner')).toHaveCount(0);
 	expect(await stop.locator('svg').evaluate((el) => getComputedStyle(el).animationName)).not.toBe('none');
-	await stop.screenshot({ path: '/home/dorsk/.claude/artifacts/design-wave/gate-b3/stop-spinning.png' });
 });
