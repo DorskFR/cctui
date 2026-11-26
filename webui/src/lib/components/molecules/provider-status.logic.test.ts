@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ProviderStatus } from "#lib/queries/index.ts";
 import {
-  componentNames,
   degraded,
   familyLabel,
   indicatorTone,
@@ -69,15 +68,6 @@ describe("provider status", () => {
     expect(familyLabel("anthropic")).toBe("Claude");
     expect(familyLabel("openai")).toBe("Codex");
     expect(familyLabel("whatever")).toBe("whatever");
-  });
-
-  it("caps the component list", () => {
-    const s = status({
-      indicator: "major",
-      components: ["a", "b", "c", "d"].map((name) => ({ name, status: "major_outage" })),
-    });
-    expect(componentNames(s)).toEqual(["a", "b", "c"]);
-    expect(componentNames(s, 1)).toEqual(["a"]);
   });
 
   it("attributes an incident only to the first-party provider of that family", () => {

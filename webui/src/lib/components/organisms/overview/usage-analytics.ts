@@ -96,14 +96,63 @@ export function peakBucket(buckets: readonly FilledBucket[]): FilledBucket | und
 	return best;
 }
 
-export function recentFrom(count: number, n = 5): number {
-	return Math.max(0, count - n);
+export function bucketLabel(ms: number, granularity: Granularity, locale?: string): string {
+	const opts: Intl.DateTimeFormatOptions = { year: 'numeric', month: 'numeric', day: 'numeric' };
+	if (granularity === 'hour') Object.assign(opts, { hour: 'numeric', minute: '2-digit' });
+	return new Intl.DateTimeFormat(locale, opts).format(ms);
 }
 
-/** Every `every`-th slot counting back from the newest, so the last bucket is
- *  always labelled. */
-export function isAxisTick(index: number, count: number, every: number): boolean {
-	return (count - 1 - index) % every === 0;
+export function axisLabel(ms: number, granularity: Granularity, locale?: string): string {
+	const opts: Intl.DateTimeFormatOptions =
+		granularity === 'hour'
+			? { hour: 'numeric', minute: '2-digit' }
+			: { month: 'numeric', day: 'numeric' };
+	return new Intl.DateTimeFormat(locale, opts).format(ms);
+}
+
+export interface AxisTick {
+	index: number;
+	left: number;
+}
+
+const TICK_STEPS: Record<Granularity, number[]> = {
+	hour: [1, 2, 3, 4, 6, 8, 12],
+	day: [1, 2, 3, 7, 14],
+};
+
+/**
+ * Which buckets get an axis label, and where each `labelWidth`-wide label box
+ * starts, so no two boxes come closer than `minGap`. Labels sit under their
+ * bar's centre, clamped inside the axis; the newest bucket is always labelled,
+ * then every Nth one back, plus the oldest when it fits.
+ */
+export function axisTicks(
+	count: number,
+	width: number,
+	labelWidth: number,
+	granularity: Granularity,
+	barGap = 3,
+	minGap = 8,
+): AxisTick[] {
+	if (count <= 0 || width <= 0 || labelWidth <= 0) return [];
+	const w = Math.min(labelWidth, width);
+	const slot = (width - barGap * (count - 1)) / count;
+	const left = (i: number) =>
+		Math.min(Math.max(i * (slot + barGap) + slot / 2 - w / 2, 0), width - w);
+	const clear = (a: number, b: number) => left(b) - left(a) - w >= minGap;
+	const last = count - 1;
+	const toTicks = (idx: number[]) => idx.map((index) => ({ index, left: left(index) }));
+	if (count === 1) return toTicks([0]);
+	if (!clear(0, last)) return toTicks([last]);
+
+	for (const step of TICK_STEPS[granularity]) {
+		if (!clear(last - step, last)) continue;
+		const idx: number[] = [];
+		for (let i = last; i > 0; i -= step) idx.unshift(i);
+		while (idx.length > 1 && !clear(0, idx[0])) idx.shift();
+		return toTicks([0, ...idx]);
+	}
+	return toTicks([0, last]);
 }
 
 export interface ModelRow extends ModelUsage {

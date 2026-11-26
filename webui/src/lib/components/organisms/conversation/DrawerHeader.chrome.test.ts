@@ -1,5 +1,7 @@
 // @vitest-environment happy-dom
 import { describe, expect, it } from 'vitest';
+import { flushSync, mount, unmount } from 'svelte';
+import { IconButton } from '@dorsk/tsumikit';
 import header from './DrawerHeader.svelte?raw';
 import menu from './DrawerMenu.svelte?raw';
 
@@ -59,13 +61,30 @@ describe('drawer header control chrome', () => {
 		expect(block).toContain('icon="archive"');
 		const stop = block.slice(block.indexOf('icon="stop"') - 80);
 		expect(stop).toContain('tone="danger"');
-		expect(stop).toContain('loading={stopping}');
+		expect(stop).toContain('spin={stopping}');
+		expect(stop).not.toContain('loading=');
 		expect(stop).toContain('onclick={stop}');
 		expect(header).toMatch(/stopping = true;\s*try \{\s*await oninterrupt\(\);\s*\} finally \{\s*stopping = false;/);
 	});
 
-	it('orders Archive before Stop', () => {
-		expect(markup.indexOf('icon="archive"')).toBeLessThan(markup.indexOf('icon="stop"'));
+	it('turns the stop square itself while stopping, with no spinner beside it', () => {
+		const target = document.createElement('div');
+		document.body.append(target);
+		const c = mount(IconButton, {
+			target,
+			props: { icon: 'stop', label: 'Stop', tone: 'danger', variant: 'ghost', box: 'md', spin: true }
+		});
+		flushSync();
+		const btn = target.querySelector('button') as HTMLButtonElement;
+		expect(btn.querySelectorAll('svg')).toHaveLength(1);
+		expect(btn.querySelector('.btn-spinner')).toBeNull();
+		expect(btn.querySelector('svg')?.classList.contains('spin')).toBe(true);
+		unmount(c);
+		target.remove();
+	});
+
+	it('orders Stop before Archive', () => {
+		expect(markup.indexOf('icon="stop"')).toBeLessThan(markup.indexOf('icon="archive"'));
 	});
 
 	it('keeps the title in the one action row at every width', () => {

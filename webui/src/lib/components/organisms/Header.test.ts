@@ -2,6 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mount, unmount, flushSync } from 'svelte';
 import type { SessionListItem } from '@bindings/SessionListItem';
+import type { ProviderStatus } from '@bindings/ProviderStatus';
 
 const versionData = {
 	version: '0.11.0',
@@ -14,6 +15,7 @@ const versionData = {
 	self_update_hook: null
 };
 const sessionsData = { sessions: [] as SessionListItem[] };
+const providerData = { list: [] as ProviderStatus[] };
 
 vi.mock('#lib/queries/index.ts', () => ({
 	qk: { sessions: (a: boolean) => ['sessions', a], sessionsAll: ['sessions'] },
@@ -22,7 +24,7 @@ vi.mock('#lib/queries/index.ts', () => ({
 	useSessions: () => ({ data: sessionsData }),
 	useAccounts: () => ({ data: [] }),
 	useAllAccountsUsage: () => ({ data: [] }),
-	useProviderStatus: () => ({ data: [] }),
+	useProviderStatus: () => ({ data: providerData.list }),
 	useRedirectChips: () => ({ data: [] }),
 	useMachineResources: () => ({ data: [] }),
 	usePlugins: () => ({ data: [] })
@@ -75,6 +77,7 @@ beforeEach(() => {
 	versionData.latest_version = null;
 	versionData.version = '0.11.0';
 	sessionsData.sessions = [];
+	providerData.list = [];
 	notify.enabled = false;
 	updated.current = false;
 });
@@ -112,15 +115,6 @@ describe('the system bar carries no ? button', () => {
 		expect(rowByText('Getting started')).toBeNull();
 	});
 
-	it('offers the notification toggle in the menu and reflects its pressed state', async () => {
-		render();
-		await openUserMenu();
-		const row = rowByText('Notify me when a session needs input');
-		expect(row).not.toBeNull();
-		expect(row?.getAttribute('role')).toBe('menuitemcheckbox');
-		expect(row?.getAttribute('aria-checked')).toBe('false');
-	});
-
 	it('gives every menu row an icon', async () => {
 		render();
 		await openUserMenu();
@@ -156,43 +150,32 @@ describe('notifications', () => {
 		notifications.unread = 0;
 	});
 
-	it('keeps the bell out of the bar and the toggle in the user menu', async () => {
-		notify.enabled = false;
+	it('puts the bell in the bar, between the pickers and the account menu', () => {
 		render();
-		expect(document.querySelectorAll('[data-tsu="NotificationCenter"]')).toHaveLength(1);
-		expect(document.querySelector('[data-tsu="NotificationCenter"] [aria-haspopup="dialog"]')).toBeNull();
-		expect(document.querySelector('.inbox-anchor')).toBeNull();
-		await openUserMenu();
-		expect(rowByText('Notify me when a session needs input')).toBeTruthy();
+		const tail = document.querySelector('header.hd .tail') as HTMLElement;
+		const bell = tail.querySelector('[data-tsu="NotificationCenter"] [aria-haspopup="dialog"]');
+		expect(bell).not.toBeNull();
+		const kids = [...tail.children];
+		const at = (sel: string) => kids.findIndex((el) => el.matches(sel));
+		expect(at('.prefs')).toBeLessThan(at('[data-tsu="NotificationCenter"]'));
+		expect(at('[data-tsu="NotificationCenter"]')).toBeLessThan(at('.acct'));
 	});
 
-	it('opens the notification panel from the Notifications row', async () => {
-		render();
-		const drawer = document.querySelector('[data-tsu="NotificationCenter"] [data-tsu="Drawer"]') as HTMLDialogElement;
-		expect(drawer.open).toBe(false);
-		await openUserMenu();
-		rowByText('Notifications')?.click();
-		flushSync();
-		await Promise.resolve();
-		flushSync();
-		expect(drawer.open).toBe(true);
-		expect(drawer.getAttribute('aria-label')).toBe('Notifications');
-	});
-
-	it('shows no unread count when everything is read', async () => {
-		render();
-		expect(document.querySelector('.pill [data-tsu="Badge"]')).toBeNull();
-		await openUserMenu();
-		expect(rowByText('Notifications')?.querySelector('[data-tsu="Badge"]')).toBeNull();
-	});
-
-	it('carries the unread count on the pill and the Notifications row', async () => {
+	it('badges the unread count on the bell, not the account pill', () => {
 		notifications.unread = 3;
 		render();
-		expect(document.querySelector('.pill [data-tsu="Badge"]')?.textContent?.trim()).toBe('3');
+		const bell = document.querySelector('[data-tsu="NotificationCenter"] [aria-haspopup="dialog"]') as HTMLElement;
+		expect(bell.textContent).toContain('3');
+		expect(document.querySelector('.pill [data-tsu="Badge"]')).toBeNull();
+	});
+
+	it('keeps notification rows out of the account menu', async () => {
+		notifications.unread = 2;
+		render();
 		await openUserMenu();
-		const row = rowByText('Notifications');
-		expect(row?.querySelector('[data-tsu="Badge"]')?.textContent?.trim()).toBe('3');
+		expect(menuRows().length).toBeGreaterThan(0);
+		for (const r of menuRows()) expect(r.textContent).not.toMatch(/notif/i);
+		expect(document.querySelector('[role="menuitemcheckbox"]')).toBeNull();
 	});
 });
 
@@ -278,5 +261,59 @@ describe('the user pill avatar', () => {
 		expect(av.textContent?.trim()).toBe('D');
 		expect(av.getAttribute('aria-hidden')).toBe('true');
 		expect(av.getAttribute('role')).toBeNull();
+	});
+});
+
+const provider = (p: Partial<ProviderStatus>): ProviderStatus => ({
+	family: 'anthropic',
+	indicator: 'none',
+	description: '',
+	url: 'https://status.claude.com',
+	components: [],
+	incidents: [],
+	...p
+});
+
+describe('provider status', () => {
+	const alert = () => document.querySelector('[data-testid="provider-status-alert"]');
+
+	it('keeps no status trigger in the bar tail', () => {
+		providerData.list = [provider({ indicator: 'minor' })];
+		render();
+		const tail = document.querySelector('.tail') as HTMLElement;
+		expect(tail.querySelector('[data-testid="provider-status-alert"], .ind')).toBeNull();
+	});
+
+	it('shows a warning icon beside the logo when a provider is degraded', () => {
+		providerData.list = [
+			provider({ indicator: 'minor' }),
+			provider({ family: 'openai', indicator: 'minor' })
+		];
+		render();
+		const icon = alert() as HTMLElement;
+		expect(icon).not.toBeNull();
+		expect(icon.closest('.lead')).not.toBeNull();
+		expect(icon.dataset.tone).toBe('warn');
+		expect(icon.querySelector('svg')).not.toBeNull();
+		const button = icon.closest('button') as HTMLButtonElement;
+		expect(button.getAttribute('aria-label')).toBe(
+			'Provider status: Claude degraded, Codex degraded'
+		);
+	});
+
+	it('turns the icon to danger on a major outage', () => {
+		providerData.list = [provider({ indicator: 'major' })];
+		render();
+		expect((alert() as HTMLElement).dataset.tone).toBe('danger');
+	});
+
+	it('renders nothing when every provider is operational', () => {
+		providerData.list = [
+			provider({ indicator: 'none' }),
+			provider({ family: 'openai', indicator: 'unknown' })
+		];
+		render();
+		expect(alert()).toBeNull();
+		expect(document.querySelector('.lead button')).toBeNull();
 	});
 });

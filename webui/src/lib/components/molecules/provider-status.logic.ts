@@ -1,4 +1,5 @@
 import type { ProviderIndicator, ProviderStatus } from "#lib/queries/index.ts";
+import { m } from "#lib/paraglide/messages.js";
 
 /** Severity order, worst last. `unknown` is not a severity — it never ranks. */
 const ORDER: ProviderIndicator[] = ["none", "minor", "major", "critical"];
@@ -22,14 +23,16 @@ export function worstIndicator(list: ProviderStatus[] | undefined): ProviderIndi
 export const indicatorTone = (i: ProviderIndicator | null): "warn" | "danger" | null =>
   i === "minor" ? "warn" : i === "major" || i === "critical" ? "danger" : null;
 
+export const severityLabel = (i: ProviderIndicator) =>
+  i === "critical"
+    ? m.provider_status_critical()
+    : i === "major"
+      ? m.provider_status_major()
+      : m.provider_status_minor();
+
 /** Display name for a polled family. */
 export const familyLabel = (family: string) =>
   family === "anthropic" ? "Claude" : family === "openai" ? "Codex" : family;
-
-/** The affected component names, capped so a badge cannot grow without bound. */
-export function componentNames(status: ProviderStatus, max = 3): string[] {
-  return status.components.slice(0, max).map((c) => c.name);
-}
 
 /** The status reading for one account provider id, and only when it is degraded.
  *  Mirrors the server: a `*-compatible` credential points at somebody else's

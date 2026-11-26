@@ -4,8 +4,8 @@
 	import MainNav from '#lib/components/organisms/MainNav.svelte';
 	import UsageBattery from '#lib/components/molecules/UsageBattery.svelte';
 	import ResourceBattery from '#lib/components/molecules/ResourceBattery.svelte';
-	import ProviderStatusDot from '#lib/components/molecules/ProviderStatusDot.svelte';
 	import HeaderBrand from './header/HeaderBrand.svelte';
+	import NotificationBell from '#lib/components/organisms/NotificationBell.svelte';
 	import AccountMenu from './header/AccountMenu.svelte';
 	import HeaderStatus from './header/HeaderStatus.svelte';
 	import { installShellWatchers } from './header/shellWatchers.svelte.ts';
@@ -24,7 +24,7 @@
 		</div>
 		<div class="tail">
 			<span class="batt"
-				><ProviderStatusDot /><span class="wide"><ResourceBattery /><UsageBattery /></span
+				><span class="wide"><ResourceBattery /><UsageBattery /></span
 				><span class="narrow"><HeaderStatus /></span></span
 			>
 			<span class="prefs">
@@ -39,6 +39,7 @@
 				/>
 				<FontScalePicker />
 			</span>
+			<NotificationBell />
 			<AccountMenu />
 		</div>
 	</div>

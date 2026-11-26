@@ -42,18 +42,10 @@ describe('TokensOverTime', () => {
 		expect((cols[0].querySelector('.bar') as HTMLElement).style.height).toBe('0%');
 	});
 
-	it('accents only the five most recent bars', () => {
-		const el = render([], 30, 'day');
+	it('draws every bar in the same accent', () => {
+		const el = render([bucket({ input: 100 })], 7, 'day');
 		const cols = [...el.querySelectorAll('.col')];
-		expect(cols.filter((c) => c.classList.contains('recent')).length).toBe(5);
-		expect(cols.slice(-5).every((c) => c.classList.contains('recent'))).toBe(true);
-	});
-
-	it('labels the axis every 7th day, ending on the newest bucket', () => {
-		const el = render([], 30, 'day');
-		const ticks = [...el.querySelectorAll('.tick')];
-		const labelled = ticks.flatMap((t, i) => (t.textContent?.trim() ? [i] : []));
-		expect(labelled).toEqual([1, 8, 15, 22, 29]);
+		expect(cols.some((c) => c.classList.contains('recent'))).toBe(false);
 	});
 
 	it('captions the dollars of the range and prices each bar in its tooltip', () => {
@@ -76,5 +68,23 @@ describe('TokensOverTime', () => {
 	it('renders 24 bars for the hourly range', () => {
 		const el = render([], 1, 'hour');
 		expect(el.querySelectorAll('.col').length).toBe(24);
+	});
+
+	it('dates a daily peak without a time of day', () => {
+		const el = render([bucket({ input: 100 })], 7, 'day');
+		const caption = el.querySelector('time')?.textContent ?? '';
+		expect(caption).toBe(new Date().toLocaleDateString());
+		expect(caption).not.toMatch(/\d:\d\d/);
+		const cols = el.querySelectorAll('.col');
+		expect(cols[cols.length - 1].getAttribute('title')).not.toMatch(/\d:\d\d/);
+	});
+
+	it('dates an hourly peak to the hour, without seconds', () => {
+		const el = render([bucket({ input: 100 })], 1, 'hour');
+		const caption = el.querySelector('time')?.textContent ?? '';
+		expect(caption).toMatch(/\d:00/);
+		expect(caption).not.toMatch(/\d:\d\d:\d\d/);
+		const cols = el.querySelectorAll('.col');
+		expect(cols[cols.length - 1].getAttribute('title')).not.toMatch(/\d:\d\d:\d\d/);
 	});
 });

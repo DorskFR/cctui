@@ -7,7 +7,7 @@
 	import { errMessage } from '#lib/api.ts';
 	import SoftLimit from '#lib/components/molecules/SoftLimit.svelte';
 	import { mergeUsageWindows } from '#lib/components/molecules/usage-windows.ts';
-	import { isDenseWidth, withCap } from '#lib/components/molecules/cap-bar.logic.ts';
+	import { withCap } from '#lib/components/molecules/cap-bar.logic.ts';
 
 	// Per-provider subscription usage as cap bars: one SoftLimit row per
 	// normalized usage window, plus a section for caps configured on windows the
@@ -58,9 +58,6 @@
 
 	const rows = $derived(mergeUsageWindows(q.data?.windows ?? [], softLimits));
 	const hasRows = $derived(rows.observed.length > 0);
-
-	let width = $state(0);
-	const dense = $derived(isDenseWidth(width));
 </script>
 
 {#if !active}
@@ -70,7 +67,7 @@
 {:else if q.isError}
 	<Text tone="danger" size="xs">{m.sessions_usage_error()}</Text>
 {:else if hasRows}
-	<div class="bars" bind:clientWidth={width}>
+	<div class="bars">
 		{#each rows.observed as r (r.key)}
 			<SoftLimit
 				label={r.label}
@@ -82,7 +79,6 @@
 				bypass={r.bypass}
 				usd={r.usd}
 				pace={r.pace}
-				{dense}
 				oncapchange={r.usd ? undefined : setCap?.(r.key)}
 			/>
 		{/each}

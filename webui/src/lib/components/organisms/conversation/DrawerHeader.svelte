@@ -124,6 +124,7 @@
 	const box: 'sm' | 'md' = $derived(collapsed ? 'sm' : 'md');
 	let stopping = $state(false);
 	async function stop() {
+		if (stopping) return;
 		stopping = true;
 		try {
 			await oninterrupt();
@@ -178,7 +179,6 @@
 			/>
 		{/if}
 		{#if !archived && !compact}
-			<IconButton {box} variant="ghost" tone="warn" icon="archive" label={m.drawer_archive()} onclick={onarchive} />
 			<IconButton
 				{box}
 				variant="ghost"
@@ -186,10 +186,11 @@
 				icon="stop"
 				label={m.drawer_interrupt_label()}
 				title={m.drawer_interrupt_title()}
-				loading={stopping}
+				spin={stopping}
 				onclick={stop}
 				data-journey="stop"
 			/>
+			<IconButton {box} variant="ghost" tone="warn" icon="archive" label={m.drawer_archive()} onclick={onarchive} />
 		{/if}
 		<DrawerMenu
 			{session}

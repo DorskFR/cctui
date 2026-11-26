@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
-	import { ConfirmModal, NotificationCenter } from '@dorsk/tsumikit';
+	import { ConfirmModal, NotificationCenter, Switch } from '@dorsk/tsumikit';
 	import { errMessage } from '#lib/api.ts';
 	import {
 		DETAILS,
@@ -12,6 +12,8 @@
 		toItem,
 		type NotificationStore
 	} from '#lib/notifications.svelte.ts';
+	import { notify } from '#lib/notify.svelte.ts';
+	import { settings } from '#lib/settings.svelte.ts';
 	import { failedDispatchEndpoints } from '#lib/queries/failedDispatches.ts';
 	import { toasts } from '#lib/toast.svelte.ts';
 	import { m } from '#lib/paraglide/messages.js';
@@ -19,12 +21,10 @@
 	let {
 		store = notifications,
 		open = $bindable(false),
-		bell = true,
 		redispatch = failedDispatchEndpoints.redispatch
 	}: {
 		store?: NotificationStore;
 		open?: boolean;
-		bell?: boolean;
 		redispatch?: (record: string) => Promise<unknown>;
 	} = $props();
 
@@ -89,10 +89,38 @@
 		store.readAll().catch((e) => toasts.error(m.notif_load_failed({ error: errMessage(e) })));
 	}
 
+	async function toggleNotify() {
+		if (settings.notifyEnabled) {
+			await settings.setNotifyEnabled(false);
+			toasts.info(m.nav_notify_off());
+			return;
+		}
+		if (!notify.supported) {
+			toasts.error(m.nav_notify_unsupported());
+			return;
+		}
+		const ok = await settings.setNotifyEnabled(true);
+		if (ok) toasts.ok(m.nav_notify_on());
+		else toasts.error(m.nav_notify_blocked());
+	}
+
 	function onitemopen(id: string) {
 		if (items.find((n) => n.id === id)?.href) open = false;
 	}
 </script>
+
+{#snippet footer()}
+	<Switch
+		size="sm"
+		label={m.notif_desktop_toggle()}
+		labelVisible
+		checked={settings.notifyEnabled}
+		onclick={(e) => {
+			e.preventDefault();
+			void toggleNotify();
+		}}
+	/>
+{/snippet}
 
 <NotificationCenter
 	{items}
@@ -100,7 +128,6 @@
 	loading={store.loading}
 	hasMore={store.hasMore}
 	bind:open
-	{bell}
 	title={m.notif_center_title()}
 	markAllLabel={m.notif_center_mark_all()}
 	closeLabel={m.notif_center_close()}
@@ -117,6 +144,7 @@
 	{onvisible}
 	{onitemopen}
 	{ondismiss}
+	{footer}
 />
 
 <ConfirmModal

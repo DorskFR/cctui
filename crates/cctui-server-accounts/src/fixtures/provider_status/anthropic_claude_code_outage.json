@@ -1,0 +1,68 @@
+{
+  "page": {
+    "id": "6dw5z8lqzlpn",
+    "name": "Anthropic",
+    "url": "https://status.claude.com",
+    "updated_at": "2026-11-26T09:00:00Z"
+  },
+  "components": [
+    {
+      "id": "rwppv331jlwc",
+      "name": "claude.ai",
+      "status": "operational",
+      "group": false,
+      "group_id": null
+    },
+    {
+      "id": "0qbwn08sd68x",
+      "name": "Claude Console (platform.claude.com)",
+      "status": "operational",
+      "group": false,
+      "group_id": null
+    },
+    {
+      "id": "k8w3r06qmzrp",
+      "name": "Claude API (api.anthropic.com)",
+      "status": "operational",
+      "group": false,
+      "group_id": null
+    },
+    {
+      "id": "yyzkbfz2thpt",
+      "name": "Claude Code",
+      "status": "partial_outage",
+      "group": false,
+      "group_id": null
+    },
+    {
+      "id": "bpp5gb3hpjcl",
+      "name": "Claude Cowork",
+      "status": "operational",
+      "group": false,
+      "group_id": null
+    }
+  ],
+  "incidents": [
+    {
+      "id": "c7p2v9n4k1rd",
+      "name": "Claude Code sessions failing to start",
+      "status": "investigating",
+      "impact": "major",
+      "shortlink": "https://stspg.io/ccout",
+      "created_at": "2026-11-26T08:30:00Z",
+      "updated_at": "2026-11-26T08:50:00Z",
+      "components": [
+        {
+          "id": "yyzkbfz2thpt",
+          "name": "Claude Code",
+          "status": "partial_outage"
+        }
+      ]
+    }
+  ],
+  "scheduled_maintenances": [],
+  "status": {
+    "indicator": "major",
+    "description": "Partial System Outage"
+  }
+}

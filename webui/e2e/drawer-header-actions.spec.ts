@@ -8,7 +8,7 @@ const trailing = (page: Page) =>
 
 for (const viewport of [WIDE, NARROW]) {
 	const w = viewport.width;
-	// Back, Archive, Stop and ⋯.
+	// Back, Stop, Archive and ⋯.
 	const minControls = 4;
 
 	test(`${w}px: every trailing header control shares one height and top y`, async ({
@@ -107,4 +107,15 @@ test('nothing covers the drawer: a point on Back hits Back, not the scrim', asyn
 		[box.x + box.width / 2, box.y + box.height / 2]
 	);
 	expect(hit).toEqual({ back: 'Back', scrim: false });
+});
+
+test('Stop turns its own square while the interrupt is in flight', async ({ page }) => {
+	await openDrawer(page, WIDE);
+	await page.route('**/api/v1/sessions/*/interrupt', () => {});
+	const stop = page.locator('[data-journey="stop"]');
+	await stop.click();
+	await expect(stop.locator('svg.spin')).toHaveCount(1);
+	await expect(stop.locator('svg')).toHaveCount(1);
+	await expect(stop.locator('.btn-spinner')).toHaveCount(0);
+	expect(await stop.locator('svg').evaluate((el) => getComputedStyle(el).animationName)).not.toBe('none');
 });

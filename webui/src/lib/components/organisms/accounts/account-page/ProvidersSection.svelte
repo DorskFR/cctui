@@ -31,7 +31,7 @@
 		{/if}
 	{/snippet}
 
-	<div class="grid">
+	<div class="grid" data-usage-group>
 		{#each account.providers as p (p.id)}
 			<ProviderColumn
 				provider={p}

@@ -14,6 +14,7 @@
 		usdPct,
 		usdReadout
 	} from './cap-bar.logic';
+	import { UsageReadout } from './usage-readout.svelte';
 
 	// One usage window as a cap bar: consumption fill, draggable cap, readout.
 	// The same component renders the read-only usage view (`oncapchange`
@@ -78,12 +79,17 @@
 	});
 	const showReset = $derived(!usd && pct !== null && resetShort !== null);
 
-	// Label and readout columns are fixed so every track in a list lines up
-	// whatever the window reads; below the density threshold the row stacks,
-	// label and readout above a full-width track. Measured rather than a media
-	// query — the stats panel is drag-resizable.
+	// The readout column is as wide as the widest readout stacked with this row,
+	// so every track in a list ends at one x; when label, readout and a usable
+	// track don't fit, the row stacks label and readout above a full-width track.
+	// Measured rather than a media query — the stats panel is drag-resizable.
 	let width = $state(0);
-	const isDense = $derived(dense ?? isDenseWidth(width));
+	let root = $state<HTMLElement | null>(null);
+	let readoutEl = $state<HTMLElement | null>(null);
+	const column = new UsageReadout();
+	$effect(() => (root && readoutEl ? column.track(root, readoutEl) : undefined));
+	const isDense = $derived(dense ?? isDenseWidth(width, column.px, column.rem));
+	const readoutWidth = $derived(isDense ? 'auto' : column.px ? `${column.px}px` : USAGE_READOUT_W);
 
 	let barCap: number | null = $derived(capToBar(cap));
 	const tooltipPct = $derived(capToBar(cap));
@@ -118,7 +124,7 @@
 </script>
 
 {#snippet readoutSnippet()}
-	<span class="readout">
+	<span class="readout" bind:this={readoutEl}>
 		{readoutText}{#if showReset && resets}{' ·\u00a0'}<Timestamp
 				value={resets}
 				mode="relative"
@@ -127,7 +133,7 @@
 	</span>
 {/snippet}
 
-<div class="soft-limit" bind:clientWidth={width} title={rowTitle || undefined}>
+<div class="soft-limit" bind:this={root} bind:clientWidth={width} title={rowTitle || undefined}>
 	<CapBar
 		{label}
 		layout={isDense ? 'stacked' : 'row'}
@@ -136,9 +142,10 @@
 		step={5}
 		warnAt={75}
 		labelWidth={USAGE_LABEL_W}
-		readoutWidth={isDense ? 'auto' : USAGE_READOUT_W}
-		readout={showReset || paceKind === 'flame' ? readoutSnippet : readoutText}
+		{readoutWidth}
+		readout={readoutSnippet}
 		{readonly}
+		style="--track-edge: transparent"
 		tooltip={readonly
 			? m.capbar_tooltip_readonly({ pct: tooltipPct })
 			: m.capbar_tooltip({ pct: tooltipPct })}

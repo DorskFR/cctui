@@ -21,7 +21,7 @@
 	const live = $derived(new Map(windows.map((w) => [w.key, w])));
 </script>
 
-<div class="page">
+<div class="page" data-usage-group>
 	<Text as="p" tone="muted" size="sm">{m.limits_intro()}</Text>
 
 	{#each rows as row (row.key)}

@@ -5,6 +5,8 @@ import type { Notification as Notice } from '@bindings/Notification';
 import type { NotificationList } from '@bindings/NotificationList';
 import { NotificationStore, type NotificationApi } from '#lib/notifications.svelte.ts';
 import { ApiError } from '#lib/api.ts';
+import { notify } from '#lib/notify.svelte.ts';
+import { settings } from '#lib/settings.svelte.ts';
 
 const { toasts } = vi.hoisted(() => ({
 	toasts: { ok: vi.fn(), info: vi.fn(), error: vi.fn() }
@@ -263,5 +265,59 @@ describe('NotificationBell', () => {
 		expect(dismiss).toHaveBeenCalledTimes(1);
 		expect(store.items.map((n) => n.id)).toContain('a');
 		expect(toasts.error).not.toHaveBeenCalled();
+	});
+});
+
+describe('desktop notifications switch', () => {
+	const toggle = () =>
+		document.querySelector('[data-tsu="NotificationCenter"] [role="switch"]') as HTMLButtonElement | null;
+
+	afterEach(async () => {
+		await settings.setNotifyEnabled(false);
+	});
+
+	it('sits in the open panel, reflecting the setting', async () => {
+		setup({});
+		await openPanel();
+		const sw = toggle();
+		expect(sw).not.toBeNull();
+		expect(document.querySelector('[data-tsu="NotificationCenter"]')?.textContent).toContain(m.notif_desktop_toggle());
+		expect(sw?.getAttribute('aria-checked')).toBe('false');
+	});
+
+	it('turns desktop notifications on once the browser grants them', async () => {
+		vi.stubGlobal('Notification', { permission: 'default', requestPermission: vi.fn(async () => 'granted') });
+		setup({});
+		await openPanel();
+		toggle()?.click();
+		await vi.waitFor(() => expect(settings.notifyEnabled).toBe(true));
+		flushSync();
+		expect(toggle()?.getAttribute('aria-checked')).toBe('true');
+		expect(toasts.ok).toHaveBeenCalledWith(m.nav_notify_on());
+	});
+
+	it('stays off when the browser blocks them', async () => {
+		vi.stubGlobal('Notification', { permission: 'default', requestPermission: vi.fn(async () => 'denied') });
+		setup({});
+		await openPanel();
+		toggle()?.click();
+		await vi.waitFor(() => expect(toasts.error).toHaveBeenCalledWith(m.nav_notify_blocked()));
+		flushSync();
+		expect(settings.notifyEnabled).toBe(false);
+		expect(toggle()?.getAttribute('aria-checked')).toBe('false');
+	});
+
+	it('mutes them when on', async () => {
+		vi.stubGlobal('Notification', { permission: 'granted', requestPermission: vi.fn(async () => 'granted') });
+		await settings.setNotifyEnabled(true);
+		expect(notify.enabled).toBe(true);
+		setup({});
+		await openPanel();
+		expect(toggle()?.getAttribute('aria-checked')).toBe('true');
+		toggle()?.click();
+		await vi.waitFor(() => expect(settings.notifyEnabled).toBe(false));
+		flushSync();
+		expect(toggle()?.getAttribute('aria-checked')).toBe('false');
+		expect(toasts.info).toHaveBeenCalledWith(m.nav_notify_off());
 	});
 });

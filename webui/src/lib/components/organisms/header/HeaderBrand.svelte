@@ -3,6 +3,7 @@
 	import { ws } from '#lib/ws.svelte.ts';
 	import { Text } from '@dorsk/tsumikit';
 	import NavLink from '#lib/components/atoms/NavLink.svelte';
+	import ProviderStatusAlert from '#lib/components/molecules/ProviderStatusAlert.svelte';
 	import { m } from '#lib/paraglide/messages.js';
 </script>
 
@@ -19,6 +20,7 @@
 		class:mid={ws.status === 'connecting'}
 		title={m.nav_ws_status({ status: ws.status })}
 	></span>
+	<ProviderStatusAlert />
 	{#if updated.current}
 		<button
 			type="button"

@@ -10,9 +10,10 @@ import {
 	hasUsage,
 	bucketTotal,
 	peakBucket,
-	recentFrom,
-	isAxisTick,
+	axisLabel,
+	axisTicks,
 	rangeCost,
+	bucketLabel,
 } from './usage-analytics';
 
 // Anchor "now" to a fixed local wall-clock instant so bucket keys are stable.
@@ -145,17 +146,62 @@ describe('peakBucket', () => {
 	});
 });
 
-describe('recentFrom', () => {
-	it('marks the last five slots, and every slot in a shorter series', () => {
-		expect(recentFrom(30)).toBe(25);
-		expect(recentFrom(3)).toBe(0);
+describe('axisLabel', () => {
+	const ms = new Date(2026, 10, 20, 14, 0, 0).getTime();
+	it('labels a day bucket with month and day only', () => {
+		expect(axisLabel(ms, 'day', 'en-US')).toBe('11/20');
+		expect(axisLabel(ms, 'day', 'fr-FR')).toBe('20/11');
+	});
+	it('labels an hour bucket with the hour', () => {
+		expect(axisLabel(ms, 'hour', 'en-US')).toBe('2:00 PM');
+		expect(axisLabel(ms, 'hour', 'en-GB')).toBe('14:00');
 	});
 });
 
-describe('isAxisTick', () => {
-	it('ticks every Nth slot counting back from the newest', () => {
-		const ticks = Array.from({ length: 30 }, (_, i) => i).filter((i) => isAxisTick(i, 30, 7));
-		expect(ticks).toEqual([1, 8, 15, 22, 29]);
+describe('axisTicks', () => {
+	const overlaps = (ticks: { left: number }[], w: number, gap = 8) =>
+		ticks.some((t, i) => i > 0 && t.left - ticks[i - 1].left - w < gap);
+
+	it('labels every bar when they fit', () => {
+		const ticks = axisTicks(7, 900, 36, 'day');
+		expect(ticks.map((t) => t.index)).toEqual([0, 1, 2, 3, 4, 5, 6]);
+	});
+
+	it('thins a narrow 7-day axis, keeping the first and newest buckets', () => {
+		const ticks = axisTicks(7, 400, 70, 'day');
+		const idx = ticks.map((t) => t.index);
+		expect(idx[0]).toBe(0);
+		expect(idx.at(-1)).toBe(6);
+		expect(idx.length).toBeLessThan(7);
+		expect(overlaps(ticks, 70)).toBe(false);
+	});
+
+	it('never overlaps nor leaves the axis, at any width and range', () => {
+		for (const [count, g] of [[24, 'hour'], [7, 'day'], [30, 'day']] as const) {
+			for (let width = 60; width <= 1600; width += 7) {
+				for (const lw of [30, 45, 60]) {
+					const ticks = axisTicks(count, width, lw, g);
+					expect(ticks.length).toBeGreaterThan(0);
+					expect(ticks.at(-1)!.index).toBe(count - 1);
+					expect(overlaps(ticks, Math.min(lw, width))).toBe(false);
+					for (const t of ticks) {
+						expect(t.left).toBeGreaterThanOrEqual(0);
+						expect(t.left + Math.min(lw, width)).toBeLessThanOrEqual(width + 1e-9);
+					}
+				}
+			}
+		}
+	});
+
+	it('pins the edge labels inside the axis', () => {
+		const ticks = axisTicks(30, 400, 40, 'day');
+		expect(ticks[0]).toEqual({ index: 0, left: 0 });
+		expect(ticks.at(-1)).toEqual({ index: 29, left: 360 });
+	});
+
+	it('waits for a measurement before labelling', () => {
+		expect(axisTicks(7, 0, 40, 'day')).toEqual([]);
+		expect(axisTicks(7, 400, 0, 'day')).toEqual([]);
 	});
 });
 
@@ -164,5 +210,17 @@ describe('hasUsage', () => {
 		expect(hasUsage(undefined)).toBe(false);
 		expect(hasUsage({ buckets: [], models: [], heatmap: [] })).toBe(false);
 		expect(hasUsage({ buckets: [bucket(NOW)], models: [], heatmap: [] })).toBe(true);
+	});
+});
+
+describe('bucketLabel', () => {
+	const ms = new Date(2026, 10, 26, 14, 0, 0).getTime();
+	it('names only the date of a day bucket', () => {
+		expect(bucketLabel(ms, 'day', 'en-US')).toBe('11/26/2026');
+		expect(bucketLabel(ms, 'day', 'ja-JP')).toBe('2026/11/26');
+	});
+	it('names the date and hour of an hour bucket, without seconds', () => {
+		expect(bucketLabel(ms, 'hour', 'en-US')).toBe('11/26/2026, 2:00 PM');
+		expect(bucketLabel(ms, 'hour', 'ja-JP')).toBe('2026/11/26 14:00');
 	});
 });

@@ -9,10 +9,6 @@
 	import { exhaustedWindow } from '#lib/components/organisms/accounts/pools.logic.ts';
 	import { accountHandleDrag } from '#lib/components/organisms/accounts/handleDrag.svelte.ts';
 	import { providerLabel } from '#lib/providers.ts';
-	import {
-		componentNames,
-		indicatorTone
-	} from '#lib/components/molecules/provider-status.logic.ts';
 	import { Badge, Button, Checkbox, Icon, Menu, Select, Text, Timestamp, type MenuItem } from '@dorsk/tsumikit';
 	import { m } from '#lib/paraglide/messages.js';
 
@@ -76,13 +72,6 @@
 					window: `${providerLabel(exhausted.provider)} ${exhausted.window.label}`
 				})
 			: null
-	);
-	// Read off the usage rows the card already fetches: the server attaches the
-	// family's incident reading to a credential only while it is degraded.
-	const upstream = $derived(
-		(usage.data ?? [])
-			.filter((e) => e.account === a.id && e.provider_status)
-			.map((e) => ({ provider: e.provider, status: e.provider_status! }))
 	);
 
 	const shares = useResourceShares(
@@ -165,7 +154,7 @@
 	}
 </script>
 
-<article class="acct" class:compact class:lifted={drag.touchDragging} id={a.id} data-journey="account" data-journey-key={a.name}>
+<article class="acct" class:compact class:lifted={drag.touchDragging} id={a.id} data-journey="account" data-usage-group data-journey-key={a.name}>
 	<header class="head">
 		{#if onmovepool && !managed && !compact}
 			<span
@@ -202,25 +191,6 @@
 				</Text>
 			</span>
 		{/if}
-		{#each upstream as u (u.provider)}
-			{@const detail = m.provider_status_account_badge({
-				provider: providerLabel(u.provider),
-				detail: componentNames(u.status).join(', ') || u.status.description || u.status.indicator
-			})}
-			<a
-				class="upstream"
-				class:dense={compact}
-				href={u.status.url}
-				target="_blank"
-				rel="noopener"
-				data-tone={indicatorTone(u.status.indicator)}
-				title={compact ? detail : u.status.description}
-				aria-label={detail}
-			>
-				<span class="dot"></span>
-				<Text as="span" size="xs" tone="inherit">{compact ? providerLabel(u.provider) : detail}</Text>
-			</a>
-		{/each}
 		{#each redirects as r (r.id)}
 			<Badge
 				size="sm"
@@ -282,15 +252,16 @@
 
 	<div class="columns">
 		{#each a.providers as p (p.id)}
-			<ProviderColumn
-				provider={p}
-				usageEnabled={enabled}
-				canManage={canEditProvider(p, owned) && !compact}
-				dense={compact}
-				divided
-				onedit={() => oneditprovider?.(p)}
-				onreauth={() => onreauthprovider?.(p)}
-			/>
+			<div class="cell">
+				<ProviderColumn
+					provider={p}
+					usageEnabled={enabled}
+					canManage={canEditProvider(p, owned) && !compact}
+					dense={compact}
+					onedit={() => oneditprovider?.(p)}
+					onreauth={() => onreauthprovider?.(p)}
+				/>
+			</div>
 		{:else}
 			<div class="none"><Text tone="faint" size="sm">{m.accounts_no_credentials()}</Text></div>
 		{/each}
@@ -386,30 +357,6 @@
 		border-radius: var(--r-pill);
 		background: var(--danger);
 	}
-	/* Wraps within the header row rather than widening it, like the exhausted
-	   chip beside it. */
-	.upstream {
-		display: inline-flex;
-		align-items: center;
-		gap: var(--sp-2);
-		flex-wrap: wrap;
-		text-decoration: none;
-		color: var(--danger);
-	}
-	.upstream[data-tone='warn'] {
-		color: var(--warn);
-	}
-	.upstream[data-tone='warn'] .dot {
-		background: var(--warn);
-	}
-	.upstream.dense {
-		flex-wrap: nowrap;
-		gap: var(--sp-1);
-		white-space: nowrap;
-	}
-	.upstream:hover {
-		text-decoration: underline;
-	}
 	.spacer {
 		flex: 1;
 	}
@@ -429,6 +376,13 @@
 		display: grid;
 		grid-template-columns: repeat(3, minmax(0, 1fr));
 	}
+	.cell {
+		display: grid;
+		min-width: 0;
+	}
+	.cell:not(:nth-child(3n + 1)) {
+		border-left: 1px solid var(--border);
+	}
 	.none {
 		padding: var(--sp-3) var(--sp-4);
 	}
@@ -447,6 +401,12 @@
 		.columns {
 			grid-template-columns: repeat(2, minmax(0, 1fr));
 		}
+		.cell:nth-child(3n + 1) {
+			border-left: 1px solid var(--border);
+		}
+		.cell:nth-child(2n + 1) {
+			border-left: none;
+		}
 	}
 	.actions {
 		display: inline-flex;
@@ -456,6 +416,9 @@
 	@container acct-row (max-width: 34rem) {
 		.columns {
 			grid-template-columns: minmax(0, 1fr);
+		}
+		.cell:nth-child(n) {
+			border-left: none;
 		}
 	}
 </style>

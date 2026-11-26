@@ -107,3 +107,27 @@ test('the user pill carries no notification bell at either width', async ({ page
 		await expect(page.locator('header.hd .pill .bell')).toHaveCount(0);
 	}
 });
+
+test('the bell sits in the bar and its panel carries the desktop notifications switch', async ({
+	page
+}) => {
+	for (const viewport of [DESKTOP, MOBILE]) {
+		await openSessions(page, viewport);
+		const bell = page.locator('header.hd .tail [data-tsu="NotificationCenter"] [aria-haspopup="dialog"]');
+		await expect(bell).toBeVisible();
+		await bell.click();
+		const sw = page.getByRole('switch', { name: 'Desktop notifications' });
+		await expect(sw).toBeVisible();
+		await expect(sw).toBeInViewport();
+		await page.keyboard.press('Escape');
+		await expect(sw).toBeHidden();
+	}
+});
+
+test('the account menu offers no notification rows', async ({ page }) => {
+	await openSessions(page, DESKTOP);
+	await page.locator('header.hd .pill').click();
+	await expect(page.getByRole('menuitem', { name: /log out/i })).toBeVisible();
+	await expect(page.getByRole('menuitem', { name: /notif/i })).toHaveCount(0);
+	await expect(page.getByRole('menuitemcheckbox', { name: /notif/i })).toHaveCount(0);
+});
