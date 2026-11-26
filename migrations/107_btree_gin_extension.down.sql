@@ -1,1 +1,0 @@
-DROP EXTENSION IF EXISTS btree_gin;

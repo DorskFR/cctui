@@ -1,1 +1,0 @@
--- Seeded entries are indistinguishable from admin edits; nothing to undo.

@@ -1,1 +1,0 @@
-ALTER TABLE sessions ADD COLUMN IF NOT EXISTS children JSONB NOT NULL DEFAULT '[]'::jsonb;
