@@ -37,28 +37,29 @@ describe('drawer header meta row', () => {
 		expect(body).toContain('.tokens');
 	});
 
-	it('spells the token total in words instead of Σ ↑ ↓ ⚡ glyphs', () => {
-		expect(trail).not.toContain('<TokenUsage');
-		expect(trail).toContain('m.drawer_meta_tokens({ tokens: compact(totals.total) })');
-		expect(trail).toContain('title={m.drawer_meta_tokens_title(');
-		for (const msgs of [en, fr]) expect(JSON.parse(msgs).drawer_meta_tokens).toContain('{tokens}');
+	it('shows the compact token readout on the strip', () => {
+		expect(trail).toContain('<span class="tokens"><TokenUsage usage={session.token_usage} /></span>');
+		expect(header).not.toContain('drawer_meta_tokens');
+		for (const msgs of [en, fr]) expect(JSON.parse(msgs).drawer_meta_tokens).toBeUndefined();
 	});
 
-	it('shows one cost, named by its source, never in the success colour', () => {
+	it('puts only the Langfuse cost and call count on the strip; details hold the one sourced cost', () => {
 		expect(header).not.toContain('tone="success"');
-		expect(header).not.toContain('<LangfuseChip');
 		expect(script).toContain('const cost = $derived(headerCost(totals.cost, totals.total, lf.data));');
-		expect(trail).toMatch(/\{#if cost\.source === 'langfuse' \|\| cost\.source === 'harness'\}\s*<span class="cost">\{@render costText\(\)\}/);
+		expect(trail).toMatch(/\{#if cost\.source === 'langfuse'\}\s*<span class="cost">/);
+		expect(trail.slice(0, trail.indexOf('<Popover'))).not.toContain('{@render costText()}');
+		expect(trail).toContain('m.sessions_langfuse_calls_short({ count: calls })');
 		const snippet = markup.slice(markup.indexOf('{#snippet costText()}'), markup.indexOf('{/snippet}', markup.indexOf('{#snippet costText()}')));
 		expect(snippet).toContain('m.drawer_cost_plan()');
 		expect(snippet).toContain('m.drawer_cost_source_langfuse()');
 		expect(snippet).toContain('m.drawer_cost_source_harness()');
-		for (const msgs of [en, fr]) expect(JSON.parse(msgs).drawer_cost_plan).toBeTruthy();
+		expect(popover).toContain('{@render costText()}');
+		for (const msgs of [en, fr]) expect(JSON.parse(msgs).sessions_langfuse_calls_short).toBeTruthy();
 	});
 
-	it('keeps mono for the branch and hook rules only; figures use tabular sans', () => {
-		const monos = markup.match(/<Badge[^>]*\bmono\b|variant="code"/g) ?? [];
-		expect(monos).toHaveLength(2);
+	it('sets the model chip and branch in mono; figures use tabular sans', () => {
+		const snippet = markup.slice(markup.indexOf('{#snippet modelMeta'), markup.indexOf('{/snippet}', markup.indexOf('{#snippet modelMeta')));
+		expect(snippet.match(/<Badge[^>]*\bmono\b/g) ?? []).toHaveLength(3);
 		expect(markup).toContain('<Badge mono title={m.sessions_branch_title({ branch })}');
 		expect(markup).toContain('<Text variant="code" size="xs" tone="muted">{describeRule(rule)}</Text>');
 		expect(popover).toContain('<Text numeric size="xs" tone="muted">{row.v}</Text>');

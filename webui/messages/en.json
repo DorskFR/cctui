@@ -722,6 +722,21 @@
 	"drawer_cost_source_langfuse": "Langfuse",
 	"drawer_cost_source_harness": "harness",
 	"drawer_cost_plan": "Billed to plan",
+	"sessions_langfuse_calls_short": [
+		{
+			"declarations": [
+				"input count",
+				"local countPlural = count: plural"
+			],
+			"selectors": [
+				"countPlural"
+			],
+			"match": {
+				"countPlural=one": "· {count} call",
+				"countPlural=other": "· {count} calls"
+			}
+		}
+	],
 	"drawer_thread_previous": "Previous session in this thread",
 	"drawer_thread_next": "Next session in this thread",
 	"drawer_thread_menu": "Sessions in this thread",
@@ -3409,7 +3424,5 @@
 	"error_search_archived_placeholder": "Name, folder or id",
 	"error_session_missing_body": "This session was archived or deleted. Search the archived sessions, or go back to your sessions.",
 	"error_session_missing_title": "Session not found",
-	"list_auto_approve": "auto-approve",
-	"drawer_meta_tokens": "{tokens} tokens",
-	"drawer_meta_tokens_title": "In {in} · out {out} · cache {cache}"
+	"list_auto_approve": "auto-approve"
 }

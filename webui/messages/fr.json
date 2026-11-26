@@ -722,6 +722,21 @@
 	"drawer_cost_source_langfuse": "Langfuse",
 	"drawer_cost_source_harness": "harnais",
 	"drawer_cost_plan": "Facturé au forfait",
+	"sessions_langfuse_calls_short": [
+		{
+			"declarations": [
+				"input count",
+				"local countPlural = count: plural"
+			],
+			"selectors": [
+				"countPlural"
+			],
+			"match": {
+				"countPlural=one": "· {count} appel",
+				"countPlural=other": "· {count} appels"
+			}
+		}
+	],
 	"drawer_thread_previous": "Session précédente du fil",
 	"drawer_thread_next": "Session suivante du fil",
 	"drawer_thread_menu": "Sessions du fil",
@@ -3409,7 +3424,5 @@
 	"error_search_archived_placeholder": "Nom, dossier ou identifiant",
 	"error_session_missing_body": "Cette session a été archivée ou supprimée. Cherchez-la dans les sessions archivées, ou revenez à vos sessions.",
 	"error_session_missing_title": "Session introuvable",
-	"list_auto_approve": "approbation auto",
-	"drawer_meta_tokens": "{tokens} jetons",
-	"drawer_meta_tokens_title": "Entrée {in} · sortie {out} · cache {cache}"
+	"list_auto_approve": "approbation auto"
 }

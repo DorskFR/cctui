@@ -1,7 +1,7 @@
 <script lang="ts">
 	// Drawer header meta row: status, thread links, cwd, branch, context meter,
-	// token total, cost, model chip and the adapter logo, which opens the full
-	// session details.
+	// token usage, Langfuse cost, model chip and the adapter logo, which opens
+	// the full session details.
 	import type { SessionListItem } from '@bindings/SessionListItem';
 	import { compact, modelShort, statusBadgeTone, usd } from '#lib/format.ts';
 	import { tokenUsageLayout, bustReasonKey } from '#lib/components/molecules/TokenUsage.logic.ts';
@@ -10,6 +10,7 @@
 	import AdapterIcon from '#lib/components/atoms/AdapterIcon.svelte';
 	import ThreadMenu from './ThreadMenu.svelte';
 	import ContextMeter from './ContextMeter.svelte';
+	import TokenUsage from '#lib/components/molecules/TokenUsage.svelte';
 	import { headerCost } from './headerCost';
 	import { langfuseCostLabel } from '#lib/spend.ts';
 	import { Badge, Icon, IconButton, Popover, Select, Switch, Text, WorkingDir } from '@dorsk/tsumikit';
@@ -232,6 +233,7 @@
 			<span class="model">
 				<Badge
 					as="button"
+					mono
 					title={m.drawer_change_model_title()}
 					onclick={openModelEditor}
 					style="display:inline-flex;align-items:center;gap:0.25em;min-width:0;max-width:100%"
@@ -241,12 +243,13 @@
 		{/if}
 	{:else if (session.model || session.effort) && !onfork}
 		<span class="model">
-			<Badge style="min-width:0;max-width:100%">{@render modelText(session.model ?? '')}</Badge>
+			<Badge mono style="min-width:0;max-width:100%">{@render modelText(session.model ?? '')}</Badge>
 		</span>
 	{:else if session.model || session.effort}
 		<span class="model">
 			<Badge
 				as="button"
+				mono
 				title={m.drawer_no_inplace_model_title()}
 				onclick={onfork}
 				style="display:inline-flex;align-items:center;gap:0.25em;min-width:0;max-width:100%"
@@ -293,21 +296,19 @@
 	{/if}
 	<div class="meta-trail">
 	<span class="ctx"><ContextMeter {session} {archived} /></span>
-	<span class="tokens"
-		><Text
-			numeric
-			nowrap
-			size="xs"
-			tone="muted"
-			title={m.drawer_meta_tokens_title({
-				in: compact(Number(usage.tokens_in)),
-				out: compact(Number(usage.tokens_out)),
-				cache: compact(totals.cacheTotal)
-			})}>{m.drawer_meta_tokens({ tokens: compact(totals.total) })}</Text
-		></span
-	>
-	{#if cost.source === 'langfuse' || cost.source === 'harness'}
-		<span class="cost">{@render costText()}</span>
+	<span class="tokens"><TokenUsage usage={session.token_usage} /></span>
+	{#if cost.source === 'langfuse'}
+		<span class="cost">
+			{#if lfLink}
+				<a class="lf-link" href={lfLink} target="_blank" rel="noopener noreferrer">
+					<Text numeric nowrap size="xs" tone="muted" weight="semibold">{langfuseCostLabel(cost.usd)}</Text>
+					<Text nowrap size="xs" tone="faint">{m.sessions_langfuse_calls_short({ count: calls })} ↗</Text>
+				</a>
+			{:else}
+				<Text numeric nowrap size="xs" tone="muted" weight="semibold">{langfuseCostLabel(cost.usd)}</Text>
+				<Text nowrap size="xs" tone="faint">{m.sessions_langfuse_calls_short({ count: calls })}</Text>
+			{/if}
+		</span>
 	{/if}
 	{@render modelMeta('drawer')}
 	<Popover
@@ -527,6 +528,9 @@
 		text-align: right;
 	}
 	.lf-link {
+		display: inline-flex;
+		gap: 0.3rem;
+		align-items: baseline;
 		text-decoration: none;
 	}
 	.lf-link:hover {
