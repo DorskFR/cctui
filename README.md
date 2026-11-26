@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="site/public/favicon.svg" width="72" alt="cctui logo">
+<img src="docs/assets/icon.svg" width="72" alt="cctui logo">
 
 # cctui
 
