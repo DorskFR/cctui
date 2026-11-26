@@ -7,7 +7,7 @@
 	import type { LabelHandlers } from './headerLabels';
 	import RebindTrail from '#lib/components/molecules/RebindTrail.svelte';
 	import SessionGlyphs from '#lib/components/molecules/SessionGlyphs.svelte';
-	import { Button, IconButton, Spinner, Toolbar } from '@dorsk/tsumikit';
+	import { IconButton, Toolbar } from '@dorsk/tsumikit';
 	import HeaderMeta from './HeaderMeta.svelte';
 	import HeaderLabels from './HeaderLabels.svelte';
 	import DrawerTitle from './DrawerTitle.svelte';
@@ -87,7 +87,8 @@
 		/** Multi-select-to-fork mode; omitted → plain fork. */
 		onforkselect?: () => void;
 		forkSelectActive?: boolean;
-		oninterrupt: () => void;
+		/** Its promise settles once the interrupt is acknowledged. */
+		oninterrupt: () => void | Promise<void>;
 		onarchive: () => void;
 		/** Stop-then-archive, fired by the ⌘/Ctrl+E chord. */
 		onstoparchive: () => void;
@@ -125,6 +126,15 @@
 	// height and a top edge whatever glyph they carry.
 	const box: 'sm' | 'md' = $derived(collapsed ? 'sm' : 'md');
 	const canStop = $derived(working && !archived && !compact);
+	let stopping = $state(false);
+	async function stop() {
+		stopping = true;
+		try {
+			await oninterrupt();
+		} finally {
+			stopping = false;
+		}
+	}
 	// A narrow drawer gives the title its own line.
 	const titleOwnLine = $derived(collapsed && !compact);
 
@@ -169,12 +179,6 @@
 		{:else}
 			{@render title()}
 		{/if}
-		{#if canStop}
-			<Button size="sm" title={m.drawer_interrupt_title()} onclick={oninterrupt} data-journey="stop">
-				<Spinner size={12} label="" />
-				{m.drawer_stop()}
-			</Button>
-		{/if}
 		{#if renaming}
 			<IconButton {box} variant="ghost" icon="check" label={m.common_save()} onclick={doRename} />
 		{/if}
@@ -189,6 +193,19 @@
 		{/if}
 		{#if !archived && !compact}
 			<IconButton {box} variant="ghost" tone="warn" icon="archive" label={m.drawer_archive()} onclick={onarchive} />
+		{/if}
+		{#if canStop}
+			<IconButton
+				{box}
+				variant="ghost"
+				tone="danger"
+				icon="stop"
+				label={m.drawer_interrupt_label()}
+				title={m.drawer_interrupt_title()}
+				loading={stopping}
+				onclick={stop}
+				data-journey="stop"
+			/>
 		{/if}
 		<DrawerMenu
 			{session}

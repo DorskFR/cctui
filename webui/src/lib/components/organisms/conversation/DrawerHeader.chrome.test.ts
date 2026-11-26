@@ -52,15 +52,21 @@ describe('drawer header control chrome', () => {
 		expect(title).toMatch(/\.tname:hover \.pen/);
 	});
 
-	it('offers Stop only while a turn runs, outlined with a spinner', () => {
+	it('offers Stop while a turn runs as one red icon that spins until acknowledged', () => {
 		expect(header).toContain('working = false');
 		expect(header).toContain('const canStop = $derived(working && !archived && !compact)');
 		const stop = markup.slice(markup.indexOf('{#if canStop}'), markup.indexOf('{/if}', markup.indexOf('{#if canStop}')));
-		expect(stop).toContain('<Button size="sm"');
-		expect(stop).not.toMatch(/variant=|tone=/);
-		expect(stop).toContain('<Spinner size={12} label="" />');
-		expect(stop).toContain('{m.drawer_stop()}');
-		expect(stop).toContain('onclick={oninterrupt}');
+		expect(stop).toContain('<IconButton');
+		expect(stop).toContain('tone="danger"');
+		expect(stop).toContain('icon="stop"');
+		expect(stop).toContain('loading={stopping}');
+		expect(stop).toContain('onclick={stop}');
+		expect(stop).not.toContain('m.drawer_stop()');
+		expect(header).toMatch(/stopping = true;\s*try \{\s*await oninterrupt\(\);\s*\} finally \{\s*stopping = false;/);
+	});
+
+	it('orders Archive before Stop', () => {
+		expect(markup.indexOf('icon="archive"')).toBeLessThan(markup.indexOf('icon="stop"'));
 	});
 
 	it('moves the title to its own line when the bar collapses, never in a tile', () => {
