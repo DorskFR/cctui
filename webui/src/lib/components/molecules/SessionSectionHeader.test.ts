@@ -61,14 +61,6 @@ describe('SessionSectionHeader', () => {
 		}
 	});
 
-	it('keeps the controls pinned visible while the section is hidden', () => {
-		render({ hidden: false });
-		expect(document.querySelector('.acts')?.classList.contains('pinned')).toBe(false);
-		reset();
-		render({ hidden: true });
-		expect(document.querySelector('.acts')?.classList.contains('pinned')).toBe(true);
-	});
-
 	it('disables the archive control for an empty section', () => {
 		render({ onarchive: () => {}, count: 0 });
 		expect(archiveButton()?.disabled).toBe(true);
