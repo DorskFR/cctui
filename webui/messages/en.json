@@ -2223,6 +2223,8 @@
 	"settings_sort_name": "Name",
 	"settings_sound_label": "Sound",
 	"settings_spawn_dock_help": "Replace the “+ New” button with the whole new-session form, pinned to one side of the Sessions screen. On narrow screens the button and dialog come back.",
+	"settings_spawn_dock_fold_label": "Fold the launch panel during a conversation",
+	"settings_spawn_dock_fold_help": "While a conversation is open, the docked launch form folds back into the “+ New” button and frees its side for the list.",
 	"settings_spawn_dock_label": "Always-visible launch panel",
 	"settings_spawn_dock_side_label": "Panel side",
 	"settings_spawn_dock_side_left": "Left",

@@ -257,10 +257,19 @@ describe("Settings save → load round-trip through the blob", () => {
     expect(loaded.spawnDock.side).toBe("left");
   });
 
+  it("folding the docked spawn panel during a chat is on by default and can be turned off", () => {
+    expect(mergeDefaults({ spawnDock: { enabled: true } } as unknown as Record<string, unknown>).spawnDock.foldOnChat).toBe(true);
+    settings.setSpawnDock({ foldOnChat: false });
+    expect(loadFromCache().spawnDock.foldOnChat).toBe(false);
+    expect(settings.spawnDock.foldOnChat).toBe(false);
+    settings.setSpawnDock({ foldOnChat: true });
+  });
+
   it("the docked spawn panel defaults off on the right and clamps an unknown side", () => {
     expect(mergeDefaults(null).spawnDock).toEqual({
       enabled: false,
       side: "right",
+      foldOnChat: true,
     });
     const merged = mergeDefaults({
       spawnDock: { enabled: "yes", side: "top" },

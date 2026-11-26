@@ -19,6 +19,7 @@ beforeAll(() => {
 
 afterEach(() => {
 	spawnDockHold.collapsed = false;
+	settings.setSpawnDock({ foldOnChat: true });
 });
 
 describe('spawn dock collapse', () => {
@@ -32,5 +33,12 @@ describe('spawn dock collapse', () => {
 		expect(spawnDockSide()).toBeNull();
 		expect(dockLayout().left).toBeNull();
 		expect(settings.spawnDock.enabled).toBe(true);
+	});
+
+	it('keeps the spawn form docked while held when folding is turned off', () => {
+		settings.setSpawnDock({ foldOnChat: false });
+		spawnDockHold.collapsed = true;
+		expect(spawnDockSide()).toBe('left');
+		expect(dockLayout().left).not.toBeNull();
 	});
 });

@@ -11,15 +11,19 @@ export { SPAWN_DOCK_WIDTH, STATS_DOCK_WIDTH } from './dock';
 const wide = new MediaQuery('(min-width: 64rem)');
 const veryWide = new MediaQuery('(min-width: 96rem)');
 
-/** Set by the Sessions screen while a conversation is open: the spawn panel
- *  folds back into the "New session" button so one primary action shows. */
+/** Set by the Sessions screen while a conversation is open: unless the user
+ *  turned `foldOnChat` off, the spawn panel folds back into the "New session"
+ *  button so one primary action shows. */
 export const spawnDockHold = $state({ collapsed: false });
 
 /** Where the spawn form, the stats panel and the conversation are docked right now, and the
  *  width the Sessions screen must keep clear on each edge. */
 export function dockLayout(): DockLayout {
 	return resolveDocks({
-		spawn: spawnDockHold.collapsed ? { ...settings.spawnDock, enabled: false } : settings.spawnDock,
+		spawn:
+			spawnDockHold.collapsed && settings.spawnDock.foldOnChat
+				? { ...settings.spawnDock, enabled: false }
+				: settings.spawnDock,
 		stats: settings.statsDock,
 		conversation: settings.conversationDock,
 		wide: wide.current,
