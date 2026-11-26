@@ -262,7 +262,7 @@
 	};
 
 	$effect(() => {
-		const open = !!sp.liveOpen && settings.spawnDock.foldOnChat;
+		const open = !!sp.liveOpen && settings.spawnDock.foldOnChat !== false;
 		untrack(() => {
 			if (open && sp.dockSide) sp.spawnPrefill = foldedPrefill(sp.spawnPrefill);
 			const wasHeld = spawnDockHold.collapsed;
