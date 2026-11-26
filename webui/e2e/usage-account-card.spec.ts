@@ -216,4 +216,24 @@ test.describe('account card', () => {
 		assertSeparators(l, 'page', 'side');
 		assertCapZone(l, 'page');
 	});
+	for (const width of [412, 360]) {
+		test(`accounts page on a ${width}px phone`, async ({ page }) => {
+			await page.setViewportSize({ width, height: 900 });
+			await stub(page);
+			await page.goto('/settings/accounts', { waitUntil: 'domcontentloaded' });
+			const card = page.locator('main article.acct').first();
+			await expect(card).toBeVisible({ timeout: 30_000 });
+			await expect(card.locator('[data-tsu="CapBar"]')).toHaveCount(8, { timeout: 20_000 });
+			const l = await layout(page, 'main');
+			console.log(`phone-${width}`, JSON.stringify(l));
+			if (SHOTS) await card.screenshot({ path: `${SHOTS}/page-${width}.png` });
+			expect.soft(l.head).not.toMatch(/Claude|Codex/);
+			assertSeparators(l, `phone-${width}`, 'stacked');
+			assertCapZone(l, `phone-${width}`);
+			const box = await card.boundingBox();
+			expect(box!.x).toBeGreaterThanOrEqual(0);
+			expect(box!.x + box!.width).toBeLessThanOrEqual(width);
+			expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
+		});
+	}
 });
