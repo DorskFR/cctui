@@ -8,6 +8,7 @@
 	import { patchUsageEntries } from './usage-battery.logic.ts';
 	import { readingText, useUsageGauge, windowShort } from './usageGauge.svelte.ts';
 	import UsageDetail from './UsageDetail.svelte';
+	import UsageMeter from './UsageMeter.svelte';
 
 	// Patched in place: invalidating would refetch and undo what the push saved.
 	const qc = useQueryClient();
@@ -35,7 +36,7 @@
 	>
 		{#snippet trigger()}
 			<span class="gauge" data-tone={w.tone}>
-				<span class="track"><span class="fill" style={`width: ${w.pct}%`}></span></span>
+				<UsageMeter pct={w.pct} tone={w.tone} width={36} />
 				<Text size="xs" numeric nowrap tone="inherit">{readingText(w)}</Text>
 			</span>
 		{/snippet}
@@ -67,30 +68,10 @@
 			min-width: 44px;
 		}
 	}
-	.track {
-		display: block;
-		width: 24px;
-		height: 4px;
-		border-radius: 2px;
-		background: var(--border);
-		overflow: hidden;
-	}
-	.fill {
-		display: block;
-		height: 100%;
-		border-radius: 2px;
-		background: var(--text-faint);
-	}
 	.gauge[data-tone='warn'] {
 		color: var(--warn);
 	}
-	.gauge[data-tone='warn'] .fill {
-		background: var(--warn);
-	}
 	.gauge[data-tone='danger'] {
 		color: var(--danger);
-	}
-	.gauge[data-tone='danger'] .fill {
-		background: var(--danger);
 	}
 </style>

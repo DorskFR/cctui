@@ -68,6 +68,13 @@ describe('the header usage gauge', () => {
 		expect(gauges[0].textContent).toContain('7d 88%');
 	});
 
+	it('draws the worst window as a filled meter beside the text', () => {
+		render();
+		const meter = document.querySelector('.gauge .meter') as HTMLElement;
+		expect(meter.dataset.tone).toBe('ok');
+		expect((meter.querySelector('.fill') as HTMLElement).style.width).toBe('88%');
+	});
+
 	it('stays neutral below the soft limit and turns amber past it', () => {
 		render();
 		expect(document.querySelector('.gauge')?.getAttribute('data-tone')).toBe('ok');
@@ -85,8 +92,24 @@ describe('the header usage gauge', () => {
 		const text = panel.textContent ?? '';
 		expect(text).toContain('dev1');
 		expect(text).toContain('qtax');
-		expect(text).toContain('5h 40%');
+		const readings = [...panel.querySelectorAll('.reading')].map((r) => ({
+			text: r.textContent?.replace(/\s+/g, ' ').trim(),
+			fill: (r.querySelector('.meter .fill') as HTMLElement | null)?.style.width
+		}));
+		expect(readings).toContainEqual({ text: '5h 40%', fill: '40%' });
+		expect(readings).toContainEqual({ text: '7d 88%', fill: '88%' });
 		expect(panel.querySelector('a[href="/accounts"]')).not.toBeNull();
+	});
+
+	it('leaves the provider name to the icon', async () => {
+		render();
+		const panel = document.querySelector('[popover]') as HTMLElement;
+		panel.dispatchEvent(Object.assign(new Event('toggle'), { newState: 'open' }));
+		flushSync();
+		await Promise.resolve();
+		flushSync();
+		const who = [...panel.querySelectorAll('.who')].map((w) => w.textContent?.trim());
+		expect(who).toEqual(['dev1', 'qtax']);
 	});
 });
 
