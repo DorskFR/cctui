@@ -3409,22 +3409,5 @@
 	"error_search_archived_placeholder": "Nom, dossier ou identifiant",
 	"error_session_missing_body": "Cette session a été archivée ou supprimée. Cherchez-la dans les sessions archivées, ou revenez à vos sessions.",
 	"error_session_missing_title": "Session introuvable",
-	"list_auto_approve": "approbation auto",
-	"sessions_row_tokens": [
-		{
-			"declarations": [
-				"input count",
-				"input tokens",
-				"local countPlural = count: plural"
-			],
-			"selectors": [
-				"countPlural"
-			],
-			"match": {
-				"countPlural=one": "{tokens} token",
-				"countPlural=other": "{tokens} tokens"
-			}
-		}
-	],
-	"sessions_row_tokens_title": "{total} tokens : {input} en entrée, {output} en sortie, {cache} en cache"
+	"list_auto_approve": "approbation auto"
 }

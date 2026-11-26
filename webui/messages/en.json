@@ -3409,22 +3409,5 @@
 	"error_search_archived_placeholder": "Name, folder or id",
 	"error_session_missing_body": "This session was archived or deleted. Search the archived sessions, or go back to your sessions.",
 	"error_session_missing_title": "Session not found",
-	"list_auto_approve": "auto-approve",
-	"sessions_row_tokens": [
-		{
-			"declarations": [
-				"input count",
-				"input tokens",
-				"local countPlural = count: plural"
-			],
-			"selectors": [
-				"countPlural"
-			],
-			"match": {
-				"countPlural=one": "{tokens} token",
-				"countPlural=other": "{tokens} tokens"
-			}
-		}
-	],
-	"sessions_row_tokens_title": "{total} tokens: {input} in, {output} out, {cache} cached"
+	"list_auto_approve": "auto-approve"
 }
