@@ -1,4 +1,5 @@
 // @vitest-environment happy-dom
+import { readFileSync } from 'node:fs';
 import { flushSync, mount, unmount } from 'svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { SessionProfile } from '@bindings/SessionProfile';
@@ -126,6 +127,17 @@ describe('ProfileList picker', () => {
 		const panel = openPicker();
 		expect(panel.querySelector('[data-journey="new-profile"]')).not.toBeNull();
 		expect(panel.querySelector('[data-journey="manage-profiles"]')).toBeNull();
+	});
+
+	it('gives the rule beside the cog no class a tsumikit global utility styles', () => {
+		const utilities = readFileSync('node_modules/@dorsk/tsumikit/dist/styles/utilities.css', 'utf8');
+		const reserved = new Set([...utilities.matchAll(/\.([a-zA-Z][\w-]*)/g)].map((m) => m[1]));
+		expect(reserved.has('divider')).toBe(true);
+		render();
+		const cog = button('Adjust profile');
+		const rule = cog.closest('.tools')?.querySelector<HTMLElement>(':scope > [aria-hidden="true"]');
+		expect(rule).toBeTruthy();
+		expect([...(rule?.classList ?? [])].filter((c) => reserved.has(c))).toEqual([]);
 	});
 });
 

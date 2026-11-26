@@ -301,7 +301,7 @@
 					onclick={onedit}
 				/>
 			</span>
-			<span class="divider" aria-hidden="true"></span>
+			<span class="split" aria-hidden="true"></span>
 		</span>
 	{/if}
 </div>
@@ -372,7 +372,7 @@
 		display: inline-flex;
 		pointer-events: auto;
 	}
-	.divider {
+	.split {
 		align-self: stretch;
 		width: 1px;
 		margin-block: var(--sp-2);
