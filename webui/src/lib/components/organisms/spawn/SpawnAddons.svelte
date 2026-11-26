@@ -132,12 +132,18 @@
 		display: flex;
 		flex-direction: column;
 		gap: var(--sp-2);
+		container: spawn-addons / inline-size;
 	}
 	.addon-row {
 		display: flex;
 		flex-wrap: wrap;
 		align-items: center;
 		gap: var(--sp-1);
+	}
+	@container spawn-addons (max-width: 24rem) {
+		.addon-row {
+			--btn-px-sm: var(--sp-2);
+		}
 	}
 	.addon-labels {
 		display: flex;

@@ -97,7 +97,7 @@ async function inViewport(locator: Locator) {
 const trigger = (dialog: Locator) => dialog.locator('[data-journey="profiles"] [data-journey="profile-trigger"]');
 const panel = (page: Page) => page.locator('[data-journey="profiles"] [popover]:popover-open');
 
-test('390px: closed, the picker is one card and Labels/Files/Env vars and Launch need no scroll', async ({ page }) => {
+test('390px: closed, the picker is one card and Labels/Files/Env vars/Context and Launch need no scroll', async ({ page }) => {
 	await stub(page);
 	const dialog = await openSpawn(page);
 
@@ -117,7 +117,7 @@ test('390px: closed, the picker is one card and Labels/Files/Env vars and Launch
 				.filter((r) => r.height > 0)
 				.map((r) => r.top + r.height / 2)
 		);
-	expect(addonTops.length).toBe(3);
+	expect(addonTops.length).toBe(4);
 	expect(Math.max(...addonTops) - Math.min(...addonTops)).toBeLessThan(4);
 	await inViewport(dialog.getByRole('button', { name: /^Launch/ }));
 	await expect(dialog.locator('.chord-hint').first()).toBeVisible();
