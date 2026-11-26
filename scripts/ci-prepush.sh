@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Usage: ci-prepush.sh <rust|clippy|webui|schema>
+# Usage: ci-prepush.sh schema
 set -euo pipefail
 
 cd "$(git rev-parse --show-toplevel)"
@@ -23,58 +23,12 @@ if [ -n "$base" ]; then
 else
   changes="$(bash scripts/ci-changes.sh --all)"
 fi
-key="$area"
-[ "$area" = clippy ] && key=rust
-if ! grep -qx "$key=true" <<<"$changes"; then
+if ! grep -qx "$area=true" <<<"$changes"; then
   echo "pre-push $area: nothing to check since ${base:0:12}"
   exit 0
 fi
 
 case "$area" in
-  rust | clippy | webui)
-    [ -n "${CCTUI_HEAVY:-}" ] || exec bash scripts/heavy.sh bash scripts/ci-prepush.sh "$area"
-    ;;
-esac
-
-case "$area" in
-  clippy)
-    exec cargo clippy --workspace --all-targets --keep-going -- -D warnings
-    ;;
-  rust)
-    if [ -n "$base" ]; then
-      mapfile -t crates < <(bash scripts/affected-crates.sh "$base" HEAD)
-    else
-      mapfile -t crates < <(bash scripts/affected-crates.sh --all)
-    fi
-    echo "pre-push rust: testing ${crates[*]}"
-    # DB-gated tests skip themselves without DATABASE_URL; `make test` runs
-    # them against one.
-    exec env -u DATABASE_URL -u TEST_DATABASE_URL bash scripts/affected-crates.sh test "${crates[@]}"
-    ;;
-  webui)
-    files=()
-    if [ -n "$base" ]; then
-      while IFS= read -r f; do
-        case "$f" in
-          *.ts | *.js | *.mjs | *.svelte) files+=("${f#webui/}") ;;
-        esac
-      done < <(git diff --name-only --diff-filter=d "$base" HEAD -- webui/src webui/scripts)
-    fi
-    if [ -n "$base" ] && [ "${#files[@]}" -eq 0 ]; then
-      echo "pre-push webui: no webui sources changed since ${base:0:12}"
-      exit 0
-    fi
-    if [ ! -d webui/node_modules ]; then
-      echo "pre-push webui: webui/node_modules is missing; run 'make webui/install'" >&2
-      exit 1
-    fi
-    cd webui
-    npm run --silent codegen:ensure
-    if [ "${#files[@]}" -eq 0 ]; then
-      exec bash ../scripts/heavy.sh npx --no-install vitest run
-    fi
-    exec bash ../scripts/heavy.sh npx --no-install vitest related --run --passWithNoTests "${files[@]}"
-    ;;
   schema)
     url=https://json.schemastore.org/claude-code-settings.json
     vendored=crates/cctui-server-accounts/src/settings_catalog/claude-code-settings.schema.json
@@ -92,7 +46,7 @@ case "$area" in
     fi
     ;;
   *)
-    echo "usage: ci-prepush.sh <rust|clippy|webui|schema>" >&2
+    echo "usage: ci-prepush.sh schema" >&2
     exit 2
     ;;
 esac

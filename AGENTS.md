@@ -182,12 +182,9 @@ CI runs the full suites; locally run only the tests the change touches.
 1. **Red.** Write the regression test and run just that test; watch it fail.
    Give a test that could loop or hang a short timeout so red takes seconds.
 2. **Green.** Write the fix and rerun the same test.
-3. **Commit and push.** The pre-push hook (`scripts/ci-prepush.sh`) diffs the
-   pushed commits against what the remote branch already has (on a first push,
-   the merge-base with `origin/main`) and runs only what applies:
-   `cargo test --workspace` when Rust changed, `vitest related` on the changed
-   webui sources, the schema-drift check when the settings catalog changed. A
-   version-only bump of `Cargo.toml`/`Cargo.lock` is not a Rust change.
+3. **Commit and push.** Hooks only run checks that take seconds (fmt, biome,
+   the CSS/i18n/forbidden-terms scripts, schema drift when the settings
+   catalog changed). Tests, clippy and builds run in CI on the PR.
 
 Useful single-target commands:
 
