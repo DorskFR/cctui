@@ -42,11 +42,10 @@ describe('TokensOverTime', () => {
 		expect((cols[0].querySelector('.bar') as HTMLElement).style.height).toBe('0%');
 	});
 
-	it('accents only the five most recent bars', () => {
-		const el = render([], 30, 'day');
+	it('draws every bar in the same accent', () => {
+		const el = render([bucket({ input: 100 })], 7, 'day');
 		const cols = [...el.querySelectorAll('.col')];
-		expect(cols.filter((c) => c.classList.contains('recent')).length).toBe(5);
-		expect(cols.slice(-5).every((c) => c.classList.contains('recent'))).toBe(true);
+		expect(cols.some((c) => c.classList.contains('recent'))).toBe(false);
 	});
 
 	it('captions the dollars of the range and prices each bar in its tooltip', () => {

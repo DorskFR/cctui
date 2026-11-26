@@ -12,7 +12,6 @@
 		peakBucket,
 		peakBucketTotal,
 		rangeCost,
-		recentFrom,
 		type Granularity
 	} from './usage-analytics';
 
@@ -29,7 +28,6 @@
 	const filled = $derived(fillBuckets(buckets, days, granularity));
 	const peakHeight = $derived(peakBucketTotal(filled));
 	const peak = $derived(peakBucket(filled));
-	const recent = $derived(recentFrom(filled.length));
 	const cost = $derived(rangeCost(filled));
 
 	const labels = $derived(filled.map((b) => axisLabel(b.ms, granularity)));
@@ -42,10 +40,9 @@
 
 <div class="chart">
 	<div class="bars" role="list">
-		{#each filled as b, i (b.ms)}
+		{#each filled as b (b.ms)}
 			<div
 				class="col"
-				class:recent={i >= recent}
 				role="listitem"
 				title={`${bucketLabel(b.ms, granularity)}\n↑${b.input}  ↓${b.output}  ⚡${b.cache_read}  ${usd(b.cost_usd)}`}
 			>
@@ -98,9 +95,6 @@
 		width: 100%;
 		min-height: 1px;
 		border-radius: 2px 2px 0 0;
-		background: var(--accent-dim);
-	}
-	.col.recent .bar {
 		background: var(--accent);
 	}
 	.col:hover .bar {

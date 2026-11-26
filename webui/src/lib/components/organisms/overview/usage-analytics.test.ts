@@ -10,7 +10,6 @@ import {
 	hasUsage,
 	bucketTotal,
 	peakBucket,
-	recentFrom,
 	axisLabel,
 	axisTicks,
 	rangeCost,
@@ -144,13 +143,6 @@ describe('peakBucket', () => {
 
 	it('is undefined for an empty series', () => {
 		expect(peakBucket([])).toBeUndefined();
-	});
-});
-
-describe('recentFrom', () => {
-	it('marks the last five slots, and every slot in a shorter series', () => {
-		expect(recentFrom(30)).toBe(25);
-		expect(recentFrom(3)).toBe(0);
 	});
 });
 
