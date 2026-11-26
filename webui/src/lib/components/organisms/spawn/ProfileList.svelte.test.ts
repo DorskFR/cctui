@@ -142,11 +142,16 @@ describe('ProfileList as a picker (the spawn form)', () => {
 describe('ProfileList picker placement', () => {
 	const rect = (top: number, bottom: number) =>
 		({ top, bottom, left: 0, right: 400, x: 0, y: top, width: 400, height: bottom - top }) as DOMRect;
-	function inArea(cardTop: number) {
+	function inArea(cardTop: number, labelAbove?: [number, number]) {
 		const area = document.createElement('div');
 		area.style.overflowY = 'auto';
 		area.getBoundingClientRect = () => rect(100, 700);
 		document.body.append(area);
+		if (labelAbove) {
+			const label = document.createElement('label');
+			label.getBoundingClientRect = () => rect(...labelAbove);
+			area.append(label);
+		}
 		render('/settings/sessions#launch', area);
 		const card = document.querySelector<HTMLElement>('.card');
 		if (!card) throw new Error('picker card not found');
@@ -160,6 +165,12 @@ describe('ProfileList picker placement', () => {
 		const card = inArea(600);
 		expect(card.dataset.placement).toBe('top-start');
 		expect(card.style.getPropertyValue('--sheet-max')).toBe('492px');
+	});
+
+	it('stops an upward sheet below the label of the field above', () => {
+		const card = inArea(600, [300, 320]);
+		expect(card.dataset.placement).toBe('top-start');
+		expect(card.style.getPropertyValue('--sheet-max')).toBe('272px');
 	});
 
 	it('opens downward, capped to the room below, when there is space under the card', () => {

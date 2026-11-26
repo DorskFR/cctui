@@ -142,13 +142,14 @@
 	}
 
 	// The kit places the panel against the viewport; keep it inside the form's
-	// scroll area so it never spills over the dialog or dock footer.
+	// scroll area so it never spills over the dialog or dock footer, and below
+	// the label of the field above so an upward sheet never cuts through it.
 	function fitToScrollArea() {
 		const card = cardEl;
 		if (!card || open) return;
 		const area = scrollArea(card);
 		const box = card.getBoundingClientRect();
-		const top = area ? area.getBoundingClientRect().top : 0;
+		const top = Math.max(area ? area.getBoundingClientRect().top : 0, labelBottomAbove(card, area ?? document.body, box.top));
 		const bottom = area ? area.getBoundingClientRect().bottom : innerHeight;
 		const below = bottom - box.bottom - 8;
 		const above = box.top - top - 8;
@@ -193,6 +194,16 @@
 				typeahead(action.char);
 				break;
 		}
+	}
+
+	function labelBottomAbove(card: HTMLElement, root: ParentNode, limit: number): number {
+		let bottom = -Infinity;
+		for (const label of root.querySelectorAll('label')) {
+			if (card.contains(label)) continue;
+			const b = label.getBoundingClientRect().bottom;
+			if (b <= limit && b > bottom) bottom = b;
+		}
+		return bottom;
 	}
 
 	function scrollArea(el: HTMLElement): HTMLElement | null {
