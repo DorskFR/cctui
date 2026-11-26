@@ -232,9 +232,6 @@
 		text-overflow: ellipsis;
 		min-width: 0;
 	}
-	.idle .title {
-		color: var(--text-muted);
-	}
 	.sub {
 		appearance: none;
 		background: none;
