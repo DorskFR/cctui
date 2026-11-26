@@ -179,7 +179,6 @@
 			/>
 		{/if}
 		{#if !archived && !compact}
-			<IconButton {box} variant="ghost" tone="warn" icon="archive" label={m.drawer_archive()} onclick={onarchive} />
 			<IconButton
 				{box}
 				variant="ghost"
@@ -191,6 +190,7 @@
 				onclick={stop}
 				data-journey="stop"
 			/>
+			<IconButton {box} variant="ghost" tone="warn" icon="archive" label={m.drawer_archive()} onclick={onarchive} />
 		{/if}
 		<DrawerMenu
 			{session}

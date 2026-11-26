@@ -83,8 +83,8 @@ describe('drawer header control chrome', () => {
 		target.remove();
 	});
 
-	it('orders Archive before Stop', () => {
-		expect(markup.indexOf('icon="archive"')).toBeLessThan(markup.indexOf('icon="stop"'));
+	it('orders Stop before Archive', () => {
+		expect(markup.indexOf('icon="stop"')).toBeLessThan(markup.indexOf('icon="archive"'));
 	});
 
 	it('keeps the title in the one action row at every width', () => {

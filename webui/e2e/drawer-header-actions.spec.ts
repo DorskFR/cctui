@@ -8,7 +8,7 @@ const trailing = (page: Page) =>
 
 for (const viewport of [WIDE, NARROW]) {
 	const w = viewport.width;
-	// Back, Archive, Stop and ⋯.
+	// Back, Stop, Archive and ⋯.
 	const minControls = 4;
 
 	test(`${w}px: every trailing header control shares one height and top y`, async ({
