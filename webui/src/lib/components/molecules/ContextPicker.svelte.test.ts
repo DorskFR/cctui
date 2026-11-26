@@ -122,3 +122,25 @@ describe('ContextPicker kind badge', () => {
 		expect(badges()).toEqual(['prompt']);
 	});
 });
+
+describe('ContextPicker empty list', () => {
+	const typeQuery = (q: string) => {
+		input().value = q;
+		input().dispatchEvent(new Event('input', { bubbles: true }));
+		flushSync();
+	};
+
+	it('opens no listbox when nothing exists and the filter is empty', () => {
+		render([], [], []);
+		input().dispatchEvent(new FocusEvent('focus'));
+		flushSync();
+		expect(document.body.textContent).not.toContain('No match.');
+	});
+
+	it('says No match. when a filter matches nothing', () => {
+		render();
+		input().dispatchEvent(new FocusEvent('focus'));
+		typeQuery('zzz');
+		expect(document.body.textContent).toContain('No match.');
+	});
+});

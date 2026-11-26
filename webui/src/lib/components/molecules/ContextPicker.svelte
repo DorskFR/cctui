@@ -105,7 +105,7 @@
 		onclose={(reason) => {
 			if (reason === 'select') open = true;
 		}}
-		empty={m.context_picker_empty()}
+		empty={query.trim() ? m.context_picker_empty() : undefined}
 	>
 		<Input
 			{id}
