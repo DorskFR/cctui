@@ -16,6 +16,7 @@
 		usageEnabled = true,
 		canManage = false,
 		dense = false,
+		divided = false,
 		onedit,
 		onreauth
 	}: {
@@ -24,6 +25,7 @@
 		canManage?: boolean;
 		/** Gauges only: the header popover has no room for models, counters or the reset button. */
 		dense?: boolean;
+		divided?: boolean;
 		onedit?: () => void;
 		onreauth?: () => void;
 	} = $props();
@@ -51,7 +53,7 @@
 	});
 </script>
 
-<div class="column" class:dense>
+<div class="column" class:dense class:divided>
 	<div class="head">
 		<span class="mark" title={providerLabel(p.provider)}>
 			<AdapterIcon provider={p.provider} size={18} />
@@ -120,6 +122,9 @@
 	.column.dense {
 		gap: var(--sp-1);
 		padding: var(--sp-2) var(--sp-3);
+	}
+	.column.divided:not(:last-child) {
+		border-right: 1px solid var(--border);
 	}
 	.head {
 		display: flex;

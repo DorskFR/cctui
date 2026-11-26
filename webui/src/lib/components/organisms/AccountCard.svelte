@@ -287,6 +287,7 @@
 				usageEnabled={enabled}
 				canManage={canEditProvider(p, owned) && !compact}
 				dense={compact}
+				divided
 				onedit={() => oneditprovider?.(p)}
 				onreauth={() => onreauthprovider?.(p)}
 			/>
