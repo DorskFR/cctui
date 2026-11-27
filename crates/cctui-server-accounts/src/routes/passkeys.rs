@@ -184,6 +184,32 @@ async fn take_challenge(
 // Registration (authenticated)
 // ---------------------------------------------------------------------------
 
+/// A passkey signs in with the account's full ceiling, so only a credential that
+/// already holds it may add or change one: no machine, dispatcher, worker or
+/// plugin key, and no key narrower than its owner.
+async fn require_full_human_credential(pool: &PgPool, ctx: &AuthContext) -> ApiResult<()> {
+    let plugin: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM auth_keys WHERE id = $1 AND kind = 'plugin')",
+    )
+    .bind(ctx.key_id)
+    .fetch_one(pool)
+    .await?;
+    if plugin || !auth::is_human_credential(pool, ctx).await? {
+        return Err(AppError::new(
+            StatusCode::FORBIDDEN,
+            "passkeys can only be managed from a user sign-in",
+        ));
+    }
+    let ceiling = cctui_server_kernel::store::acls::user_ceiling(pool, ctx.user_id).await?;
+    if !ceiling.is_subset(&ctx.scopes) {
+        return Err(AppError::new(
+            StatusCode::FORBIDDEN,
+            "this key holds fewer scopes than your account: sign in again to manage passkeys",
+        ));
+    }
+    Ok(())
+}
+
 /// `POST /passkeys/register/start` — options for `navigator.credentials.create()`.
 ///
 /// Already-enrolled credentials are excluded, so a second attempt on the same
@@ -192,6 +218,7 @@ pub async fn register_start<S: AccountsHost>(
     State(state): State<S>,
     Extension(ctx): Extension<AuthContext>,
 ) -> ApiResult<Json<PasskeyChallenge>> {
+    require_full_human_credential(state.kernel_pool(), &ctx).await?;
     let webauthn = relying_party(&state)?;
     let name = sqlx::query_scalar::<_, String>("SELECT name FROM users WHERE id = $1")
         .bind(ctx.user_id)
@@ -228,6 +255,7 @@ pub async fn register_finish<S: AccountsHost>(
     Extension(ctx): Extension<AuthContext>,
     Json(req): Json<PasskeyRegisterFinish>,
 ) -> ApiResult<Json<PasskeyRow>> {
+    require_full_human_credential(state.kernel_pool(), &ctx).await?;
     let webauthn = relying_party(&state)?;
     let label = normalize_label(req.label.as_deref())?;
     let parked =
@@ -305,6 +333,7 @@ pub async fn relabel<S: KernelContext>(
     Path(id): Path<Uuid>,
     Json(req): Json<RelabelPasskeyRequest>,
 ) -> ApiResult<StatusCode> {
+    require_full_human_credential(state.pool(), &ctx).await?;
     let label = normalize_label(Some(&req.label))?;
     let done =
         sqlx::query("UPDATE webauthn_credentials SET label = $1 WHERE id = $2 AND user_id = $3")
@@ -328,6 +357,7 @@ pub async fn revoke<S: KernelContext>(
     Extension(ctx): Extension<AuthContext>,
     Path(id): Path<Uuid>,
 ) -> ApiResult<StatusCode> {
+    require_full_human_credential(state.pool(), &ctx).await?;
     let Some(hashes) = revoke_passkey(state.pool(), ctx.user_id, id).await? else {
         return Err(AppError::new(StatusCode::NOT_FOUND, "no such passkey"));
     };
@@ -704,6 +734,77 @@ mod tests {
         }
         assert!(cfg.validate(&token).await.is_none(), "cookie is dead after revoke");
         assert!(revoke_passkey(&pool, uid, passkey_id).await.unwrap().is_none());
+
+        sqlx::query("DELETE FROM users WHERE id = $1").bind(uid).execute(&pool).await.ok();
+    }
+
+    #[tokio::test]
+    async fn only_a_full_human_credential_manages_passkeys() {
+        let Some(url) = cctui_server_kernel::test_support::db_url(
+            "only_a_full_human_credential_manages_passkeys",
+        ) else {
+            return;
+        };
+        let pool = PgPool::connect(&url).await.expect("connect test db");
+        let uid: Uuid = sqlx::query_scalar(
+            "INSERT INTO users (id, name, key_hash) \
+             VALUES (gen_random_uuid(), $1, gen_random_uuid()::text) RETURNING id",
+        )
+        .bind(format!("passkey-gate-{}", Uuid::new_v4()))
+        .fetch_one(&pool)
+        .await
+        .expect("insert user");
+        sqlx::query("INSERT INTO user_acls (user_id, scope) VALUES ($1, 'read'), ($1, 'dispatch')")
+            .bind(uid)
+            .execute(&pool)
+            .await
+            .expect("insert ceiling");
+        let full = [Scope::Read, Scope::Dispatch];
+        let ctx_for = |kind: &'static str, scopes: &'static [Scope]| {
+            let pool = pool.clone();
+            async move {
+                let hash = auth::sha256_hex(&auth::user_token(&auth::mint_secret()));
+                let key_id = auth::register_key(
+                    &pool,
+                    auth::NewKey {
+                        user_id: uid,
+                        key_hash: &hash,
+                        key_preview: None,
+                        label: Some("gate"),
+                        kind,
+                        machine_id: None,
+                        dispatcher_id: None,
+                        expires_at: None,
+                        passkey_id: None,
+                    },
+                    scopes.iter().copied(),
+                )
+                .await
+                .expect("register key");
+                AuthContext {
+                    user_id: uid,
+                    key_id,
+                    machine_id: None,
+                    scopes: scopes.iter().copied().collect(),
+                }
+            }
+        };
+        let refused = |r: ApiResult<()>| matches!(r, Err(AppError::Status(code, _)) if code == StatusCode::FORBIDDEN);
+
+        let user = ctx_for("user", &[Scope::Read, Scope::Dispatch]).await;
+        assert_eq!(user.scopes, full.into_iter().collect());
+        assert!(require_full_human_credential(&pool, &user).await.is_ok());
+        let passkey_login = ctx_for(SESSION_KIND, &[Scope::Read, Scope::Dispatch]).await;
+        assert!(require_full_human_credential(&pool, &passkey_login).await.is_ok());
+        assert!(refused(
+            require_full_human_credential(&pool, &ctx_for("user", &[Scope::Read]).await).await
+        ));
+        for kind in ["plugin", "dispatcher", "ephemeral", "machine"] {
+            let ctx = ctx_for(kind, &[Scope::Read, Scope::Dispatch]).await;
+            assert!(refused(require_full_human_credential(&pool, &ctx).await), "{kind} key");
+        }
+        let machine = AuthContext { machine_id: Some(Uuid::new_v4()), ..user };
+        assert!(refused(require_full_human_credential(&pool, &machine).await));
 
         sqlx::query("DELETE FROM users WHERE id = $1").bind(uid).execute(&pool).await.ok();
     }
