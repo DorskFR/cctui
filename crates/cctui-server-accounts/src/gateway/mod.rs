@@ -11,4 +11,5 @@ pub mod proxy;
 pub mod ratelimit;
 pub mod toolguard;
 pub mod usage;
+pub mod usage_gate;
 pub use config::*;

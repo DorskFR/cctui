@@ -228,3 +228,51 @@ async fn a_probe_cannot_bypass_the_host_outbound_policy() {
     assert_eq!(fixture.calls.load(Ordering::SeqCst), 0);
     fixture.close().await;
 }
+
+#[tokio::test]
+async fn a_rejected_read_pauses_every_caller_until_the_backoff_passes() {
+    let Some(fixture) = Fixture::new(StatusCode::TOO_MANY_REQUESTS, false).await else { return };
+    let previous = json!({"five_hour": {"utilization": 75.0}});
+    let at = Instant::now()
+        .checked_sub(USAGE_CACHE_TTL.to_std().unwrap() + Duration::from_secs(1))
+        .unwrap();
+    fixture
+        .host
+        .cache
+        .insert(fixture.provider, CachedUsage { fetched_at: at, usage: Some(previous.clone()) });
+    for _ in 0..20 {
+        assert_eq!(
+            usage_for_soft_limit(fixture.host.as_ref(), fixture.provider).await,
+            Some(previous.clone())
+        );
+    }
+    assert_eq!(
+        fetch_account_usage(fixture.host.as_ref(), fixture.provider).await,
+        Err(StatusCode::TOO_MANY_REQUESTS)
+    );
+    assert_eq!(fixture.calls.load(Ordering::SeqCst), 1);
+    fixture.close().await;
+}
+
+#[tokio::test]
+async fn a_success_holds_further_reads_for_the_read_interval() {
+    let Some(fixture) = Fixture::new(StatusCode::OK, false).await else { return };
+    assert!(fetch_account_usage(fixture.host.as_ref(), fixture.provider).await.is_ok());
+    assert_eq!(
+        fetch_account_usage(fixture.host.as_ref(), fixture.provider).await,
+        Err(StatusCode::TOO_MANY_REQUESTS)
+    );
+    assert_eq!(fixture.calls.load(Ordering::SeqCst), 1);
+    fixture.close().await;
+}
+
+#[tokio::test]
+async fn a_credential_the_usage_endpoint_refuses_is_flagged_for_reauth() {
+    let Some(fixture) = Fixture::new(StatusCode::UNAUTHORIZED, false).await else { return };
+    assert_eq!(
+        fetch_account_usage(fixture.host.as_ref(), fixture.provider).await,
+        Err(StatusCode::UNAUTHORIZED)
+    );
+    assert!(fixture.host.reauth.contains_key(&fixture.provider));
+    fixture.close().await;
+}
