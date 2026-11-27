@@ -1,5 +1,4 @@
 import { describe, expect, it } from 'vitest';
-import { PasskeyAborted } from '#lib/passkeys.ts';
 import { runPasskeyAttempt } from './login.logic';
 
 const resolves = (ok: boolean) => () => Promise.resolve(ok);
@@ -22,6 +21,7 @@ describe('runPasskeyAttempt', () => {
 	});
 
 	it('never reports a dismissed dialog', async () => {
-		expect(await runPasskeyAttempt(rejects(new PasskeyAborted()), true)).toBe('quiet');
+		const dismissed = new DOMException('closed', 'NotAllowedError');
+		expect(await runPasskeyAttempt(rejects(dismissed), true)).toBe('quiet');
 	});
 });

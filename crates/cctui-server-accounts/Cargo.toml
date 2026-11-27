@@ -37,8 +37,7 @@ http = "1"
 sha2.workspace = true
 hex.workspace = true
 sqlx = { version = "0.9", features = ["runtime-tokio", "tls-rustls", "postgres", "uuid", "chrono", "json"] }
-webauthn-rs = { version = "0.6", features = ["danger-allow-state-serialisation", "conditional-ui"] }
-webauthn-rs-proto = "0.6"
+kagi = { git = "https://github.com/DorskFR/kagi", tag = "v0.2.0", features = ["serde"] }
 
 [dev-dependencies]
 cctui-server-kernel = { workspace = true, features = ["test-support"] }

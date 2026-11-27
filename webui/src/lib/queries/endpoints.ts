@@ -259,7 +259,7 @@ export const endpoints = {
     } satisfies DeviceAuthDecision),
   /** Passkeys enrolled on the caller's account. */
   passkeys: () => api.get<PasskeyListResponse>("/passkeys"),
-  /** Begin enrolling a passkey; the options go to `navigator.credentials.create()`. */
+  /** Begin enrolling a passkey; the options go to kagi's `createPasskey`. */
   passkeyRegisterStart: () => api.post<PasskeyChallenge>("/passkeys/register/start"),
   /** Store the credential the authenticator just produced. */
   passkeyRegisterFinish: (body: PasskeyRegisterFinish) =>

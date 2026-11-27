@@ -38,7 +38,6 @@ mod update_check;
 use cctui_server_accounts::usage_history;
 use cctui_server_sessions::uploads;
 mod voice_context;
-use cctui_server_accounts::webauthn;
 use cctui_server_dispatch::webhook;
 use cctui_server_sessions::ws;
 
@@ -295,6 +294,19 @@ async fn build_state(
         ))
     });
     guard_step::init(guard_step::Durable::new(pool.clone(), guard_peers));
+    let passkeys = config
+        .features
+        .contains(Feature::Passkeys)
+        .then(|| {
+            cctui_server_accounts::relying_party::build(
+                &config.external_url,
+                config.rp_id.as_deref(),
+                pool.clone(),
+                &cctui_server_kernel::crypto::vault_key(),
+            )
+        })
+        .flatten()
+        .map(Arc::new);
 
     Ok(AppState {
         core: crate::core_state::CoreState::new(
@@ -306,11 +318,7 @@ async fn build_state(
         ),
         config: config.clone(),
         permission_store: cctui_server_sessions::routes::permissions::PermissionStore::shared(),
-        // Passkeys ride the deployment's own public URL: a server already
-        // configured with an https `CCTUI_EXTERNAL_URL` needs no new env.
-        webauthn: webauthn::build(&config.external_url, config.rp_id.as_deref())
-            .filter(|_| config.features.contains(Feature::Passkeys))
-            .map(Arc::new),
+        passkeys,
         skills,
         plugins: Arc::new(init_plugins(config)),
         preview: Arc::new(preview::Registry::new(

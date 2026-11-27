@@ -2022,6 +2022,8 @@
 	"settings_passkeys_not_discoverable": "This key is not discoverable, so it will not appear on the sign-in screen.",
 	"settings_passkeys_revoke": "Delete",
 	"settings_passkeys_revoked": "Passkey deleted.",
+	"settings_passkeys_sign_in_again": "For your security, adding a passkey needs a sign-in from the last 10 minutes. Sign in again, then add it.",
+	"settings_passkeys_sign_in_again_action": "Sign in again",
 	"settings_passkeys_test": "Test",
 	"settings_passkeys_test_help": "Runs the sign-in check without signing you out.",
 	"settings_passkeys_test_ok": "{label} answered correctly.",

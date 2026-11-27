@@ -33,8 +33,13 @@ pub async fn login<S: KernelContext>(
     headers: HeaderMap,
     Json(req): Json<LoginRequest>,
 ) -> Response {
-    if state.auth_config().validate(&req.token).await.is_none() {
+    let Some(ctx) = state.auth_config().validate(&req.token).await else {
         return StatusCode::UNAUTHORIZED.into_response();
+    };
+    if let Err(e) =
+        crate::routes::passkeys::record_sign_in(state.pool(), ctx.key_id, chrono::Utc::now()).await
+    {
+        tracing::warn!(key_id = %ctx.key_id, "could not record the sign-in: {e}");
     }
     let cookie = auth::set_auth_cookie(&req.token, auth::request_is_https(&headers));
     ([(header::SET_COOKIE, cookie)], StatusCode::NO_CONTENT).into_response()

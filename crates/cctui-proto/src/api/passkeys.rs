@@ -10,32 +10,33 @@ use uuid::Uuid;
 #[derive(Serialize)]
 #[cfg_attr(test, derive(TS), ts(export))]
 pub struct PasskeyChallenge {
-    /// Handle for the parked ceremony state; echoed back on finish.
-    pub challenge_id: Uuid,
-    /// The raw `WebAuthn` options, passed to `navigator.credentials.*` verbatim
-    /// after the browser-side base64url decoding. Deliberately untyped here:
-    /// the shape is the W3C one and webauthn-rs owns it.
+    /// Echoed back on finish.
+    pub ceremony: String,
+    /// The `WebAuthn` options as kagi serializes them.
+    #[cfg_attr(
+        test,
+        ts(
+            type = "import(\"@dorsk/kagi\").CreationOptionsJSON | import(\"@dorsk/kagi\").RequestOptionsJSON"
+        )
+    )]
     pub options: Value,
 }
 
 #[derive(Deserialize)]
 #[cfg_attr(test, derive(TS), ts(export))]
 pub struct PasskeyRegisterFinish {
-    pub challenge_id: Uuid,
+    pub ceremony: String,
     /// Human label for the key ("iPhone", "`YubiKey`", "Bitwarden").
     pub label: Option<String>,
-    /// The `PublicKeyCredential` from `navigator.credentials.create()`.
+    #[cfg_attr(test, ts(type = "import(\"@dorsk/kagi\").RegistrationResponseJSON"))]
     pub credential: Value,
-    /// `credProps.rk` as the browser reported it, when it did. `false` means
-    /// the key is not discoverable and so cannot drive the usernameless login.
-    pub discoverable: Option<bool>,
 }
 
 #[derive(Deserialize)]
 #[cfg_attr(test, derive(TS), ts(export))]
 pub struct PasskeyAssertion {
-    pub challenge_id: Uuid,
-    /// The `PublicKeyCredential` from `navigator.credentials.get()`.
+    pub ceremony: String,
+    #[cfg_attr(test, ts(type = "import(\"@dorsk/kagi\").AuthenticationResponseJSON"))]
     pub credential: Value,
 }
 

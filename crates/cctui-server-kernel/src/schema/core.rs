@@ -81,6 +81,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "oauth_pending_logins",
         sql: include_str!("../../schema/core/0015_oauth_pending_logins.sql"),
     },
+    Migration {
+        version: 16,
+        name: "auth_key_signed_in_at",
+        sql: include_str!("../../schema/core/0016_auth_key_signed_in_at.sql"),
+    },
 ];
 
 const LEGACY_LAST: &str = include_str!("../../../../migrations/191_file_blobs.up.sql");

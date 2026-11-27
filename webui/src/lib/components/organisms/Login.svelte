@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { auth } from '#lib/auth.svelte.ts';
-	import { conditionalUiSupported } from '#lib/passkeys.ts';
+	import { autofillSupported } from '@dorsk/kagi';
 	import { runPasskeyAttempt } from './login.logic';
 	import { Button, Card, Field, Input, Text } from '@dorsk/tsumikit';
 	import { m } from '#lib/paraglide/messages.js';
@@ -31,7 +31,7 @@
 			if (!cfg?.available || !cfg.enrolled) return;
 			if (cfg.auto_prompt) {
 				await signInWithPasskey(false);
-			} else if (await conditionalUiSupported()) {
+			} else if (await autofillSupported()) {
 				armConditional();
 			}
 		})();
