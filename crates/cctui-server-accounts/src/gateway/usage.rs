@@ -251,6 +251,7 @@ pub async fn fetch_openai_usage(
         })?;
     if !resp.status().is_success() {
         tracing::warn!(account = %acct.id, status = %resp.status(), "openai usage rejected");
+        usage_rejected(state, acct, &resp);
         return Err(StatusCode::from_u16(resp.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY));
     }
     let body: serde_json::Value = resp.json().await.map_err(|e| {
@@ -461,8 +462,8 @@ where
 /// chatgpt-account-id, tallied locally), `Ok(None)` for no such account, and `Err(status)` when
 /// the token refresh failed or upstream rejected the read.
 ///
-/// This makes NO inference request and costs no tokens. Callers MUST throttle it
-/// (the endpoint rate-limits per access token); see the usage cache in the route.
+/// This makes NO inference request and costs no tokens. Upstream reads go through
+/// [`super::usage_gate::ReadGate`]; a closed gate answers `Err(429)` without a request.
 pub async fn fetch_account_usage(
     state: &impl UsageContext,
     account_id: Uuid,
@@ -483,6 +484,12 @@ pub async fn fetch_usage_with_provider(
     usage_for_account(state, acct).await.map(|usage| (provider, usage))
 }
 
+enum UsageSource {
+    Probe(String),
+    OpenAi(String),
+    Anthropic,
+}
+
 async fn usage_for_account(
     state: &impl UsageContext,
     acct: Account,
@@ -493,27 +500,65 @@ async fn usage_for_account(
     if Family::from_provider(&acct.provider).is_metered() {
         return fireworks_usd_windows(state, &acct).await;
     }
-    // A compatible endpoint measures itself only if the operator named a probe;
-    // a probe failure returns an error so the caller degrades to "usage unknown"
-    // rather than to an unmeasured credential that looks wide open.
-    if matches!(acct.provider.as_str(), "anthropic-compatible" | "openai-compatible")
-        && let Some(id) = usage_probe_id(state, account_id).await
-    {
-        return probe_usage_windows(state, &acct, &id).await;
-    }
-    if acct.provider != "anthropic" {
+    let source: Option<UsageSource> = match acct.provider.as_str() {
+        // A compatible endpoint measures itself only if the operator named a probe;
+        // a probe failure returns an error so the caller degrades to "usage unknown"
+        // rather than to an unmeasured credential that looks wide open.
+        "anthropic-compatible" | "openai-compatible" => {
+            usage_probe_id(state, account_id).await.map(UsageSource::Probe)
+        }
         // A failed real read must stay an error: the local tally against an
         // arbitrary budget reads as thousands of percent on cache-heavy sessions.
         // Only accounts without a chatgpt-account-id, which have no real
         // endpoint, are measured by the tally.
-        if acct.provider == "openai"
-            && let Some(chatgpt_account_id) = acct.provider_account_id.as_deref()
-        {
-            return fetch_openai_usage(state, &acct, chatgpt_account_id).await.map(Some);
-        }
+        "openai" => acct.provider_account_id.clone().map(UsageSource::OpenAi),
+        "anthropic" => Some(UsageSource::Anthropic),
+        _ => None,
+    };
+    let Some(source) = source else {
         return local_usage_windows(state, account_id).await;
+    };
+    let gate = super::usage_gate::ReadGate::global();
+    if let Err(wait) = gate.claim(account_id, std::time::Instant::now()) {
+        tracing::debug!(account = %account_id, wait_secs = wait.as_secs(), "usage read deferred");
+        return Err(StatusCode::TOO_MANY_REQUESTS);
     }
-    let access_token = current_access_token(state, &acct).await?;
+    let result = match source {
+        UsageSource::Probe(id) => probe_usage_windows(state, &acct, &id).await,
+        UsageSource::OpenAi(chatgpt_account_id) => {
+            fetch_openai_usage(state, &acct, &chatgpt_account_id).await.map(Some)
+        }
+        UsageSource::Anthropic => fetch_anthropic_usage(state, &acct).await,
+    };
+    match &result {
+        Ok(_) => gate.succeeded(account_id, std::time::Instant::now()),
+        Err(status) => {
+            let backoff = gate.failed(account_id, std::time::Instant::now());
+            tracing::info!(account = %account_id, %status, backoff_secs = backoff.as_secs(), "usage reads paused");
+        }
+    }
+    result
+}
+
+fn usage_rejected(state: &impl UsageContext, acct: &Account, resp: &reqwest::Response) {
+    if let Some(wait) = super::usage_gate::parse_retry_after(resp.headers()) {
+        super::usage_gate::ReadGate::global().retry_after(acct.id, wait);
+    }
+    if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
+        super::health::flag_account_reauth(
+            state,
+            acct.id,
+            "usage endpoint rejected account credentials",
+        );
+    }
+}
+
+async fn fetch_anthropic_usage(
+    state: &impl UsageContext,
+    acct: &Account,
+) -> Result<Option<serde_json::Value>, StatusCode> {
+    let account_id = acct.id;
+    let access_token = current_access_token(state, acct).await?;
     let resp = state
         .http_client()
         .get(state.anthropic_usage_url())
@@ -529,6 +574,7 @@ async fn usage_for_account(
     let status = StatusCode::from_u16(resp.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
     if !status.is_success() {
         tracing::warn!(account = %account_id, %status, "usage fetch rejected");
+        usage_rejected(state, acct, &resp);
         return Err(status);
     }
     let mut json: serde_json::Value = resp.json().await.map_err(|e| {
@@ -538,7 +584,7 @@ async fn usage_for_account(
     // A measured window proves the credential works, even on an idle account
     // the gateway never proxies for.
     super::health::clear_account_reauth(state, account_id);
-    if let Some(status) = reset_status(state, &acct, &access_token, false).await {
+    if let Some(status) = reset_status(state, acct, &access_token, false).await {
         merge_reset_status(&mut json, &status);
     }
     Ok(Some(json))
