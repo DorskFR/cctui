@@ -11,7 +11,7 @@ pub trait AccountsHost:
     KernelContext + AccountsContext + ProxyContext + SessionCredentialContext
 {
     /// `None` when no secure public URL is configured.
-    fn webauthn(&self) -> Option<&webauthn_rs::Webauthn>;
+    fn passkeys(&self) -> Option<&crate::relying_party::Passkeys>;
 
     /// The kernel pool, apart from the account contexts' own `pool` accessors.
     fn kernel_pool(&self) -> &PgPool {

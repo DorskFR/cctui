@@ -4,8 +4,9 @@ import { backendHealth, isNetworkError, isOutageStatus } from './backendHealth.s
 import { apiBase } from './config';
 import { clearCctuiStorage } from './drafts';
 import { hasFeature } from './features.svelte';
-import { getAssertion, passkeysSupported } from './passkeys';
+import { getPasskey, passkeysSupported, type RequestOptionsJSON } from '@dorsk/kagi';
 import { bootCapabilities, refreshCapabilities } from './workspaceSupport';
+import type { PasskeyAssertion } from '@bindings/PasskeyAssertion';
 import type { PasskeyChallenge } from '@bindings/PasskeyChallenge';
 import type { PasskeyConfig } from '@bindings/PasskeyConfig';
 
@@ -81,8 +82,9 @@ class Auth {
 	 *
 	 *  `mediation` picks the interaction — a modal by default, `'conditional'`
 	 *  to offer the key from the token field's autocomplete — and `signal`
-	 *  cancels a pending conditional request. Throws `PasskeyAborted` when the
-	 *  user dismisses the dialog; returns false when the server refuses. */
+	 *  cancels a pending conditional request. Throws the browser's
+	 *  `NotAllowedError` when the user dismisses the dialog; returns false when
+	 *  the server refuses or a conditional request was cancelled. */
 	async loginWithPasskey(
 		mediation?: CredentialMediationRequirement,
 		signal?: AbortSignal
@@ -93,12 +95,14 @@ class Auth {
 		if (!startRes.ok) return false;
 
 		const challenge = await startRes.json() as PasskeyChallenge;
-		const credential = await getAssertion(challenge.options as Record<string, unknown>, mediation, signal);
+		const options = challenge.options as RequestOptionsJSON;
+		const credential = await getPasskey(mediation ? { ...options, mediation } : options, { signal });
+		if (!credential) return false;
 
 		const finishRes = await apiFetch(`${apiBase()}/auth/passkey/login/finish`, {
 			method: 'POST',
 			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({ challenge_id: challenge.challenge_id, credential })
+			body: JSON.stringify({ ceremony: challenge.ceremony, credential } satisfies PasskeyAssertion)
 		});
 		if (finishRes.ok) await refreshCapabilities();
 		this.isAuthed = finishRes.ok;

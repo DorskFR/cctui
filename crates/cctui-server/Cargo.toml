@@ -57,8 +57,6 @@ ring = "0.17"
 aws-lc-rs = "1.18.1"
 toml.workspace = true
 log = "0.4.33"
-webauthn-rs = { version = "0.6", features = ["danger-allow-state-serialisation", "conditional-ui"] }
-webauthn-rs-proto = "0.6"
 tokio-tungstenite.workspace = true
 
 [dev-dependencies]

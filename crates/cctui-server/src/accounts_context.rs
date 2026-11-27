@@ -132,8 +132,8 @@ impl cctui_server_accounts::account_resolve::AccountResolutionContext for AppSta
 }
 
 impl AccountsHost for AppState {
-    fn webauthn(&self) -> Option<&webauthn_rs::Webauthn> {
-        self.webauthn.as_deref()
+    fn passkeys(&self) -> Option<&cctui_server_accounts::relying_party::Passkeys> {
+        self.passkeys.as_deref()
     }
 }
 

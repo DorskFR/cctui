@@ -1,17 +1,17 @@
 // @vitest-environment happy-dom
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { apiFetch, bootCapabilities, refreshCapabilities, getAssertion } = vi.hoisted(() => ({
+const { apiFetch, bootCapabilities, refreshCapabilities, getPasskey } = vi.hoisted(() => ({
 	apiFetch: vi.fn<(url: string, init?: RequestInit) => Promise<Response>>(),
 	bootCapabilities: vi.fn<() => Promise<unknown>>(),
 	refreshCapabilities: vi.fn<() => Promise<unknown>>(),
-	getAssertion: vi.fn(async () => ({ id: 'cred' }))
+	getPasskey: vi.fn<(options: unknown, init?: unknown) => Promise<unknown>>(async () => ({ id: 'cred' }))
 }));
 
 vi.mock('$app/environment', () => ({ browser: true }));
 vi.mock('./api', () => ({ apiFetch }));
 vi.mock('./workspaceSupport', () => ({ bootCapabilities, refreshCapabilities }));
-vi.mock('./passkeys', () => ({ getAssertion, passkeysSupported: () => true }));
+vi.mock('@dorsk/kagi', () => ({ getPasskey, passkeysSupported: () => true }));
 
 const { auth } = await import('./auth.svelte');
 
@@ -69,7 +69,27 @@ describe('token sign-in', () => {
 });
 
 describe('passkey sign-in', () => {
-	const challenge = () => Response.json({ challenge_id: 'c1', options: {} });
+	const challenge = () => Response.json({ ceremony: 'c1', options: { publicKey: {} } });
+
+	it('answers the ceremony it was given, in the mediation the caller picked', async () => {
+		apiFetch.mockResolvedValueOnce(challenge()).mockResolvedValueOnce(ok());
+		const signal = new AbortController().signal;
+		expect(await auth.loginWithPasskey('conditional', signal)).toBe(true);
+		expect(getPasskey).toHaveBeenLastCalledWith(
+			{ publicKey: {}, mediation: 'conditional' },
+			{ signal }
+		);
+		const finish = apiFetch.mock.calls[1];
+		expect(JSON.parse(String(finish[1]?.body))).toEqual({ ceremony: 'c1', credential: { id: 'cred' } });
+	});
+
+	it('stops quietly when a pending autofill is cancelled', async () => {
+		apiFetch.mockResolvedValueOnce(challenge());
+		getPasskey.mockResolvedValueOnce(null);
+		expect(await auth.loginWithPasskey('conditional')).toBe(false);
+		expect(apiFetch).toHaveBeenCalledOnce();
+		expect(auth.isAuthed).toBe(false);
+	});
 
 	it('reads the capabilities before the session counts as signed in', async () => {
 		apiFetch.mockResolvedValueOnce(challenge()).mockResolvedValueOnce(ok());

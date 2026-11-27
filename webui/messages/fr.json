@@ -2022,6 +2022,8 @@
 	"settings_passkeys_not_discoverable": "Cette clé n’est pas découvrable : elle n’apparaîtra pas sur l’écran de connexion.",
 	"settings_passkeys_revoke": "Supprimer",
 	"settings_passkeys_revoked": "Clé d'accès supprimée.",
+	"settings_passkeys_sign_in_again": "Par sécurité, ajouter une clé d’accès demande une connexion de moins de 10 minutes. Reconnectez-vous, puis ajoutez-la.",
+	"settings_passkeys_sign_in_again_action": "Se reconnecter",
 	"settings_passkeys_test": "Tester",
 	"settings_passkeys_test_help": "Rejoue la vérification de connexion sans vous déconnecter.",
 	"settings_passkeys_test_ok": "{label} a répondu correctement.",

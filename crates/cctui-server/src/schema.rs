@@ -221,6 +221,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "privacy_scan_local_transcripts",
         sql: include_str!("../schema/0033_privacy_scan_local_transcripts.sql"),
     },
+    Migration {
+        version: 34,
+        name: "webauthn_ceremonies",
+        sql: include_str!("../schema/0034_webauthn_ceremonies.sql"),
+    },
 ];
 
 /// Expand a core installation, or adopt the already migrated full schema.
@@ -399,7 +404,8 @@ mod tests {
                     (30, "bootstrap".to_owned()),
                     (31, "bootstrap".to_owned()),
                     (32, "bootstrap".to_owned()),
-                    (33, "bootstrap".to_owned())
+                    (33, "bootstrap".to_owned()),
+                    (34, "bootstrap".to_owned())
                 ]
             );
 
@@ -513,7 +519,7 @@ mod tests {
             drop(conn);
             let versions: Vec<i64> =
                 installations(&pool, "workspace").await.into_iter().map(|(v, _)| v).collect();
-            assert_eq!(versions.last(), Some(&33));
+            assert_eq!(versions.last(), Some(&34));
             assert!(installations(&pool, super::SEARCH_PACKAGE).await.is_empty());
             assert_eq!(search_text_objects(&pool).await, (false, false, 0, false));
             assert_eq!(insert_and_read_plain_event(&pool).await, "t");
@@ -1048,7 +1054,7 @@ mod tests {
             provisioned(&pool).await;
             let core: Vec<i64> =
                 installations(&pool, "core").await.into_iter().map(|(v, _)| v).collect();
-            assert_eq!(core, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
+            assert_eq!(core, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]);
             assert_eq!(
                 installations(&pool, "workspace").await,
                 [
@@ -1084,7 +1090,8 @@ mod tests {
                     (30, "bootstrap".to_owned()),
                     (31, "bootstrap".to_owned()),
                     (32, "bootstrap".to_owned()),
-                    (33, "bootstrap".to_owned())
+                    (33, "bootstrap".to_owned()),
+                    (34, "bootstrap".to_owned())
                 ]
             );
             let rows: i64 =

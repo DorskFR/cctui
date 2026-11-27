@@ -1,4 +1,4 @@
-import { PasskeyAborted } from '#lib/passkeys.ts';
+import { passkeyDismissed } from '#lib/passkeys.ts';
 
 export type PasskeyOutcome = 'signed-in' | 'quiet' | 'failed';
 
@@ -11,7 +11,7 @@ export async function runPasskeyAttempt(
 	try {
 		if (await login()) return 'signed-in';
 	} catch (e) {
-		if (e instanceof PasskeyAborted) return 'quiet';
+		if (passkeyDismissed(e)) return 'quiet';
 	}
 	return userInitiated ? 'failed' : 'quiet';
 }

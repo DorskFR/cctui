@@ -22,7 +22,7 @@ pub struct AppState {
     pub permission_store: SharedPermissionStore,
     /// `None` when no secure public URL is configured; passkey routes then
     /// answer "unavailable".
-    pub webauthn: Option<Arc<webauthn_rs::Webauthn>>,
+    pub passkeys: Option<Arc<cctui_server_accounts::relying_party::Passkeys>>,
     pub skills: Arc<SkillStore>,
     pub plugins: Arc<cctui_server_extras::plugins::PluginRegistry>,
     pub preview: Arc<cctui_server_extras::preview::Registry>,
@@ -71,7 +71,7 @@ impl AppState {
             ),
             config: Config::for_test(vec![]),
             permission_store: cctui_server_sessions::routes::permissions::PermissionStore::shared(),
-            webauthn: None,
+            passkeys: None,
             skills: Arc::new(SkillStore::new(std::env::temp_dir().join("cctui-test-skills"))),
             plugins: Arc::new(cctui_server_extras::plugins::PluginRegistry::disabled()),
             preview: Arc::new(cctui_server_extras::preview::Registry::new(None, "", b"test")),

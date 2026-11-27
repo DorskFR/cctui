@@ -11,10 +11,16 @@
 	import { endpoints } from '#lib/queries/index.ts';
 	import { toasts } from '#lib/toast.svelte.ts';
 	import { auth } from '#lib/auth.svelte.ts';
-	import { PasskeyAborted, createPasskey, getAssertion, passkeysSupported } from '#lib/passkeys.ts';
+	import { needsSignInAgain, passkeyDismissed } from '#lib/passkeys.ts';
+	import {
+		createPasskey,
+		getPasskey,
+		passkeysSupported,
+		type CreationOptionsJSON,
+		type RequestOptionsJSON
+	} from '@dorsk/kagi';
 	import type { PasskeyConfig } from '@bindings/PasskeyConfig';
 	import type { PasskeyRow } from '@bindings/PasskeyRow';
-	import type { JsonValue } from '@bindings/serde_json/JsonValue';
 	import { m } from '#lib/paraglide/messages.js';
 
 	let passkeyCfg = $state<PasskeyConfig | null>(null);
@@ -22,6 +28,7 @@
 	let passkeyLabel = $state('');
 	let passkeyBusy = $state(false);
 	let passkeyTesting = $state(false);
+	let signInAgain = $state(false);
 	const passkeysUsable = $derived(passkeysSupported() && !!passkeyCfg?.available);
 
 	async function loadPasskeys() {
@@ -38,24 +45,21 @@
 	async function enrollPasskey() {
 		if (passkeyBusy) return;
 		passkeyBusy = true;
+		signInAgain = false;
 		try {
 			const challenge = await endpoints.passkeyRegisterStart();
-			const { credential, discoverable } = await createPasskey(
-				challenge.options as Record<string, unknown>
-			);
+			const credential = await createPasskey(challenge.options as CreationOptionsJSON);
 			await endpoints.passkeyRegisterFinish({
-				challenge_id: challenge.challenge_id,
+				ceremony: challenge.ceremony,
 				label: passkeyLabel.trim() || null,
-				// The credential is the W3C JSON blob; the binding types it as
-				// `JsonValue` because the server hands it straight to webauthn-rs.
-				credential: credential as JsonValue,
-				discoverable
+				credential
 			});
 			passkeyLabel = '';
 			await loadPasskeys();
 			toasts.ok(m.settings_passkeys_enrolled());
 		} catch (e) {
-			if (!(e instanceof PasskeyAborted)) toasts.error(e instanceof Error ? e.message : String(e));
+			if (needsSignInAgain(e)) signInAgain = true;
+			else if (!passkeyDismissed(e)) toasts.error(e instanceof Error ? e.message : String(e));
 		} finally {
 			passkeyBusy = false;
 		}
@@ -66,14 +70,12 @@
 		passkeyTesting = true;
 		try {
 			const challenge = await endpoints.passkeyTestStart();
-			const credential = await getAssertion(challenge.options as Record<string, unknown>);
-			const res = await endpoints.passkeyTestFinish({
-				challenge_id: challenge.challenge_id,
-				credential: credential as JsonValue
-			});
+			const credential = await getPasskey(challenge.options as RequestOptionsJSON);
+			if (!credential) return;
+			const res = await endpoints.passkeyTestFinish({ ceremony: challenge.ceremony, credential });
 			toasts.ok(m.settings_passkeys_test_ok({ label: res.label }));
 		} catch (e) {
-			if (!(e instanceof PasskeyAborted)) toasts.error(e instanceof Error ? e.message : String(e));
+			if (!passkeyDismissed(e)) toasts.error(e instanceof Error ? e.message : String(e));
 		} finally {
 			passkeyTesting = false;
 		}
@@ -151,6 +153,14 @@
 					</Button>
 				{/if}
 			</div>
+			{#if signInAgain}
+				<div class="stepup" role="alert" data-testid="passkey-sign-in-again">
+					<Text size="sm" tone="danger" as="div">{m.settings_passkeys_sign_in_again()}</Text>
+					<Button size="sm" variant="primary" onclick={() => auth.logout()}>
+						{m.settings_passkeys_sign_in_again_action()}
+					</Button>
+				</div>
+			{/if}
 		</SettingGroup>
 	{/if}
 	<SettingGroup>
@@ -190,7 +200,16 @@
 		flex-direction: column;
 		gap: 2px;
 	}
-	.enrol {
+	.enrol,
+	.stepup {
 		flex-wrap: wrap;
+	}
+	.stepup {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: var(--sp-3);
+		padding: var(--sp-3) var(--sp-4);
+		border-top: 1px solid var(--border);
 	}
 </style>
