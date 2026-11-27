@@ -54,7 +54,7 @@ impl ReadGate {
         );
     }
 
-    /// Upstream's `Retry-After`, applied by the next [`Self::failed`].
+    /// Upstream's `Retry-After`: the next [`Self::failed`] waits at least this long.
     pub fn retry_after(&self, account: Uuid, wait: Duration) {
         self.slots.entry(account).or_default().retry_after = Some(wait);
     }
@@ -64,10 +64,8 @@ impl ReadGate {
     pub fn failed(&self, account: Uuid, now: Instant) -> Duration {
         let mut slot = self.slots.entry(account).or_default();
         slot.failures = slot.failures.saturating_add(1);
-        let backoff = slot.retry_after.take().map_or_else(
-            || exponential(slot.failures),
-            |wait| wait.clamp(READ_INTERVAL, RETRY_AFTER_CAP),
-        );
+        let hint = slot.retry_after.take().map_or(Duration::ZERO, |w| w.min(RETRY_AFTER_CAP));
+        let backoff = exponential(slot.failures).max(hint);
         slot.open_at = Some(now + backoff);
         backoff
     }
@@ -123,13 +121,13 @@ mod tests {
     }
 
     #[test]
-    fn retry_after_sets_the_backoff_within_bounds() {
+    fn retry_after_only_lengthens_the_backoff() {
         let gate = ReadGate::default();
         let (id, t0) = (Uuid::new_v4(), Instant::now());
         gate.retry_after(id, Duration::from_mins(10));
         assert_eq!(gate.failed(id, t0), Duration::from_mins(10));
-        gate.retry_after(id, Duration::from_secs(1));
-        assert_eq!(gate.failed(id, t0), READ_INTERVAL);
+        gate.retry_after(id, Duration::from_mins(1));
+        assert_eq!(gate.failed(id, t0), Duration::from_mins(6));
         gate.retry_after(id, Duration::from_hours(9));
         assert_eq!(gate.failed(id, t0), RETRY_AFTER_CAP);
     }
