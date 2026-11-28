@@ -1304,7 +1304,7 @@ const SEARCH_WINDOW: i64 = 200;
 pub const SEARCH_BUDGET: std::time::Duration = std::time::Duration::from_secs(3);
 /// Caps any one search statement, so a single window cannot outlive the budget
 /// by much.
-const SEARCH_STATEMENT_TIMEOUT: &str = "SET LOCAL statement_timeout = '5s'";
+const SEARCH_STATEMENT_LIMIT: std::time::Duration = std::time::Duration::from_secs(5);
 /// Newest matching chunks of a session ranked for its snippet.
 const SNIPPET_CANDIDATES: i64 = 50;
 
@@ -2131,7 +2131,62 @@ pub async fn scan_matches(
     Ok(search_matches(pool, root, live_ids, page).await?.0)
 }
 
-/// Races the chunk index against [`window_matches`], keeping the first complete page.
+/// How long the winner of the search race waits to cancel the loser's statement.
+const CANCEL_WAIT: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// The Postgres backend a search racer's transaction runs on. Dropping a racer
+/// does not stop its statement on the server, so the loser is cancelled.
+#[derive(Default)]
+pub struct Racer(std::sync::atomic::AtomicI32);
+
+impl Racer {
+    /// Sets the transaction's `statement_timeout` and records its backend.
+    async fn enlist(
+        &self,
+        conn: &mut sqlx::PgConnection,
+        timeout: std::time::Duration,
+    ) -> Result<(), sqlx::Error> {
+        let pid = statement_timeout(conn, timeout).await?;
+        self.0.store(pid, std::sync::atomic::Ordering::Relaxed);
+        Ok(())
+    }
+
+    /// Cancels the racer's running statement, if any. Must run while the
+    /// racer still holds its connection, so the pid cannot have been handed
+    /// to another request.
+    pub async fn cancel(&self, pool: &sqlx::PgPool) -> bool {
+        let pid = self.0.load(std::sync::atomic::Ordering::Relaxed);
+        if pid == 0 {
+            return false;
+        }
+        let cancel = sqlx::query_scalar::<_, bool>("SELECT pg_cancel_backend($1)").bind(pid);
+        match tokio::time::timeout(CANCEL_WAIT, cancel.fetch_one(pool)).await {
+            Ok(Ok(sent)) => sent,
+            Ok(Err(e)) => {
+                tracing::debug!(error = %e, pid, "search: cancelling the losing statement failed");
+                false
+            }
+            Err(_) => {
+                tracing::debug!(pid, "search: cancelling the losing statement timed out");
+                false
+            }
+        }
+    }
+}
+
+/// Sets `statement_timeout` for the rest of the transaction; returns its backend pid.
+async fn statement_timeout(
+    conn: &mut sqlx::PgConnection,
+    timeout: std::time::Duration,
+) -> Result<i32, sqlx::Error> {
+    sqlx::query_scalar("SELECT pg_backend_pid() FROM set_config('statement_timeout', $1, true)")
+        .bind(format!("{}ms", timeout.as_millis().max(1)))
+        .fetch_one(conn)
+        .await
+}
+
+/// Races the chunk index against [`window_matches`], keeping the first
+/// complete page and cancelling the other racer's statement.
 pub async fn search_matches(
     pool: &sqlx::PgPool,
     root: &cctui_query::Node,
@@ -2139,41 +2194,48 @@ pub async fn search_matches(
     page: &SearchPage,
 ) -> Result<(FoundPage, SearchPath), AppError> {
     let started = std::time::Instant::now();
-    let mut scan = Box::pin(window_matches(pool, root, live_ids, page, started + SEARCH_BUDGET));
+    let (scan_racer, index_racer) = (Racer::default(), Racer::default());
+    let mut scan =
+        Box::pin(window_scan(pool, root, live_ids, page, started + SEARCH_BUDGET, &scan_racer));
     let query = IndexQuery::compile(root);
-    let found = if query.indexable() {
-        let mut index = Box::pin(query.run(pool, live_ids, page, SEARCH_BUDGET));
-        tokio::select! {
+    let (found, loser) = if query.indexable() {
+        let mut index = Box::pin(query.run(pool, live_ids, page, SEARCH_BUDGET, &index_racer));
+        let raced = tokio::select! {
             indexed = &mut index => match indexed {
-                Ok(Some(found)) => (found, SearchPath::Index),
-                Ok(None) => (scan.await?, SearchPath::Scan),
+                Ok(Some(found)) => ((found, SearchPath::Index), Some(&scan_racer)),
+                Ok(None) => ((scan.await?, SearchPath::Scan), None),
                 Err(e) => {
                     tracing::warn!(error = %e, "search: chunk index failed, keeping the scan");
-                    (scan.await?, SearchPath::Scan)
+                    ((scan.await?, SearchPath::Scan), None)
                 }
             },
             scanned = &mut scan => {
                 let scanned = scanned?;
                 if scanned.partial {
                     match index.await {
-                        Ok(Some(found)) => (found, SearchPath::Index),
-                        Ok(None) => (scanned, SearchPath::Scan),
+                        Ok(Some(found)) => ((found, SearchPath::Index), None),
+                        Ok(None) => ((scanned, SearchPath::Scan), None),
                         Err(e) => {
                             tracing::warn!(error = %e, "search: chunk index failed, keeping the scan");
-                            (scanned, SearchPath::Scan)
+                            ((scanned, SearchPath::Scan), None)
                         }
                     }
                 } else {
-                    (scanned, SearchPath::Scan)
+                    ((scanned, SearchPath::Scan), Some(&index_racer))
                 }
             }
+        };
+        if let Some(loser) = raced.1 {
+            loser.cancel(pool).await;
         }
+        raced
     } else {
-        (scan.await?, SearchPath::Scan)
+        ((scan.await?, SearchPath::Scan), None)
     };
     tracing::debug!(
         path = ?found.1,
         partial = found.0.partial,
+        cancelled = loser.is_some(),
         elapsed_ms = started.elapsed().as_millis(),
         "search page"
     );
@@ -2201,13 +2263,14 @@ impl IndexQuery {
         self.terms.iter().all(|t| t.word_run >= MIN_TRIGRAM_CHARS)
     }
 
-    /// `None` when the statement outlives `timeout`.
+    /// `None` when the statement outlives `timeout` or is cancelled.
     async fn run(
         &self,
         pool: &sqlx::PgPool,
         live_ids: Option<&[String]>,
         page: &SearchPage,
         timeout: std::time::Duration,
+        racer: &Racer,
     ) -> Result<Option<FoundPage>, AppError> {
         let sql = index_sql(
             &hoisted_ctes(&self.terms),
@@ -2233,10 +2296,7 @@ impl IndexQuery {
             q = q.bind(live);
         }
         let mut tx = pool.begin().await?;
-        sqlx::query("SELECT set_config('statement_timeout', $1, true)")
-            .bind(format!("{}ms", timeout.as_millis().max(1)))
-            .execute(&mut *tx)
-            .await?;
+        racer.enlist(&mut tx, timeout).await?;
         let rows = match q.fetch_all(&mut *tx).await {
             Ok(rows) => rows,
             Err(e) if is_statement_timeout(&e) => return Ok(None),
@@ -2259,7 +2319,7 @@ pub async fn index_matches(
     if !query.indexable() {
         return Ok(None);
     }
-    query.run(pool, live_ids, page, SEARCH_BUDGET).await
+    query.run(pool, live_ids, page, SEARCH_BUDGET, &Racer::default()).await
 }
 
 /// `$1…$n` are the compiled query's binds, then owner, cursor position, row
@@ -2313,6 +2373,17 @@ pub async fn window_matches(
     page: &SearchPage,
     deadline: std::time::Instant,
 ) -> Result<FoundPage, AppError> {
+    window_scan(pool, root, live_ids, page, deadline, &Racer::default()).await
+}
+
+async fn window_scan(
+    pool: &sqlx::PgPool,
+    root: &cctui_query::Node,
+    live_ids: Option<&[String]>,
+    page: &SearchPage,
+    deadline: std::time::Instant,
+    racer: &Racer,
+) -> Result<FoundPage, AppError> {
     let scan = Scan::compile(root, live_ids, page);
     let want = usize::try_from(page.limit).unwrap_or(1);
     let mut skip =
@@ -2320,7 +2391,7 @@ pub async fn window_matches(
     let mut cursor = page.cursor.clone();
     let mut rows: Vec<DbSession> = Vec::new();
     let mut tx = pool.begin().await?;
-    sqlx::query(SEARCH_STATEMENT_TIMEOUT).execute(&mut *tx).await?;
+    racer.enlist(&mut tx, SEARCH_STATEMENT_LIMIT).await?;
     let partial = |rows: Vec<DbSession>, cursor: Option<(DateTime<Utc>, String)>| FoundPage {
         total: page.total(rows.len(), true),
         rows,
@@ -3366,7 +3437,7 @@ async fn conv_window(
 }
 
 /// The candidate rows of a conversation search, scanned in event-id windows
-/// under [`SEARCH_STATEMENT_TIMEOUT`] each, so a timeout or the budget ends the
+/// under [`SEARCH_STATEMENT_LIMIT`] each, so a timeout or the budget ends the
 /// scan with the hits found so far instead of none.
 pub async fn conv_search_rows(
     pool: &sqlx::PgPool,
@@ -3377,7 +3448,7 @@ pub async fn conv_search_rows(
 ) -> Result<ConvScan, sqlx::Error> {
     let deadline = std::time::Instant::now() + limits.budget;
     let mut tx = pool.begin().await?;
-    sqlx::query(SEARCH_STATEMENT_TIMEOUT).execute(&mut *tx).await?;
+    statement_timeout(&mut tx, SEARCH_STATEMENT_LIMIT).await?;
     let sql = conv_search_sql(terms.len());
     let mut rows: Vec<ConvSearchRow> = Vec::new();
     let mut after = 0_i64;
@@ -6454,6 +6525,45 @@ mod tests {
         for sql in sqls {
             assert!(!sql.contains("search_text"), "{sql}");
         }
+    }
+
+    #[tokio::test]
+    async fn search_racer_cancel_stops_the_losing_statement() {
+        let Some((pool, uid)) = search_owner("search_racer_cancel").await else {
+            return;
+        };
+        let racer = super::Racer::default();
+        assert!(!racer.cancel(&pool).await, "no backend enlisted yet");
+        let started = std::time::Instant::now();
+        let sleeper = async {
+            let mut tx = pool.begin().await.unwrap();
+            racer.enlist(&mut tx, std::time::Duration::from_secs(30)).await.unwrap();
+            sqlx::query("SELECT pg_sleep(20)").execute(&mut *tx).await
+        };
+        let canceller = async {
+            loop {
+                let pid = racer.0.load(std::sync::atomic::Ordering::Relaxed);
+                let sleeping: bool = sqlx::query_scalar(
+                    "SELECT EXISTS (SELECT 1 FROM pg_stat_activity \
+                     WHERE pid = $1 AND state = 'active' AND query LIKE '%pg_sleep%')",
+                )
+                .bind(pid)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+                if sleeping {
+                    break;
+                }
+                assert!(started.elapsed() < std::time::Duration::from_secs(10), "never slept");
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+            racer.cancel(&pool).await
+        };
+        let (slept, sent) = tokio::join!(sleeper, canceller);
+        assert!(sent);
+        assert!(super::is_statement_timeout(&slept.unwrap_err()));
+        assert!(started.elapsed() < std::time::Duration::from_secs(10));
+        drop_owner(&pool, uid).await;
     }
 
     #[test]
