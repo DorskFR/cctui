@@ -38,9 +38,10 @@ fn is_redirect_amp(chars: &[char], i: usize) -> bool {
 
 /// Split a Bash command into its operator-separated segments.
 ///
-/// Splits on `&&`, `||`, `;`, `|`, `&` and newline, respecting quotes and
-/// backslash escapes. Each segment is trimmed. Returns `[cmd]` if no
-/// operators split it.
+/// Splits on `&&`, `||`, `;`, `|`, `&` and newline, and on the subshell and
+/// group delimiters `( … )` and `{ …; }` where they open or close a command,
+/// respecting quotes and backslash escapes. Each segment is trimmed. Returns
+/// `[cmd]` if no operators split it.
 #[must_use]
 pub fn split_bash_segments(cmd: &str) -> Vec<String> {
     let chars: Vec<char> = cmd.chars().collect();
@@ -48,6 +49,7 @@ pub fn split_bash_segments(cmd: &str) -> Vec<String> {
     let mut current = String::new();
     let mut in_single = false;
     let mut in_double = false;
+    let mut subshells = 0usize;
     let mut i = 0;
 
     let push_seg = |current: &mut String, segments: &mut Vec<String>| {
@@ -91,6 +93,19 @@ pub fn split_bash_segments(cmd: &str) -> Vec<String> {
                 continue;
             } else if c == '&' && !is_redirect_amp(&chars, i) {
                 push_seg(&mut current, &mut segments);
+            } else if c == '(' && current.trim().is_empty() {
+                subshells += 1;
+                push_seg(&mut current, &mut segments);
+            } else if c == ')' && subshells > 0 {
+                subshells -= 1;
+                push_seg(&mut current, &mut segments);
+            } else if matches!(c, '{' | '}')
+                && current.trim().is_empty()
+                && chars
+                    .get(i + 1)
+                    .is_none_or(|n| n.is_whitespace() || matches!(n, ';' | '&' | '|' | ')'))
+            {
+                push_seg(&mut current, &mut segments);
             } else {
                 current.push(c);
             }
@@ -113,38 +128,43 @@ pub fn split_bash_segments(cmd: &str) -> Vec<String> {
 const GIT_ARG_FLAGS: &[&str] =
     &["-C", "-c", "--git-dir", "--work-tree", "--namespace", "--config-env", "--super-prefix"];
 
+fn is_git(tok: &str) -> bool {
+    tok.rsplit('/').next() == Some("git")
+}
+
 /// Normalize a Bash segment so phrase keywords match real-world invocations.
 ///
 /// Every global option between `git` and its subcommand is dropped
 /// (`git -C /repo fetch` → `git fetch`, `git --bare -p push` → `git push`), and
 /// a path-qualified `/usr/bin/git` becomes `git`, so both allow and disallow
-/// phrases see the bare subcommand.
+/// phrases see the bare subcommand. Tokens come from shlex, so quoted paths and
+/// option arguments stay whole.
 #[must_use]
 pub fn normalize_bash_segment(seg: &str) -> String {
-    let toks: Vec<&str> = seg.split_whitespace().collect();
-    let is_git = |t: &str| t == "git" || t.ends_with("/git");
+    let toks =
+        shlex::split(seg).unwrap_or_else(|| seg.split_whitespace().map(str::to_string).collect());
     if !toks.iter().any(|t| is_git(t)) {
         return seg.trim().to_string();
     }
-    let mut out = Vec::with_capacity(toks.len());
+    let mut out: Vec<&str> = Vec::with_capacity(toks.len());
     let mut i = 0;
     while i < toks.len() {
-        if is_git(toks[i]) {
+        if is_git(&toks[i]) {
             out.push("git");
             let mut j = i + 1;
             while j < toks.len() && toks[j].starts_with('-') {
-                j += if GIT_ARG_FLAGS.contains(&toks[j]) { 2 } else { 1 };
+                j += if GIT_ARG_FLAGS.contains(&toks[j].as_str()) { 2 } else { 1 };
             }
             if j < toks.len() {
                 i = j;
                 continue;
             }
         } else {
-            out.push(toks[i]);
+            out.push(&toks[i]);
         }
         i += 1;
     }
-    out.join(" ")
+    shlex::try_join(out.iter().copied()).unwrap_or_else(|_| out.join(" "))
 }
 
 /// Environment variables a command prefix may set without a `Bash` grant;
@@ -177,6 +197,14 @@ fn git_globals_change_code(after_git: &[String]) -> bool {
         j += if GIT_ARG_FLAGS.contains(&tok.as_str()) { 2 } else { 1 };
     }
     false
+}
+
+/// `env -S`/`--split-string` re-splits one argument into a whole command line.
+fn env_splits_string(after_env: &[String]) -> bool {
+    after_env
+        .iter()
+        .take_while(|t| t.starts_with('-'))
+        .any(|f| f.starts_with("--split-string") || (!f.starts_with("--") && f.contains('S')))
 }
 
 fn is_shell(tok: &str) -> bool {
@@ -270,8 +298,12 @@ pub(crate) fn segment_needs_bash_grant(seg: &str) -> bool {
         shlex::split(seg).unwrap_or_else(|| seg.split_whitespace().map(str::to_string).collect());
     let mut leading = true;
     for (i, tok) in toks.iter().enumerate() {
+        let is_env = tok.rsplit('/').next() == Some("env");
+        if is_env && env_splits_string(&toks[i + 1..]) {
+            return true;
+        }
         if leading {
-            if tok == "env" {
+            if is_env {
                 continue;
             }
             if is_env_assignment(tok) {
@@ -292,7 +324,7 @@ pub(crate) fn segment_needs_bash_grant(seg: &str) -> bool {
         {
             return true;
         }
-        if (tok == "git" || tok.ends_with("/git")) && git_globals_change_code(&toks[i + 1..]) {
+        if is_git(tok) && git_globals_change_code(&toks[i + 1..]) {
             return true;
         }
     }
@@ -692,6 +724,46 @@ mod tests {
     #[test]
     fn disallowed_alone_still_blocks_substitution() {
         assert!(!bash("echo $(git push)", &[], &["git push"]).0);
+    }
+
+    #[test]
+    fn disallowed_survives_subshells_groups_env_split_and_quoting() {
+        for cmd in [
+            "(git push origin main)",
+            "( git push )",
+            "true && (git push)",
+            "{ git push; }",
+            "{ git push origin main; } 2>/dev/null",
+            "env -S 'git push origin main'",
+            "/usr/bin/env --split-string='git push'",
+            "\"/usr/bin/git\" push",
+            "'git' push",
+            "git -C \"/my repo\" push",
+            "git -C '/my repo' -c x=y push",
+        ] {
+            assert!(!bash(cmd, &[], &["git push"]).0, "`{cmd}` must be blocked");
+        }
+    }
+
+    #[test]
+    fn subshell_and_group_splitting_keeps_expansions_whole() {
+        assert_eq!(split_bash_segments("(git push)"), vec!["git push"]);
+        assert_eq!(split_bash_segments("{ a; b; }"), vec!["a", "b"]);
+        assert_eq!(split_bash_segments("echo {a,b}"), vec!["echo {a,b}"]);
+        assert_eq!(split_bash_segments("echo ${HOME}"), vec!["echo ${HOME}"]);
+        assert_eq!(split_bash_segments("echo '(x)' \"{ y; }\""), vec!["echo '(x)' \"{ y; }\""]);
+        assert_eq!(split_bash_segments("echo a)b"), vec!["echo a)b"]);
+        assert!(bash("(cd sub && git fetch)", &["cd", "git fetch"], &[]).0);
+    }
+
+    #[test]
+    fn quoted_git_paths_normalize() {
+        assert_eq!(normalize_bash_segment("\"/usr/bin/git\" push"), "git push");
+        assert_eq!(normalize_bash_segment("git -C \"/my repo\" push"), "git push");
+        assert_eq!(
+            normalize_bash_segment("git commit -m 'two words'"),
+            "git commit -m 'two words'"
+        );
     }
 
     #[test]
