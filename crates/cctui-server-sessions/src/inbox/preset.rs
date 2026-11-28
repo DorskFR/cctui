@@ -183,13 +183,15 @@ pub async fn lane(
     .await
 }
 
-pub async fn from_session(
-    pool: &PgPool,
-    owner: Uuid,
-    session_id: &str,
-) -> sqlx::Result<Option<Preset>> {
-    let found: Option<Preset> = sqlx::query_as(
-        "SELECT NULL::uuid AS id, $2::uuid AS user_id, \
+#[derive(sqlx::FromRow)]
+struct SessionPreset {
+    #[sqlx(flatten)]
+    preset: Preset,
+    launched_model: Option<String>,
+}
+
+const FROM_SESSION_SQL: &str = concat!(
+    "SELECT NULL::uuid AS id, $2::uuid AS user_id, \
                 COALESCE(s.session_name, '') AS name, '' AS prompt, \
                 s.machine_uuid AS machine_id, s.working_dir, s.adapter_id, s.model, \
                 s.permission_mode, \
@@ -201,17 +203,27 @@ pub async fn from_session(
                 NULL::text AS profile, 0 AS fresh_secs, \
                 'followup' AS on_stale, NULL::text AS notify_url, \
                 m.id IS NOT NULL AS machine_live, NULL::text AS dispatcher_name, \
-                NULL::text AS sealed_env, NULL::text AS sealed_prompt, '{}'::jsonb AS template \
-         FROM sessions s \
-         LEFT JOIN machines m ON m.id = s.machine_uuid \
-              AND m.revoked_at IS NULL AND m.deleted_at IS NULL \
-         WHERE s.id = $1",
-    )
-    .bind(session_id)
-    .bind(owner)
-    .fetch_optional(pool)
-    .await?;
-    Ok(found.map(|mut target| {
+                NULL::text AS sealed_env, NULL::text AS sealed_prompt, '{}'::jsonb AS template, ",
+    crate::followup::launched_model_sql!(),
+    " AS launched_model \
+     FROM sessions s \
+     LEFT JOIN machines m ON m.id = s.machine_uuid \
+          AND m.revoked_at IS NULL AND m.deleted_at IS NULL \
+     WHERE s.id = $1"
+);
+
+pub async fn from_session(
+    pool: &PgPool,
+    owner: Uuid,
+    session_id: &str,
+) -> sqlx::Result<Option<Preset>> {
+    let found: Option<SessionPreset> =
+        sqlx::query_as(FROM_SESSION_SQL).bind(session_id).bind(owner).fetch_optional(pool).await?;
+    Ok(found.map(|SessionPreset { preset: mut target, launched_model }| {
+        target.model = cctui_proto::api::auto_followup::followup_model(
+            target.model.as_deref(),
+            launched_model.as_deref(),
+        );
         target.permission_mode = target
             .permission_mode
             .as_deref()

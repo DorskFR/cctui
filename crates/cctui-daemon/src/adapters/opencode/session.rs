@@ -490,6 +490,7 @@ impl OpenCodeSession {
             evt_tx,
             self.shutdown.clone(),
             Arc::clone(&self.sse),
+            false,
         ));
 
         if let Some(id) = &created
@@ -540,8 +541,12 @@ impl OpenCodeSession {
                     break;
                 }
                 evt = evt_rx.recv() => {
-                    let Some(evt) = evt else { break };
-                    if !self.on_incoming(&client, evt).await {
+                    let keep = match evt {
+                        Some(Pumped::Event(evt)) => self.on_incoming(&client, *evt).await,
+                        Some(Pumped::Resync) => self.on_resync(&client).await,
+                        None => false,
+                    };
+                    if !keep {
                         break;
                     }
                 }
@@ -559,7 +564,7 @@ impl OpenCodeSession {
                     stream.abort();
                     let (tx, rx) = mpsc::channel(256);
                     evt_rx = rx;
-                    stream = tokio::spawn(pump_sse(client.clone(), tx, self.shutdown.clone(), Arc::clone(&self.sse)));
+                    stream = tokio::spawn(pump_sse(client.clone(), tx, self.shutdown.clone(), Arc::clone(&self.sse), true));
                 }
             }
         }
@@ -1093,6 +1098,45 @@ impl OpenCodeSession {
         }
     }
 
+    /// The event stream came back after a gap: whatever it carried meanwhile
+    /// is read back over HTTP. Returns `false` when the driver should stop.
+    async fn on_resync(&mut self, client: &OpenCodeClient) -> bool {
+        let mut sessions: Vec<String> = self.owned.iter().cloned().collect();
+        sessions.sort();
+        for session_id in sessions {
+            let (signals, settled) = match client.generation() {
+                Generation::V1 => match client.messages(&session_id).await {
+                    Ok(messages) => (
+                        self.v1.catch_up(&session_id, &messages),
+                        normalize::turn_settled(&messages),
+                    ),
+                    Err(err) => {
+                        tracing::warn!(%err, %session_id, "opencode: catch-up read failed");
+                        continue;
+                    }
+                },
+                Generation::V2 => match client.v2_messages(&session_id).await {
+                    Ok(messages) => (Vec::new(), v2::normalize::turn_settled(&messages)),
+                    Err(err) => {
+                        tracing::warn!(%err, %session_id, "opencode: catch-up read failed");
+                        continue;
+                    }
+                },
+            };
+            if !self.on_signals(&session_id, signals).await {
+                return false;
+            }
+            if settled
+                && self.in_flight
+                && self.owned.contains(&session_id)
+                && !self.on_idle(&session_id).await
+            {
+                return false;
+            }
+        }
+        true
+    }
+
     async fn on_incoming(&mut self, client: &OpenCodeClient, evt: Incoming) -> bool {
         match evt {
             Incoming::V1(evt) => self.on_event(client, evt).await,
@@ -1290,12 +1334,19 @@ fn status(
     }
 }
 
+enum Pumped {
+    Event(Box<Incoming>),
+    /// Sent ahead of the first event of a reconnected stream.
+    Resync,
+}
+
 #[allow(clippy::cognitive_complexity)]
 async fn pump_sse(
     client: Arc<OpenCodeClient>,
-    out: mpsc::Sender<Incoming>,
+    out: mpsc::Sender<Pumped>,
     shutdown: CancellationToken,
     sse: Arc<SseStatus>,
+    mut resync: bool,
 ) {
     use futures_util::StreamExt;
 
@@ -1306,6 +1357,11 @@ async fn pump_sse(
         match client.event_stream().await {
             Ok(resp) => {
                 sse.set_connected(true);
+                if resync && out.send(Pumped::Resync).await.is_err() {
+                    sse.set_connected(false);
+                    return;
+                }
+                resync = true;
                 let mut decoder = SseDecoder::new();
                 let mut stream = resp.bytes_stream();
                 loop {
@@ -1317,7 +1373,7 @@ async fn pump_sse(
                         chunk = stream.next() => {
                             let Some(chunk) = chunk else { break };
                             let Ok(bytes) = chunk else { break };
-                            for data in decoder.push(&String::from_utf8_lossy(&bytes)) {
+                            for data in decoder.push(&bytes) {
                                 sse.note_event();
                                 if let Some(rings) = client.rings() {
                                     rings.note_frame(
@@ -1329,7 +1385,7 @@ async fn pump_sse(
                                 }
                                 match client.decode_event(&data) {
                                     Ok(evt) => {
-                                        if out.send(evt).await.is_err() {
+                                        if out.send(Pumped::Event(Box::new(evt))).await.is_err() {
                                             sse.set_connected(false);
                                             return;
                                         }
@@ -2168,6 +2224,51 @@ mod tests {
         }
         assert!(saw_message, "the failure must reach the transcript");
         assert!(saw_status, "the failure must flip the session status to error");
+    }
+
+    fn gap_snapshot(_method: &str, path: &str) -> crate::adapters::opencode::fake_serve::Reply {
+        use crate::adapters::opencode::fake_serve::Reply;
+        if path != "/session/ses_1/message" {
+            return Reply::status(404);
+        }
+        Reply::json(
+            r#"[{"info":{"id":"msg_u","role":"user","time":{"created":1}},
+                 "parts":[{"type":"text","id":"prt_u","messageID":"msg_u","text":"go"}]},
+                {"info":{"id":"msg_a","role":"assistant","time":{"created":1,"completed":2},"finish":"stop"},
+                 "parts":[{"type":"text","id":"prt_a","messageID":"msg_a","text":"answered in the gap","time":{"start":1,"end":2}}]}]"#,
+        )
+    }
+
+    #[tokio::test]
+    async fn a_reconnect_replays_the_gap_and_settles_a_turn_that_ended_in_it() {
+        let (base, _log) = crate::adapters::opencode::fake_serve::serve(gap_snapshot).await;
+        let (mut session, mut rx, _) = test_session(None);
+        let client = OpenCodeClient::new(base, "pw".to_owned());
+        session.in_flight = true;
+        assert!(session.on_resync(&client).await);
+        assert!(!session.in_flight, "the turn that ended during the gap is closed");
+        let mut texts = Vec::new();
+        let mut idle = false;
+        while let Ok(event) = rx.try_recv() {
+            match event {
+                AdapterEvent::Message { payload, .. } => {
+                    texts.push(payload["text"].as_str().unwrap_or_default().to_owned());
+                }
+                AdapterEvent::Status { tempo, .. } => idle |= tempo.as_deref() == Some("idle"),
+                _ => {}
+            }
+        }
+        assert_eq!(texts, vec!["go", "answered in the gap"]);
+        assert!(idle);
+    }
+
+    #[tokio::test]
+    async fn a_oneshot_child_whose_turn_ended_during_the_gap_ends_on_reconnect() {
+        let (base, _log) = crate::adapters::opencode::fake_serve::serve(gap_snapshot).await;
+        let (mut session, _rx, _) = test_session(Some("parent-1".to_owned()));
+        let client = OpenCodeClient::new(base, "pw".to_owned());
+        session.in_flight = true;
+        assert!(!session.on_resync(&client).await);
     }
 
     #[tokio::test]

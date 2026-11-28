@@ -462,3 +462,36 @@ async fn a_session_follow_up_keeps_the_account_its_parent_ran_on() {
     let req = spawn_request(&bound, &Plan::Followup { parent: sid.clone() }, "go").unwrap();
     assert_eq!((req.account.as_deref(), req.auto_account), (Some("personal"), false));
 }
+
+#[tokio::test]
+async fn a_session_follow_up_keeps_the_1m_model_its_parent_launched_with() {
+    let Some(pool) = pool("a_session_follow_up_keeps_the_1m_model").await else { return };
+    let (owner, sid, _) = archived_session_lane(&pool, "follow-1m").await;
+    let set_model = |model: &'static str| {
+        sqlx::query("UPDATE sessions SET model = $2 WHERE id = $1").bind(&sid).bind(model)
+    };
+    set_model("claude-opus-5-5").execute(&pool).await.unwrap();
+    let bare = super::preset::from_session(&pool, owner.user, &sid).await.unwrap().unwrap();
+    assert_eq!(bare.model.as_deref(), Some("claude-opus-5-5"), "a bare launch stays bare");
+
+    sqlx::query(
+        "INSERT INTO machine_launches (command_id, session_id, machine_id, user_id, \
+             acting_user_id, adapter_id, working_dir, state, model) \
+         VALUES ($1, $2, $3, $4, $4, 'claude-code', '/w', 'registered', 'claude-opus-5-5[1m]')",
+    )
+    .bind(Uuid::new_v4())
+    .bind(&sid)
+    .bind(owner.machine)
+    .bind(owner.user)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let wide = super::preset::from_session(&pool, owner.user, &sid).await.unwrap().unwrap();
+    assert_eq!(wide.model.as_deref(), Some("claude-opus-5-5[1m]"));
+    let req = spawn_request(&wide, &Plan::Followup { parent: sid.clone() }, "go").unwrap();
+    assert_eq!(req.model.as_deref(), Some("claude-opus-5-5[1m]"));
+
+    set_model("claude-sonnet-5-5").execute(&pool).await.unwrap();
+    let switched = super::preset::from_session(&pool, owner.user, &sid).await.unwrap().unwrap();
+    assert_eq!(switched.model.as_deref(), Some("claude-sonnet-5-5"), "a /model switch wins");
+}

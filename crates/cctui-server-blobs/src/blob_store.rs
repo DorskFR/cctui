@@ -195,13 +195,12 @@ pub fn current() -> sqlx::Result<&'static BlobStore> {
     STORE.get_or_init(load).as_ref().map_err(|e| protocol(&format!("blob store: {e}")))
 }
 
-/// Call after the transaction that deleted the row committed. A row stored
-/// again since then keeps its bytes.
+/// Removes the blob's row and its external bytes once nothing references it.
 pub async fn delete_unreferenced(pool: &sqlx::PgPool, hash: &str) {
     let store = match current() {
         Ok(store) => store,
         Err(e) => {
-            tracing::warn!(hash, "external blob delete skipped: {e}");
+            tracing::warn!(hash, "blob delete skipped: {e}");
             return;
         }
     };
@@ -209,19 +208,42 @@ pub async fn delete_unreferenced(pool: &sqlx::PgPool, hash: &str) {
 }
 
 pub async fn delete_unreferenced_with(pool: &sqlx::PgPool, store: &BlobStore, hash: &str) {
-    if !store.is_external() {
-        return;
+    if let Err(e) = collect_unreferenced(pool, store, hash).await {
+        tracing::warn!(hash, "blob delete skipped: {e}");
     }
-    let exists =
-        sqlx::query_scalar::<_, bool>("SELECT EXISTS (SELECT 1 FROM daemon_blobs WHERE hash = $1)")
+}
+
+/// Every table that points at a `daemon_blobs` row.
+const REFERENCED_SQL: &str = "SELECT EXISTS (SELECT 1 FROM plugins WHERE archive_hash = $1) \
+     OR EXISTS (SELECT 1 FROM session_attachments WHERE hash = $1) \
+     OR EXISTS (SELECT 1 FROM session_blob_links WHERE hash = $1)";
+
+/// The row lock comes first so the reference check runs on a snapshot taken
+/// after any concurrent store or referencing write committed, and the
+/// external bytes go while the row is still locked.
+async fn collect_unreferenced(
+    pool: &sqlx::PgPool,
+    store: &BlobStore,
+    hash: &str,
+) -> sqlx::Result<bool> {
+    let mut tx = pool.begin().await?;
+    let row: Option<bool> =
+        sqlx::query_scalar("SELECT file_stored FROM daemon_blobs WHERE hash = $1 FOR UPDATE")
             .bind(hash)
-            .fetch_one(pool)
-            .await;
-    match exists {
-        Ok(false) => store.delete_external(hash).await,
-        Ok(true) => {}
-        Err(e) => tracing::warn!(hash, "external blob delete skipped: {e}"),
+            .fetch_optional(&mut *tx)
+            .await?;
+    let Some(file_stored) = row else { return Ok(false) };
+    let referenced: bool =
+        sqlx::query_scalar(REFERENCED_SQL).bind(hash).fetch_one(&mut *tx).await?;
+    if referenced {
+        return Ok(false);
     }
+    sqlx::query("DELETE FROM daemon_blobs WHERE hash = $1").bind(hash).execute(&mut *tx).await?;
+    if file_stored {
+        store.delete_external(hash).await;
+    }
+    tx.commit().await?;
+    Ok(true)
 }
 
 fn protocol(msg: &str) -> sqlx::Error {
@@ -388,33 +410,111 @@ mod tests {
         assert!(BlobStore::Postgres.read_external(&hash, 1).await.is_err());
     }
 
-    #[tokio::test]
-    async fn an_external_blob_is_deleted_only_once_its_row_is_gone() {
-        let Some(url) = cctui_server_kernel::test_support::db_url("external_blob_delete") else {
-            return;
-        };
-        let pool = sqlx::postgres::PgPoolOptions::new()
-            .max_connections(2)
-            .connect(&url)
-            .await
-            .expect("connect test db");
-        let dir = tempfile::tempdir().unwrap();
-        let store = BlobStore::File(dir.path().to_owned());
-        let bytes = format!("external delete {}", uuid::Uuid::new_v4()).into_bytes();
+    async fn gc_pool(name: &str) -> Option<sqlx::PgPool> {
+        let url = cctui_server_kernel::test_support::db_url(name)?;
+        Some(
+            sqlx::postgres::PgPoolOptions::new()
+                .max_connections(3)
+                .connect(&url)
+                .await
+                .expect("connect test db"),
+        )
+    }
+
+    async fn store(pool: &sqlx::PgPool, store: &BlobStore, tag: &str) -> String {
+        let bytes = format!("{tag} {}", uuid::Uuid::new_v4()).into_bytes();
         let mut conn = pool.acquire().await.unwrap();
-        let stored = crate::routes::store_blob_with(&mut conn, &store, &bytes, None).await.unwrap();
-        drop(conn);
-        let file = dir.path().join(&stored.hash);
+        crate::routes::store_blob_with(&mut conn, store, &bytes, None).await.unwrap().hash
+    }
 
-        delete_unreferenced_with(&pool, &store, &stored.hash).await;
-        assert!(file.exists(), "a live row keeps its bytes");
+    async fn row_exists(pool: &sqlx::PgPool, hash: &str) -> bool {
+        sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM daemon_blobs WHERE hash = $1)")
+            .bind(hash)
+            .fetch_one(pool)
+            .await
+            .unwrap()
+    }
 
+    async fn drop_session(pool: &sqlx::PgPool, uid: uuid::Uuid, hash: &str) {
+        for sql in [
+            "DELETE FROM sessions WHERE user_id = $1",
+            "DELETE FROM machines WHERE user_id = $1",
+            "DELETE FROM users WHERE id = $1",
+        ] {
+            sqlx::query(sql).bind(uid).execute(pool).await.unwrap();
+        }
         sqlx::query("DELETE FROM daemon_blobs WHERE hash = $1")
-            .bind(&stored.hash)
+            .bind(hash)
+            .execute(pool)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn an_unreferenced_blob_is_collected_with_its_bytes() {
+        let Some(pool) = gc_pool("blob_gc_unreferenced").await else { return };
+        let dir = tempfile::tempdir().unwrap();
+        let store_ = BlobStore::File(dir.path().to_owned());
+        let hash = store(&pool, &store_, "unreferenced").await;
+        assert!(dir.path().join(&hash).exists());
+
+        assert!(collect_unreferenced(&pool, &store_, &hash).await.unwrap());
+        assert!(!row_exists(&pool, &hash).await);
+        assert!(!dir.path().join(&hash).exists());
+        assert!(!collect_unreferenced(&pool, &store_, &hash).await.unwrap(), "already gone");
+    }
+
+    #[tokio::test]
+    async fn a_blob_linked_to_a_session_is_not_collected() {
+        let name = "blob_gc_session_link";
+        let Some(pool) = gc_pool(name).await else { return };
+        let dir = tempfile::tempdir().unwrap();
+        let store_ = BlobStore::File(dir.path().to_owned());
+        let (uid, sid) = cctui_server_kernel::test_support::seed_session(&pool, name).await;
+        let hash = store(&pool, &store_, "linked").await;
+        sqlx::query("INSERT INTO session_blob_links (session_id, hash) VALUES ($1, $2)")
+            .bind(&sid)
+            .bind(&hash)
             .execute(&pool)
             .await
             .unwrap();
-        delete_unreferenced_with(&pool, &store, &stored.hash).await;
-        assert!(!file.exists());
+
+        delete_unreferenced_with(&pool, &store_, &hash).await;
+        assert!(row_exists(&pool, &hash).await);
+        assert!(dir.path().join(&hash).exists(), "a linked blob keeps its bytes");
+        drop_session(&pool, uid, &hash).await;
+    }
+
+    #[tokio::test]
+    async fn collection_waits_for_a_concurrent_store_and_its_reference() {
+        let name = "blob_gc_races_store";
+        let Some(pool) = gc_pool(name).await else { return };
+        let dir = tempfile::tempdir().unwrap();
+        let store_ = BlobStore::File(dir.path().to_owned());
+        let (uid, sid) = cctui_server_kernel::test_support::seed_session(&pool, name).await;
+        let hash = store(&pool, &store_, "restored").await;
+        let bytes = tokio::fs::read(dir.path().join(&hash)).await.unwrap();
+
+        let mut tx = pool.begin().await.unwrap();
+        let again = crate::routes::store_blob_with(&mut tx, &store_, &bytes, None).await.unwrap();
+        assert!(!again.created);
+        let gc = tokio::spawn({
+            let (pool, root, hash) = (pool.clone(), dir.path().to_owned(), hash.clone());
+            async move { collect_unreferenced(&pool, &BlobStore::File(root), &hash).await.unwrap() }
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        assert!(!gc.is_finished(), "the collection waits for the storing transaction");
+        sqlx::query("INSERT INTO session_blob_links (session_id, hash) VALUES ($1, $2)")
+            .bind(&sid)
+            .bind(&hash)
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+
+        assert!(!gc.await.unwrap(), "the reference committed with the store keeps the blob");
+        assert!(row_exists(&pool, &hash).await);
+        assert!(dir.path().join(&hash).exists());
+        drop_session(&pool, uid, &hash).await;
     }
 }

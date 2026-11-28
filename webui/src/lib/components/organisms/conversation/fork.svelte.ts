@@ -13,6 +13,7 @@ import { m } from '#lib/paraglide/messages.js';
 import { withCurrentModel, type ModelOption } from '#lib/harnessModels.ts';
 import { harnessModelsFallback } from '#lib/domainTables.ts';
 import { useHarnessModels } from '#lib/queries/index.ts';
+import { ws, type CommandOutcome } from '#lib/ws.svelte.ts';
 
 export type { ModelOption };
 
@@ -22,10 +23,15 @@ export interface ForkOpts {
 	isCodex: () => boolean;
 	session: () => SessionListItem;
 	// Server fork action.
-	fork: (id: string, body: ForkRequest) => Promise<{ session_id?: string | null } | undefined>;
+	fork: (
+		id: string,
+		body: ForkRequest
+	) => Promise<{ command_id?: string; session_id?: string | null } | undefined>;
 	// Called on a successful fork with the new session id (claude returns one;
 	// codex returns none → let the caller jump to it or close + refetch).
 	onForked: (newSessionId: string | null | undefined) => void;
+	// The daemon's verdict on the dispatched fork.
+	awaitResult?: (commandId: string, sessionId: string | null | undefined) => Promise<CommandOutcome>;
 }
 
 export class ForkController {
@@ -131,10 +137,19 @@ export class ForkController {
 						: m.fork_toast_forked()
 			);
 			this.#opts.onForked(res?.session_id);
+			if (res?.command_id) void this.#reportFailure(res.command_id, res.session_id);
 		} catch (e) {
 			toasts.error(errMessage(e));
 		} finally {
 			this.forking = false;
 		}
 	};
+
+	async #reportFailure(commandId: string, sessionId: string | null | undefined) {
+		const wait = this.#opts.awaitResult ?? ((c, s) => ws.awaitSpawn(c, s));
+		const result = await wait(commandId, sessionId);
+		if (!result.ok && !result.timedOut) {
+			toasts.error(m.spawn_toast_spawn_failed({ error: result.error ?? m.spawn_error_unknown() }));
+		}
+	}
 }

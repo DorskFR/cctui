@@ -244,25 +244,28 @@
 					landed={voiceTranscriptLanded(lines, voice.live.transcript)}
 				/>
 			{/if}
-			<ConversationComposer
-				bind:this={p.composer}
-				{session}
-				{archived}
-				lastAgentAt={stream.lastAgentAt}
-				voiceEnabled={p.voiceEnabled}
-				voiceLive={voice.live.active}
-				onvoicelive={voice.caps.live ? voice.toggleLive : undefined}
-				supportsAttachments={p.supportsAttachments}
-				scroll={p.scroll}
-				onsend={(body, dictated, followup) => stream.sendBody(body, dictated, followup)}
-				stageFiles={(files) => actions.stageFiles(id, files)}
-				onNewFromScript={() => onNewFromScript?.(session)}
-				onFork={canFork ? fork.openDialog : undefined}
-				onFollowup={canFollowup ? followup : undefined}
-				onResume={canFork ? sa.resume : undefined}
-				onfollowupstarted={p.thread.started}
-				compact={tile}
-			/>
+			{#key p.viewKey}
+				<ConversationComposer
+					bind:this={p.composer}
+					{session}
+					{archived}
+					lastAgentAt={stream.lastAgentAt}
+					voiceEnabled={p.voiceEnabled}
+					voiceLive={voice.live.active}
+					onvoicelive={voice.caps.live ? voice.toggleLive : undefined}
+					supportsAttachments={p.supportsAttachments}
+					scroll={p.scroll}
+					onsend={(body, dictated, followup) => stream.sendBody(body, dictated, followup)}
+					stageFiles={(files) => actions.stageFiles(id, files)}
+					onNewFromScript={() => onNewFromScript?.(session)}
+					onFork={canFork ? fork.openDialog : undefined}
+					onFollowup={canFollowup ? followup : undefined}
+					onResume={canFork ? sa.resume : undefined}
+					onfollowupstarted={p.thread.started}
+					compact={tile}
+					carriesDraft={(from, to) => p.line.members.has(from) && p.line.members.has(to)}
+				/>
+			{/key}
 		</Dropzone>
 	</div>
 

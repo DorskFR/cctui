@@ -39,6 +39,7 @@ import type { SpawnRequest } from "@bindings/SpawnRequest";
 import type { ContextItem } from "@bindings/ContextItem";
 import type { ContextItemSpec } from "@bindings/ContextItemSpec";
 import type { UpdateContextItemRequest } from "@bindings/UpdateContextItemRequest";
+import type { SettlePendingRequest } from "@bindings/SettlePendingRequest";
 import type { BulkContextUpdate } from "@bindings/BulkContextUpdate";
 import type { BulkContextResponse } from "@bindings/BulkContextResponse";
 import type { ResolvedContextResponse } from "@bindings/ResolvedContextResponse";
@@ -403,10 +404,10 @@ export const endpoints = {
         Object.entries(q).filter(([, v]) => !!v),
       ).toString()}`,
     ),
-  approveContextPending: (id: string) =>
-    api.post<ContextItem>(`/context/${id}/pending/approve`, {}),
-  rejectContextPending: (id: string) =>
-    api.post<ContextItem>(`/context/${id}/pending/reject`, {}),
+  approveContextPending: (id: string, seen: SettlePendingRequest = {}) =>
+    api.post<ContextItem>(`/context/${id}/pending/approve`, seen),
+  rejectContextPending: (id: string, seen: SettlePendingRequest = {}) =>
+    api.post<ContextItem>(`/context/${id}/pending/reject`, seen),
   sessionContext: (sessionId: string) =>
     api.get<SessionContextResponse>(
       `/sessions/${encodeURIComponent(sessionId)}/context`,
@@ -637,6 +638,8 @@ export const endpoints = {
     api.get<MachineRow[]>(`/admin/users/${userId}/machines`),
   tokens: (userId: string) =>
     api.get<UserTokenRow[]>(`/admin/users/${userId}/tokens`),
+  userPasskeys: (userId: string) =>
+    api.get<PasskeyListResponse>(`/admin/users/${userId}/passkeys`),
   /** A user's scope ceiling. Self or admin. */
   userAcls: (userId: string) =>
     api.get<UserAclsResponse>(`/users/${userId}/acls`),

@@ -61,6 +61,14 @@ export const useTokens = (userId: () => string, enabled: () => boolean) =>
     enabled: enabled(),
   }));
 
+/** Another user's passkeys (admin only). */
+export const useUserPasskeys = (userId: () => string, enabled: () => boolean) =>
+  createQuery(() => ({
+    queryKey: qk.userPasskeys(userId()),
+    queryFn: () => endpoints.userPasskeys(userId()),
+    enabled: enabled() && hasFeature("passkeys") && !!userId(),
+  }));
+
 export function useUserActions() {
   const qc = useQueryClient();
   const invalUsers = () => qc.invalidateQueries({ queryKey: qk.users });
@@ -122,6 +130,10 @@ export function useUserActions() {
     },
     purgeToken: async (userId: string, tokenId: string) => {
       await api.del<void>(`/admin/users/${userId}/tokens/${tokenId}/purge`);
+      invalUser(userId);
+    },
+    revokePasskey: async (userId: string, passkeyId: string) => {
+      await api.del<void>(`/admin/users/${userId}/passkeys/${passkeyId}`);
       invalUser(userId);
     },
     // The PATCH replaces both fields (display_name + hue), so callers pass

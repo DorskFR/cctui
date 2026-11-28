@@ -21,7 +21,7 @@ pub use cctui_proto::api::context::{
     AttachContextRequest, AttachContextResponse, AttachedContextRef, BulkContextOutcome,
     BulkContextResponse, BulkContextUpdate, ContextItem, ContextItemSpec, ContextMatch,
     ContextMatchLists, ContextMatchSet, ContextReach, ResolvedContextResponse,
-    SessionContextResponse, UpdateContextItemRequest,
+    SessionContextResponse, SettlePendingRequest, UpdateContextItemRequest,
 };
 
 pub mod ownership;
@@ -691,10 +691,11 @@ pub async fn settle_pending(
             let row: Option<Row> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
                 "DELETE FROM context_items \
                  WHERE id = $1 AND user_id = $2 AND pending IS NOT NULL AND version = 1 \
-                 RETURNING {COLS}"
+                   AND updated_at = $3 RETURNING {COLS}"
             )))
             .bind(item.id)
             .bind(user_id)
+            .bind(item.updated_at)
             .fetch_optional(pool)
             .await?;
             return Ok(row.map(|r| ContextItem { pending: None, ..ContextItem::from(r) }));
@@ -702,10 +703,13 @@ pub async fn settle_pending(
         None => {
             sqlx::query_as(sqlx::AssertSqlSafe(format!(
                 "UPDATE context_items SET pending = NULL, updated_at = now() \
-                 WHERE id = $1 AND user_id = $2 AND pending IS NOT NULL RETURNING {COLS}"
+                 WHERE id = $1 AND user_id = $2 AND pending IS NOT NULL \
+                   AND version = $3 AND updated_at = $4 RETURNING {COLS}"
             )))
             .bind(item.id)
             .bind(user_id)
+            .bind(item.version)
+            .bind(item.updated_at)
             .fetch_optional(pool)
             .await?
         }
@@ -1229,16 +1233,29 @@ pub async fn delete_item<S: SessionsContext>(
     }
 }
 
+/// Refuses a settle aimed at a version of `item` other than the one the
+/// client rendered.
+fn check_rendered(item: &ContextItem, seen: &SettlePendingRequest) -> Result<(), AppError> {
+    let stale = seen.version.is_some_and(|v| v != item.version)
+        || seen.updated_at.is_some_and(|at| at != item.updated_at);
+    if stale {
+        return Err(AppError::new(StatusCode::CONFLICT, "the item changed; reload and retry"));
+    }
+    Ok(())
+}
+
 async fn settle<S: SessionsContext>(
     state: &S,
     ctx: &AuthContext,
     id: Uuid,
     approve: bool,
+    seen: Option<Json<SettlePendingRequest>>,
 ) -> Result<Json<ContextItem>, AppError> {
     let before = get_one(state.pool(), ctx.user_id, id).await?;
     let Some(before) = before else {
         return Err(AppError::new(StatusCode::NOT_FOUND, "context item not found"));
     };
+    check_rendered(&before, &seen.map(|Json(seen)| seen).unwrap_or_default())?;
     let item = settle_item(state.pool(), ctx, &before, approve).await?;
     close_approval_card(state, &before, approve).await;
     Ok(Json(item))
@@ -1249,8 +1266,9 @@ pub async fn approve_pending<S: SessionsContext>(
     State(state): State<S>,
     Extension(ctx): Extension<AuthContext>,
     Path(id): Path<Uuid>,
+    seen: Option<Json<SettlePendingRequest>>,
 ) -> Result<Json<ContextItem>, AppError> {
-    settle(&state, &ctx, id, true).await
+    settle(&state, &ctx, id, true, seen).await
 }
 
 /// `POST /context/{id}/pending/reject` — drop an agent's proposal; the live
@@ -1259,8 +1277,9 @@ pub async fn reject_pending<S: SessionsContext>(
     State(state): State<S>,
     Extension(ctx): Extension<AuthContext>,
     Path(id): Path<Uuid>,
+    seen: Option<Json<SettlePendingRequest>>,
 ) -> Result<Json<ContextItem>, AppError> {
-    settle(&state, &ctx, id, false).await
+    settle(&state, &ctx, id, false, seen).await
 }
 
 /// Query for `GET /context/resolve`: what a launch into these coordinates
@@ -2304,6 +2323,64 @@ mod tests {
         decide(&pool, &me, kept.id, false).await.expect("reject");
         let after = get_one(&pool, uid, kept.id).await.expect("lookup").expect("still there");
         assert_eq!(after.body, "do the thing", "an approved rule survives a later rejection");
+
+        sqlx::query("DELETE FROM users WHERE id = $1").bind(uid).execute(&pool).await.ok();
+    }
+
+    #[tokio::test]
+    async fn rejecting_a_superseded_proposal_keeps_the_newer_one() {
+        let Some(pool) = test_pool("context_reject_stale").await else { return };
+        let uid = seed_user(&pool).await;
+        let v1 = rule_spec("fresh", "first idea", ContextMatch::default());
+        let v2 = rule_spec("fresh", "second idea", ContextMatch::default());
+        let placeholder = ContextItemSpec { body: String::new(), enabled: false, ..v1.clone() };
+
+        let unborn =
+            insert(&pool, uid, &placeholder, Some(&v1), Some("agent-1")).await.expect("insert");
+        propose(&pool, uid, unborn.id, &v2, "agent-1").await.expect("propose").expect("row");
+        let stale = settle_pending(&pool, uid, &unborn, None).await.expect("reject");
+        assert!(stale.is_none(), "a reject of v1 must not delete the item carrying v2");
+        let kept = get_one(&pool, uid, unborn.id).await.expect("lookup").expect("still there");
+        assert_eq!(kept.pending.expect("v2 pending").body, "second idea");
+
+        let me = human(uid, false);
+        decide(&pool, &me, unborn.id, true).await.expect("approve");
+        let seen =
+            propose(&pool, uid, unborn.id, &v1, "agent-1").await.expect("propose").expect("row");
+        propose(&pool, uid, unborn.id, &v2, "agent-1").await.expect("propose").expect("row");
+        let stale = settle_pending(&pool, uid, &seen, None).await.expect("reject");
+        assert!(stale.is_none(), "a reject of v1 must not drop v2");
+        let after = get_one(&pool, uid, unborn.id).await.expect("lookup").expect("still there");
+        assert_eq!(after.pending.expect("v2 pending").body, "second idea");
+
+        sqlx::query("DELETE FROM users WHERE id = $1").bind(uid).execute(&pool).await.ok();
+    }
+
+    #[tokio::test]
+    async fn a_settle_of_what_the_client_rendered_refuses_a_newer_proposal() {
+        let Some(pool) = test_pool("context_settle_rendered").await else { return };
+        let uid = seed_user(&pool).await;
+        let v1 = rule_spec("rendered", "first idea", ContextMatch::default());
+        let v2 = rule_spec("rendered", "second idea", ContextMatch::default());
+        let placeholder = ContextItemSpec { body: String::new(), enabled: false, ..v1.clone() };
+        let rendered =
+            insert(&pool, uid, &placeholder, Some(&v1), Some("agent-1")).await.expect("insert");
+        let current =
+            propose(&pool, uid, rendered.id, &v2, "agent-1").await.expect("propose").expect("row");
+
+        let seen = |item: &ContextItem| SettlePendingRequest {
+            version: Some(item.version),
+            updated_at: Some(item.updated_at),
+        };
+        let err = check_rendered(&current, &seen(&rendered)).expect_err("v1 was rendered");
+        assert!(matches!(err, AppError::Status(StatusCode::CONFLICT, _)), "{err:?}");
+        let newer_version =
+            SettlePendingRequest { version: Some(current.version + 1), updated_at: None };
+        assert!(check_rendered(&current, &newer_version).is_err());
+        assert!(check_rendered(&current, &seen(&current)).is_ok());
+        assert!(check_rendered(&current, &SettlePendingRequest::default()).is_ok(), "old clients");
+        let kept = get_one(&pool, uid, rendered.id).await.expect("lookup").expect("still there");
+        assert_eq!(kept.pending.expect("v2 pending").body, "second idea");
 
         sqlx::query("DELETE FROM users WHERE id = $1").bind(uid).execute(&pool).await.ok();
     }

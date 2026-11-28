@@ -201,6 +201,10 @@ fn the_retract_payload_closes_by_tag() {
 type Seen = Arc<Mutex<Vec<(String, http::HeaderMap, Vec<u8>)>>>;
 
 async fn stub(status: u16) -> (String, Seen) {
+    stub_with(status, None).await
+}
+
+async fn stub_with(status: u16, location: Option<&'static str>) -> (String, Seen) {
     let seen: Seen = Arc::default();
     let recorder = seen.clone();
     let app = axum::Router::new().fallback(move |req: axum::extract::Request| {
@@ -209,7 +213,12 @@ async fn stub(status: u16) -> (String, Seen) {
             let (parts, body) = req.into_parts();
             let body = axum::body::to_bytes(body, usize::MAX).await.unwrap().to_vec();
             recorder.lock().unwrap().push((parts.uri.path().to_owned(), parts.headers, body));
-            http::StatusCode::from_u16(status).unwrap()
+            let mut resp = http::Response::new(axum::body::Body::empty());
+            *resp.status_mut() = http::StatusCode::from_u16(status).unwrap();
+            if let Some(location) = location {
+                resp.headers_mut().insert(http::header::LOCATION, location.parse().unwrap());
+            }
+            resp
         }
     });
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -343,6 +352,17 @@ async fn throttled_or_failing_push_services_retry_and_other_refusals_are_permane
     let (base, _) = stub(403).await;
     let err = channel(&base).send(&rendered(), &endpoint(&base)).await.expect_err("refused");
     assert!(matches!(err, SendError::Permanent(_)), "{err:?}");
+}
+
+#[tokio::test]
+async fn a_redirecting_push_service_is_not_followed() {
+    for status in [302, 307, 308] {
+        let (base, seen) = stub_with(status, Some("/internal")).await;
+        let err = channel(&base).send(&rendered(), &endpoint(&base)).await.unwrap_err();
+        assert!(matches!(err, SendError::Permanent(_)), "{status}: {err:?}");
+        let paths: Vec<String> = seen.lock().unwrap().iter().map(|(p, ..)| p.clone()).collect();
+        assert_eq!(paths, vec!["/push/sub1".to_owned()], "{status}");
+    }
 }
 
 #[tokio::test]

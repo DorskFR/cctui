@@ -522,6 +522,30 @@ mod tests {
         sqlx::query("DELETE FROM users WHERE id = $1").bind(uid).execute(&pool).await.ok();
     }
 
+    /// A dispatch the dispatcher took but never answered may be running, so its
+    /// use stays counted against the caps.
+    #[tokio::test]
+    async fn an_unconfirmed_dispatch_keeps_its_reserved_use() {
+        let Some(url) = cctui_server_kernel::test_support::db_url("dispatch_policy_unconfirmed")
+        else {
+            return;
+        };
+        let pool = sqlx::PgPool::connect(&url).await.expect("connect");
+        let uid = seed_user(&pool).await;
+        let sid = uuid::Uuid::new_v4().to_string();
+        let rules = cctui_proto::api::admin::DispatchPolicyRules::default();
+        let unknown = super::forward_within_policy(&pool, Some((uid, &rules)), &sid, || async {
+            Err((
+                axum::http::StatusCode::GATEWAY_TIMEOUT,
+                axum::Json(cctui_proto::api::ApiError { error: "no reply".into() }),
+            ))
+        })
+        .await;
+        assert_eq!(unknown.unwrap_err().0, axum::http::StatusCode::GATEWAY_TIMEOUT);
+        assert_eq!(uses(&pool, uid).await, 1);
+        sqlx::query("DELETE FROM users WHERE id = $1").bind(uid).execute(&pool).await.ok();
+    }
+
     /// Runs `n` dispatches of `uid` at once through a forward that takes a
     /// while; returns how many were forwarded and every refusal.
     async fn race(

@@ -144,27 +144,89 @@ pub struct OrganizationRef {
 }
 
 /// Exchange the refresh token for a fresh access token and persist the rotated
-/// pair. Caller MUST hold the account's refresh mutex. Returns the new access
+/// pair, under the account's cross-replica refresh lock. Returns the new access
 /// token.
-// Linear refresh flow with per-provider branches; complexity is per-branch
-// error handling, not nesting.
-#[allow(clippy::cognitive_complexity)]
 pub async fn refresh_account(
     state: &impl CredentialContext,
     acct: &Account,
 ) -> Result<String, StatusCode> {
-    // Static-credential compatible accounts never refresh — the stored access
-    // token (the bearer/api key) is forwarded verbatim.
     if acct.is_static() {
         return acct.access_token.clone().ok_or(StatusCode::BAD_GATEWAY);
     }
-    let Some(refresh_token) = acct.refresh_token.as_deref() else {
-        return Err(StatusCode::BAD_GATEWAY);
-    };
-    let fingerprint = cctui_server_kernel::auth::sha256_hex(refresh_token);
-    if REFRESH_REJECTIONS.recently_rejected(acct.id, &fingerprint, Instant::now()) {
+    let refresh_token = acct.refresh_token.as_deref().ok_or(StatusCode::BAD_GATEWAY)?;
+    if REFRESH_REJECTIONS.recently_rejected(acct.id, &sha256(refresh_token), Instant::now()) {
         return Err(StatusCode::BAD_GATEWAY);
     }
+    let tx = lock_refresh(state, acct.id).await?;
+    Box::pin(refresh_locked(state, tx, acct)).await
+}
+
+fn sha256(token: &str) -> String {
+    cctui_server_kernel::auth::sha256_hex(token)
+}
+
+/// Serializes refreshes of one account across replicas: refresh tokens are
+/// single-use, so two replicas spending the same one lose the account.
+async fn lock_refresh(
+    state: &impl CredentialContext,
+    id: Uuid,
+) -> Result<sqlx::Transaction<'static, sqlx::Postgres>, StatusCode> {
+    let locked = async {
+        let mut tx = state.pool().begin().await?;
+        sqlx::query("SET LOCAL lock_timeout = '30s'").execute(&mut *tx).await?;
+        sqlx::query(
+            "SELECT pg_advisory_xact_lock(hashtext('oauth_refresh'), hashtext($1::uuid::text))",
+        )
+        .bind(id)
+        .execute(&mut *tx)
+        .await?;
+        Ok::<_, sqlx::Error>(tx)
+    };
+    locked.await.map_err(|e| {
+        tracing::error!(account = %id, "oauth refresh lock failed: {e}");
+        StatusCode::SERVICE_UNAVAILABLE
+    })
+}
+
+async fn refresh_locked(
+    state: &impl CredentialContext,
+    mut tx: sqlx::Transaction<'static, sqlx::Postgres>,
+    acct: &Account,
+) -> Result<String, StatusCode> {
+    match exchange(state, &mut tx, acct).await? {
+        Exchange::Adopted(access) => Ok(access),
+        Exchange::Rotated(rotated) => {
+            persist_rotated(state, tx, acct.id, &rotated).await;
+            if let Some(org) = rotated.organization.as_deref() {
+                remember_organization_uuid(state, acct.id, org).await;
+            }
+            tracing::info!(account = %acct.id, "refreshed oauth access token");
+            Ok(rotated.access_token)
+        }
+    }
+}
+
+enum Exchange {
+    /// Another refresh already stored a fresh pair.
+    Adopted(String),
+    Rotated(Rotated),
+}
+
+struct Rotated {
+    access_token: String,
+    spent_refresh: String,
+    enc_access: String,
+    enc_refresh: Option<String>,
+    expires_at: Option<chrono::DateTime<Utc>>,
+    organization: Option<String>,
+}
+
+async fn exchange(
+    state: &impl CredentialContext,
+    conn: &mut sqlx::PgConnection,
+    acct: &Account,
+) -> Result<Exchange, StatusCode> {
+    let refresh_token = acct.refresh_token.as_deref().ok_or(StatusCode::BAD_GATEWAY)?;
     // Anthropic refreshes with a JSON body; OpenAI/Codex with a form-encoded
     // body (matches the codex CLI + CLIProxyAPI).
     let request = match acct.provider.as_str() {
@@ -192,72 +254,133 @@ pub async fn refresh_account(
         StatusCode::BAD_GATEWAY
     })?;
     if !resp.status().is_success() {
-        let status = resp.status();
-        // Only the OAuth error code is read from the body, never echoed whole.
-        let error = resp
-            .json::<serde_json::Value>()
-            .await
-            .ok()
-            .and_then(|b| b.get("error").and_then(|e| e.as_str()).map(str::to_owned));
-        let error = error.as_deref().unwrap_or("unknown");
-        tracing::error!(account = %acct.id, %status, error, "oauth refresh rejected");
-        if refresh_rejection_is_terminal(status.as_u16()) {
-            // The provider refused this refresh token: it will refuse it again,
-            // so flag the account for a human reconnect and stop re-sending it
-            // until the backoff lapses or a new token is stored.
-            REFRESH_REJECTIONS.record(acct.id, fingerprint, Instant::now());
-            super::health::flag_account_reauth(
-                state,
-                acct.id,
-                &format!(
-                    "OAuth refresh rejected (HTTP {}, {error}): reconnect the account",
-                    status.as_u16()
-                ),
-            );
-        }
-        return Err(StatusCode::BAD_GATEWAY);
+        return rejected(state, conn, acct, refresh_token, resp).await;
     }
     let tok: TokenResponse = resp.json().await.map_err(|e| {
         tracing::error!(account = %acct.id, "oauth refresh decode error: {e}");
         StatusCode::BAD_GATEWAY
     })?;
-
     let key = state.vault_key();
-    let enc_access = cctui_crypto::encrypt(&tok.access_token, &key);
-    // Refresh tokens are single-use → persist the rotated one when returned.
-    let enc_refresh = tok.refresh_token.as_deref().map(|r| cctui_crypto::encrypt(r, &key));
-    let expires_at = tok.expires_in.map(|s| Utc::now() + chrono::Duration::seconds(s));
+    Ok(Exchange::Rotated(Rotated {
+        enc_access: cctui_crypto::encrypt(&tok.access_token, &key),
+        enc_refresh: tok.refresh_token.as_deref().map(|r| cctui_crypto::encrypt(r, &key)),
+        expires_at: tok.expires_in.map(|s| Utc::now() + chrono::Duration::seconds(s)),
+        organization: tok.organization.and_then(|o| o.uuid),
+        spent_refresh: refresh_token.to_owned(),
+        access_token: tok.access_token,
+    }))
+}
 
-    let result = if let Some(enc_refresh) = enc_refresh {
-        sqlx::query(
-            "UPDATE account_providers SET encrypted_access_token = $2, \
-                    encrypted_refresh_token = $3, expires_at = $4 WHERE id = $1",
-        )
-        .bind(acct.id)
-        .bind(&enc_access)
-        .bind(&enc_refresh)
-        .bind(expires_at)
-        .execute(state.pool())
+/// A refusal is terminal only when the stored refresh token is still the one
+/// refused: a different one means the account was rotated or reconnected.
+async fn rejected(
+    state: &impl CredentialContext,
+    conn: &mut sqlx::PgConnection,
+    acct: &Account,
+    refresh_token: &str,
+    resp: reqwest::Response,
+) -> Result<Exchange, StatusCode> {
+    let status = resp.status();
+    // Only the OAuth error code is read from the body, never echoed whole.
+    let error = resp
+        .json::<serde_json::Value>()
         .await
-    } else {
-        sqlx::query(
-            "UPDATE account_providers SET encrypted_access_token = $2, expires_at = $3 WHERE id = $1",
-        )
-        .bind(acct.id)
-        .bind(&enc_access)
-        .bind(expires_at)
-        .execute(state.pool())
-        .await
+        .ok()
+        .and_then(|b| b.get("error").and_then(|e| e.as_str()).map(str::to_owned));
+    let error = error.as_deref().unwrap_or("unknown");
+    tracing::error!(account = %acct.id, %status, error, "oauth refresh rejected");
+    if !refresh_rejection_is_terminal(status.as_u16()) {
+        return Err(StatusCode::BAD_GATEWAY);
+    }
+    if let Some(stored) = reload_with(&mut *conn, &state.vault_key(), acct.id).await
+        && stored.refresh_token.as_deref().is_some_and(|t| t != refresh_token)
+    {
+        let fresh =
+            access_token_is_fresh(stored.access_token.as_deref(), stored.expires_at, Utc::now());
+        return match (fresh, stored.access_token) {
+            (true, Some(access)) => Ok(Exchange::Adopted(access)),
+            _ => Err(StatusCode::BAD_GATEWAY),
+        };
+    }
+    REFRESH_REJECTIONS.record(acct.id, sha256(refresh_token), Instant::now());
+    super::health::flag_account_reauth(
+        state,
+        acct.id,
+        &format!(
+            "OAuth refresh rejected (HTTP {}, {error}): reconnect the account",
+            status.as_u16()
+        ),
+    );
+    Err(StatusCode::BAD_GATEWAY)
+}
+
+const SAVE_RETRY_BACKOFF: [Duration; 3] =
+    [Duration::from_millis(250), Duration::from_secs(1), Duration::from_secs(3)];
+
+/// The provider already spent the old refresh token, so the rotated pair is
+/// retried on fresh connections rather than dropped.
+async fn persist_rotated(
+    state: &impl CredentialContext,
+    mut tx: sqlx::Transaction<'static, sqlx::Postgres>,
+    id: Uuid,
+    rotated: &Rotated,
+) {
+    let key = state.vault_key();
+    let saved = match store_rotated(&mut tx, &key, id, rotated).await {
+        Ok(()) => tx.commit().await,
+        Err(e) => {
+            drop(tx);
+            Err(e)
+        }
     };
-    if let Err(e) = result {
-        tracing::error!(account = %acct.id, "persist refreshed token failed: {e}");
-        return Err(StatusCode::INTERNAL_SERVER_ERROR);
+    let Err(mut last) = saved else { return };
+    for delay in SAVE_RETRY_BACKOFF {
+        tracing::warn!(account = %id, "persist refreshed token failed, retrying: {last}");
+        tokio::time::sleep(delay).await;
+        let attempt = async {
+            let mut tx = state.pool().begin().await?;
+            store_rotated(&mut tx, &key, id, rotated).await?;
+            tx.commit().await
+        };
+        match attempt.await {
+            Ok(()) => return,
+            Err(e) => last = e,
+        }
     }
-    if let Some(org) = tok.organization.as_ref().and_then(|o| o.uuid.as_deref()) {
-        remember_organization_uuid(state, acct.id, org).await;
+    tracing::error!(account = %id, "persist refreshed token failed: {last}");
+}
+
+/// Compare-and-swap on the spent refresh token: a pair stored since (a
+/// reconnect) is newer and kept.
+async fn store_rotated(
+    conn: &mut sqlx::PgConnection,
+    key: &[u8],
+    id: Uuid,
+    rotated: &Rotated,
+) -> sqlx::Result<()> {
+    let stored: Option<Option<String>> = sqlx::query_scalar(
+        "SELECT encrypted_refresh_token FROM account_providers WHERE id = $1 FOR UPDATE",
+    )
+    .bind(id)
+    .fetch_optional(&mut *conn)
+    .await?;
+    let current = stored.flatten().and_then(|e| cctui_crypto::decrypt(&e, key));
+    if current.is_some_and(|c| c != rotated.spent_refresh) {
+        tracing::info!(account = %id, "kept a refresh token stored during the refresh");
+        return Ok(());
     }
-    tracing::info!(account = %acct.id, "refreshed oauth access token");
-    Ok(tok.access_token)
+    sqlx::query(
+        "UPDATE account_providers SET encrypted_access_token = $2, \
+                encrypted_refresh_token = COALESCE($3, encrypted_refresh_token), \
+                expires_at = $4 WHERE id = $1",
+    )
+    .bind(id)
+    .bind(&rotated.enc_access)
+    .bind(&rotated.enc_refresh)
+    .bind(rotated.expires_at)
+    .execute(&mut *conn)
+    .await?;
+    Ok(())
 }
 
 /// How long a refresh token the provider refused is not sent again. An idle
@@ -320,15 +443,14 @@ pub fn access_token_is_fresh(
         && expires_at.is_some_and(|exp| exp > now + chrono::Duration::seconds(REFRESH_SKEW_SECS))
 }
 
-/// Return a valid access token for the account, refreshing if absent or within
-/// the skew window. Serialized per account so concurrent sessions don't
-/// double-refresh a single-use refresh token.
+/// A valid access token for the account, refreshed if absent or near expiry.
+///
+/// Serialized per account, in process and across replicas, so concurrent
+/// sessions don't double-refresh a single-use refresh token.
 pub async fn current_access_token(
     state: &impl CredentialContext,
     acct: &Account,
 ) -> Result<String, StatusCode> {
-    // Static-credential compatible accounts: forward the stored credential
-    // verbatim, no expiry tracking, no refresh.
     if acct.is_static() {
         return acct.access_token.clone().filter(|t| !t.is_empty()).ok_or(StatusCode::UNAUTHORIZED);
     }
@@ -343,49 +465,52 @@ pub async fn current_access_token(
         .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
         .clone();
     let _guard = lock.lock().await;
+    let mut tx = lock_refresh(state, acct.id).await?;
 
-    // Re-read under the lock: another task may have just refreshed.
-    if let Some(reloaded) = reload_account(state, acct.id).await {
-        let still_fresh = access_token_is_fresh(
-            reloaded.access_token.as_deref(),
-            reloaded.expires_at,
-            Utc::now(),
-        );
-        if let (true, Some(t)) = (still_fresh, reloaded.access_token.clone()) {
-            return Ok(t);
-        }
-        return refresh_account(state, &reloaded).await;
+    // Re-read under the lock: another task or replica may have just refreshed.
+    let reloaded = reload_with(&mut *tx, &state.vault_key(), acct.id).await;
+    let current = reloaded.as_ref().unwrap_or(acct);
+    if let (true, Some(t)) = (
+        access_token_is_fresh(current.access_token.as_deref(), current.expires_at, Utc::now()),
+        &current.access_token,
+    ) {
+        return Ok(t.clone());
     }
-    refresh_account(state, acct).await
+    let refresh_token = current.refresh_token.as_deref().ok_or(StatusCode::BAD_GATEWAY)?;
+    if REFRESH_REJECTIONS.recently_rejected(acct.id, &sha256(refresh_token), Instant::now()) {
+        return Err(StatusCode::BAD_GATEWAY);
+    }
+    Box::pin(refresh_locked(state, tx, current)).await
 }
 
 pub async fn reload_account(state: &impl CredentialContext, id: Uuid) -> Option<Account> {
+    reload_with(state.pool(), &state.vault_key(), id).await
+}
+
+async fn reload_with<'e>(db: impl sqlx::PgExecutor<'e>, key: &[u8], id: Uuid) -> Option<Account> {
     let row: Option<ReloadRow> = sqlx::query_as(
         "SELECT provider, encrypted_access_token, encrypted_refresh_token, expires_at, \
                     provider_account_id, base_url, auth_scheme \
              FROM account_providers WHERE id = $1",
     )
     .bind(id)
-    .fetch_optional(state.pool())
+    .fetch_optional(db)
     .await
     .ok()
     .flatten();
     let (provider, enc_access, enc_refresh, expires_at, provider_account_id, base_url, auth_scheme) =
         row?;
-    let key = state.vault_key();
     Some(Account {
         id,
         provider,
-        access_token: enc_access.and_then(|e| cctui_crypto::decrypt(&e, &key)),
-        refresh_token: enc_refresh.and_then(|e| cctui_crypto::decrypt(&e, &key)),
+        access_token: enc_access.and_then(|e| cctui_crypto::decrypt(&e, key)),
+        refresh_token: enc_refresh.and_then(|e| cctui_crypto::decrypt(&e, key)),
         expires_at,
         provider_account_id,
         base_url,
         auth_scheme,
-        // `reload_account` only services the token-refresh / usage-fetch paths,
-        // never the soft-limit gate (which runs off `resolve_account`), so the
-        // caps are irrelevant here — default them, as are the gateway settings
-        // (request shaping runs off `resolve_account` too).
+        // Only the token-refresh and usage-fetch paths reload; soft limits and
+        // request shaping run off `resolve_account`.
         soft_limits: cctui_proto::api::soft_limit::SoftLimits::default(),
         usage_notices: cctui_proto::api::gateway::UsageNotices::default(),
         provider_settings: None,
@@ -881,6 +1006,158 @@ mod host_boundary_tests {
         assert!(wait_for_reauth(&host, acct.id, false).await.is_none());
         server.abort();
         host.pool.close().await;
+    }
+
+    async fn slow_token(
+        axum::extract::State(calls): axum::extract::State<Arc<AtomicUsize>>,
+        axum::Form(form): axum::Form<std::collections::HashMap<String, String>>,
+    ) -> axum::Json<serde_json::Value> {
+        assert_eq!(form.get("refresh_token").map(String::as_str), Some("old-refresh"));
+        calls.fetch_add(1, Ordering::SeqCst);
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        axum::Json(serde_json::json!({
+            "access_token": "fresh-access", "refresh_token": "rotated-refresh", "expires_in": 3600,
+        }))
+    }
+
+    async fn seed_shared_provider(pool: &sqlx::PgPool, refresh: &str) -> (Uuid, Uuid) {
+        let (uid, acct, prov) = (Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4());
+        sqlx::query("INSERT INTO users (id, name, key_hash) VALUES ($1, $2, $3)")
+            .bind(uid)
+            .bind(format!("replica-refresh-{uid}"))
+            .bind(format!("kh-{uid}"))
+            .execute(pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO accounts (id, user_id, name) VALUES ($1, $2, 'replica-refresh')")
+            .bind(acct)
+            .bind(uid)
+            .execute(pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO account_providers \
+                 (id, user_id, account_id, provider, auth_scheme, encrypted_refresh_token) \
+             VALUES ($1, $2, $3, 'openai', 'oauth', $4)",
+        )
+        .bind(prov)
+        .bind(uid)
+        .bind(acct)
+        .bind(cctui_crypto::encrypt(refresh, &[42; 32]))
+        .execute(pool)
+        .await
+        .unwrap();
+        (uid, prov)
+    }
+
+    #[tokio::test]
+    async fn two_replicas_spend_a_refresh_token_once() {
+        let Some(url) = cctui_server_kernel::test_support::db_url("gateway_replica_refresh") else {
+            return;
+        };
+        let pool =
+            sqlx::postgres::PgPoolOptions::new().max_connections(4).connect(&url).await.unwrap();
+        let (uid, prov) = seed_shared_provider(&pool, "old-refresh").await;
+        let calls = Arc::new(AtomicUsize::new(0));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let token_url = format!("http://{}/token", listener.local_addr().unwrap());
+        let app = axum::Router::new()
+            .route("/token", axum::routing::post(slow_token))
+            .with_state(calls.clone());
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let (a, b) =
+            (Host::new(pool.clone(), token_url.clone()), Host::new(pool.clone(), token_url));
+        let mut acct = account("oauth");
+        acct.id = prov;
+        acct.access_token = None;
+        acct.refresh_token = Some("old-refresh".into());
+
+        let (first, second) = tokio::time::timeout(Duration::from_secs(10), async {
+            tokio::join!(current_access_token(&a, &acct), current_access_token(&b, &acct))
+        })
+        .await
+        .expect("cross-replica refresh must not deadlock");
+        assert_eq!(first.unwrap(), "fresh-access");
+        assert_eq!(second.unwrap(), "fresh-access");
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "the refresh token is spent once");
+        assert!(a.reauth.is_empty() && b.reauth.is_empty());
+        let stored = reload_account(&a, prov).await.unwrap();
+        assert_eq!(stored.refresh_token.as_deref(), Some("rotated-refresh"));
+        server.abort();
+        sqlx::query("DELETE FROM users WHERE id = $1").bind(uid).execute(&pool).await.ok();
+    }
+
+    #[tokio::test]
+    async fn a_refusal_after_a_rotation_elsewhere_adopts_the_stored_pair() {
+        let Some(pool) = provider_pool("core_refresh_adopts_rotation").await else { return };
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let token_url = format!("http://{}/token", listener.local_addr().unwrap());
+        let app = axum::Router::new().route(
+            "/token",
+            axum::routing::post(|| async {
+                (StatusCode::BAD_REQUEST, axum::Json(serde_json::json!({"error": "invalid_grant"})))
+            }),
+        );
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let host = Host::new(pool, token_url);
+        let mut acct = account("oauth");
+        acct.access_token = None;
+        acct.refresh_token = Some("spent-refresh".into());
+        sqlx::query(
+            "INSERT INTO account_providers (id, user_id, account_id, provider, auth_scheme, \
+                 encrypted_access_token, encrypted_refresh_token, expires_at) \
+             VALUES ($1, $2, $3, 'openai', 'oauth', $4, $5, now() + interval '1 hour')",
+        )
+        .bind(acct.id)
+        .bind(Uuid::new_v4())
+        .bind(Uuid::new_v4())
+        .bind(cctui_crypto::encrypt("winner-access", &[42; 32]))
+        .bind(cctui_crypto::encrypt("winner-refresh", &[42; 32]))
+        .execute(&host.pool)
+        .await
+        .unwrap();
+
+        assert_eq!(refresh_account(&host, &acct).await.unwrap(), "winner-access");
+        assert!(host.reauth.is_empty(), "a rotated account is not flagged for reauth");
+        server.abort();
+        host.pool.close().await;
+    }
+
+    #[tokio::test]
+    async fn a_pair_stored_during_the_refresh_is_kept() {
+        let Some(pool) = provider_pool("core_refresh_cas").await else { return };
+        let id = Uuid::new_v4();
+        let key = [42; 32];
+        sqlx::query(
+            "INSERT INTO account_providers (id, user_id, account_id, provider, \
+                 encrypted_refresh_token) VALUES ($1, $2, $3, 'openai', $4)",
+        )
+        .bind(id)
+        .bind(Uuid::new_v4())
+        .bind(Uuid::new_v4())
+        .bind(cctui_crypto::encrypt("reconnected-refresh", &key))
+        .execute(&pool)
+        .await
+        .unwrap();
+        let rotated = Rotated {
+            access_token: "late-access".into(),
+            spent_refresh: "spent-refresh".into(),
+            enc_access: cctui_crypto::encrypt("late-access", &key),
+            enc_refresh: Some(cctui_crypto::encrypt("late-refresh", &key)),
+            expires_at: None,
+            organization: None,
+        };
+        let mut conn = pool.acquire().await.unwrap();
+        store_rotated(&mut conn, &key, id, &rotated).await.unwrap();
+        let stored = reload_with(&mut *conn, &key, id).await.unwrap();
+        assert_eq!(stored.refresh_token.as_deref(), Some("reconnected-refresh"));
+        assert_eq!(stored.access_token, None);
+
+        let rotated = Rotated { spent_refresh: "reconnected-refresh".into(), ..rotated };
+        store_rotated(&mut conn, &key, id, &rotated).await.unwrap();
+        let stored = reload_with(&mut *conn, &key, id).await.unwrap();
+        assert_eq!(stored.refresh_token.as_deref(), Some("late-refresh"));
+        assert_eq!(stored.access_token.as_deref(), Some("late-access"));
     }
 
     async fn wait_for_reauth(host: &Host, id: Uuid, expected: bool) -> Option<String> {

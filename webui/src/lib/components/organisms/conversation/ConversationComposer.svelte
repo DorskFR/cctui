@@ -68,7 +68,8 @@
 		compact = false,
 		voiceEnabled = false,
 		voiceLive = false,
-		onvoicelive
+		onvoicelive,
+		carriesDraft = () => false
 	}: {
 		session: SessionListItem;
 		archived: boolean;
@@ -93,20 +94,29 @@
 		voiceLive?: boolean;
 		/** Voice mode is available: show its toggle. */
 		onvoicelive?: () => void;
+		/** Moving from one session to the other keeps the typed draft, unless
+		 *  the other already has one. */
+		carriesDraft?: (from: string, to: string) => boolean;
 	} = $props();
 
 	let focused = $state(false);
 	// Folded: a tile's composer before it takes focus — the input line alone.
 	const folded = $derived(compact && !focused);
 
-	// Composer draft, persisted per session in localStorage. Initialized once (the
-	// drawer instance persists across session switches; matching the original we do
-	// NOT reload input on switch — only the history-nav cursor resets, below).
 	// svelte-ignore state_referenced_locally
-	let input = $state(drafts.get(composerKey(session.id)));
+	let draftId = session.id;
+	let input = $state(drafts.get(composerKey(draftId)));
 	let revealed = $state<ReadonlySet<string>>(new Set());
 	$effect(() => {
-		drafts.set(composerKey(session.id), input);
+		const id = session.id;
+		if (id !== draftId) {
+			const from = draftId;
+			draftId = id;
+			const own = drafts.get(composerKey(id));
+			if (!own && untrack(() => carriesDraft(from, id))) drafts.clear(composerKey(from));
+			else input = own;
+		}
+		drafts.set(composerKey(id), input);
 	});
 	let dictatedDraft = $state(false);
 	$effect(() => {

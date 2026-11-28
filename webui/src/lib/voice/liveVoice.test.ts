@@ -1,7 +1,9 @@
 import { flushSync } from 'svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DEFAULT_VOICE, type VoiceSettings } from '#lib/settings.svelte.ts';
+import type { ChunkerOptions } from './chunker';
 import {
+	BARGE_IN_MS,
 	ECHO_TAIL_MS,
 	LiveVoice,
 	REPLY_GRACE_MS,
@@ -59,7 +61,20 @@ function speak(h: { cb: VadCallbacks | null }, samples: number[]) {
 	h.cb?.onSpeechEnd();
 }
 
-function harness(opts: { vadFails?: boolean; bargeIn?: boolean; language?: 'auto' | 'en' | 'fr' } = {}) {
+/** Speech over a reply, held long enough at high confidence to barge in. */
+function barge(cb: VadCallbacks | null, sampleRate = 1000) {
+	cb?.onSpeechStart();
+	cb?.onFrame(new Float32Array((BARGE_IN_MS * sampleRate) / 1000).fill(0.2), 0.9);
+}
+
+function harness(
+	opts: {
+		vadFails?: boolean;
+		bargeIn?: boolean;
+		language?: 'auto' | 'en' | 'fr';
+		chunker?: Partial<ChunkerOptions>;
+	} = {}
+) {
 	let socket: FakeSocket | null = null;
 	let cb: VadCallbacks | null = null;
 	let idle: (idle: boolean) => void = () => {};
@@ -93,7 +108,14 @@ function harness(opts: { vadFails?: boolean; bargeIn?: boolean; language?: 'auto
 			bargeIn: opts.bargeIn ?? true,
 			language: opts.language ?? 'auto'
 		}),
-		chunker: { sampleRate: 1000, minPartMs: 100, pauseMs: 20, maxPartMs: 300, preRollMs: 50 }
+		chunker: {
+			sampleRate: 1000,
+			minPartMs: 100,
+			pauseMs: 20,
+			maxPartMs: 300,
+			preRollMs: 50,
+			...opts.chunker
+		}
 	});
 	const settle = async () => {
 		for (let i = 0; i < 4; i++) await Promise.resolve();
@@ -263,7 +285,7 @@ describe('LiveVoice', () => {
 		expect(h.player.end).toHaveBeenCalledWith('1-1');
 	});
 
-	it('barges in when speech starts during a reply', async () => {
+	it('barges in once speech over a reply is sustained', async () => {
 		const h = harness();
 		await h.voice.start('sess');
 		h.socket?.open();
@@ -271,13 +293,85 @@ describe('LiveVoice', () => {
 		h.socket?.frame({ type: 'state', state: 'speaking' });
 
 		h.cb?.onSpeechStart();
+		for (let i = 0; i < 5; i++) h.cb?.onFrame(new Float32Array(100), 0.9);
+		h.cb?.onFrame(new Float32Array(100), 0.5);
+		expect(h.player.stop).not.toHaveBeenCalled();
+		h.cb?.onFrame(new Float32Array(100), 0.9);
 		expect(h.player.stop).toHaveBeenCalled();
 		expect(h.socket?.texts().at(-1)).toEqual({ type: 'interrupt' });
+		h.cb?.onSpeechEnd();
 
 		h.socket?.frame({ type: 'state', state: 'listening' });
 		h.player.stop.mockClear();
 		h.cb?.onSpeechStart();
 		expect(h.player.stop).not.toHaveBeenCalled();
+	});
+
+	it('treats a short burst over a reply or its echo tail as echo: neither cut nor recorded', async () => {
+		vi.useFakeTimers();
+		try {
+			const h = harness();
+			await h.voice.start('sess');
+			h.socket?.open();
+			await h.settle();
+			h.socket?.frame({ type: 'state', state: 'speaking' });
+			h.idle(false);
+			h.player.playing = true;
+			const before = h.socket?.sent.length;
+
+			h.cb?.onSpeechStart();
+			for (let i = 0; i < 4; i++) h.cb?.onFrame(new Float32Array(100), 0.9);
+			h.cb?.onFrame(new Float32Array(100), 0.1);
+			for (let i = 0; i < 5; i++) h.cb?.onFrame(new Float32Array(100), 0.9);
+			h.cb?.onSpeechEnd();
+			expect(h.player.stop).not.toHaveBeenCalled();
+			expect(h.socket?.sent.length).toBe(before);
+
+			h.player.playing = false;
+			h.idle(true);
+			h.socket?.frame({ type: 'state', state: 'listening' });
+			speak(h, [0.5, 0.5, 0.5]);
+			expect(h.socket?.sent.length).toBe(before);
+
+			vi.advanceTimersByTime(ECHO_TAIL_MS + 1);
+			speak(h, [0.5, 0.5, 0.5]);
+			expect(h.socket?.sent.some((s) => s instanceof ArrayBuffer)).toBe(true);
+			expect(h.player.stop).not.toHaveBeenCalled();
+			expect(types(h.socket as FakeSocket)).not.toContain('interrupt');
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it('a barge-in keeps what the user said from its first word', async () => {
+		const h = harness({ chunker: { maxPartMs: 5000 } });
+		await h.voice.start('sess');
+		h.socket?.open();
+		await h.settle();
+		h.socket?.frame({ type: 'state', state: 'speaking' });
+		h.player.playing = true;
+		const before = h.socket?.sent.length ?? 0;
+
+		h.cb?.onFrame(new Float32Array(10).fill(0.1), 0.1);
+		h.cb?.onSpeechStart();
+		for (let i = 0; i < 7; i++) h.cb?.onFrame(new Float32Array(100).fill(0.2), 0.9);
+		h.cb?.onSpeechEnd();
+		const sent = h.socket?.sent.slice(before) ?? [];
+		expect(kinds(sent)).toEqual(['interrupt', 2 * 710]);
+		expect(new Int16Array(sent[1] as ArrayBuffer)[0]).toBe(Math.floor(0.1 * 0x7fff));
+	});
+
+	it('a muted mic never cuts a reply', async () => {
+		const h = harness();
+		await h.voice.start('sess');
+		h.socket?.open();
+		await h.settle();
+		h.socket?.frame({ type: 'state', state: 'speaking' });
+		h.voice.toggleMute();
+		barge(h.cb);
+		h.cb?.onSpeechEnd();
+		expect(h.player.stop).not.toHaveBeenCalled();
+		expect(types(h.socket as FakeSocket)).not.toContain('interrupt');
 	});
 
 	it('without barge-in, ignores what the mic hears over a reply and its echo tail', async () => {
@@ -316,7 +410,7 @@ describe('LiveVoice', () => {
 		h.socket?.frame({ type: 'speak_start', line_id: '1-1', text: 'One.' });
 		h.socket?.frame({ type: 'state', state: 'speaking' });
 
-		h.cb?.onSpeechStart();
+		barge(h.cb);
 		h.player.begin.mockClear();
 		h.socket?.frame({ type: 'speak_start', line_id: '1-2', text: 'Two.' });
 		expect(h.player.begin).not.toHaveBeenCalled();
@@ -380,7 +474,7 @@ describe('LiveVoice', () => {
 		line('1-3', 3);
 		expect(played).toEqual(['blob:1']);
 
-		(cb as unknown as VadCallbacks).onSpeechStart();
+		barge(cb, 16_000);
 		expect(player.playing).toBe(false);
 		line('1-4', 4);
 		audios[0].onended?.(new Event('ended'));
@@ -779,7 +873,7 @@ describe('LiveVoice shown state', () => {
 		reply(h, ['1-1', '1-2']);
 		expect(h.voice.status).toBe('speaking');
 		h.player.stop.mockImplementation(() => h.idle(true));
-		h.cb?.onSpeechStart();
+		barge(h.cb);
 		expect(h.player.stop).toHaveBeenCalled();
 		expect(h.socket?.texts().at(-1)).toEqual({ type: 'interrupt' });
 		expect(h.voice.status).toBe('listening');

@@ -552,6 +552,53 @@ async fn aged(pool: &PgPool, user: Uuid, state: &str, days: i32) -> Uuid {
 }
 
 #[tokio::test]
+async fn retention_keeps_deliveries_the_push_cap_still_counts() {
+    let Some(pool) = db("notify_retention_cap").await else { return };
+    let u = user(&pool).await;
+    let just_resolved: Uuid = sqlx::query_scalar(
+        "INSERT INTO notifications (user_id, kind, title, state, resolved_at) \
+         VALUES ($1, 'test', 't', 'resolved', now() - interval '5 minutes') RETURNING id",
+    )
+    .bind(u)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    let pushed = delivery(&pool, just_resolved, "ntfy", None, "retracted", None).await;
+
+    retention::purge(&pool, Some(u)).await.unwrap();
+
+    let kept: bool =
+        sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM notification_deliveries WHERE id = $1)")
+            .bind(pushed)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert!(kept, "a push inside the cap window survives the sweep");
+    drop_user(&pool, u).await;
+}
+
+#[tokio::test]
+async fn retention_deletes_acted_notices_past_seven_days() {
+    let Some(pool) = db("notify_retention_acted").await else { return };
+    let u = user(&pool).await;
+    let insert = "INSERT INTO notifications (user_id, kind, title, state, acted_at) \
+         VALUES ($1, 'test', 't', 'acted', now() - make_interval(days => $2)) RETURNING id";
+    let old: Uuid = sqlx::query_scalar(insert).bind(u).bind(8).fetch_one(&pool).await.unwrap();
+    let fresh: Uuid = sqlx::query_scalar(insert).bind(u).bind(1).fetch_one(&pool).await.unwrap();
+
+    retention::purge(&pool, Some(u)).await.unwrap();
+
+    let left: Vec<Uuid> = sqlx::query_scalar("SELECT id FROM notifications WHERE user_id = $1")
+        .bind(u)
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+    assert_eq!(left, vec![fresh]);
+    assert!(!left.contains(&old));
+    drop_user(&pool, u).await;
+}
+
+#[tokio::test]
 async fn retention_deletes_only_terminal_rows_past_seven_days() {
     let Some(pool) = db("notify_retention").await else { return };
     let u = user(&pool).await;

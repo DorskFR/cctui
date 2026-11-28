@@ -68,8 +68,12 @@ convention:
   sandbox the tenant runs inside. **Never** sourced from the task payload —
   whoever controls these controls the sandbox policy.
 - **tenant** — carried in the dispatch payload (`TASK_PAYLOAD_JSON`). The tenant
-  may select *what* runs (a prompt file, an identity) but never *the rules it
-  runs under*.
+  may select *what* runs (a prompt file) but never *the rules it runs under*.
+  `payload.identity` picks whose credentials the guard-proxy injects, so the
+  server lets only the dispatcher's owner (or the admin token) set it, and
+  refuses any other caller with `403 dispatch policy violated (identity)`. An
+  identity is 1-32 lowercase letters, digits or `-`; anything else is a `400`,
+  and the kube dispatcher and the guard-proxy refuse it too.
 
 ## The degenerate worker (parity with the thin image)
 
@@ -351,6 +355,17 @@ intercepted. Workspace binaries are withheld by Landlock, which grants no
 user namespace is needed. The guard needs the same pid namespace as the agent
 tree, because it reads `/proc/<pid>/mem` and duplicates the target's fd 2.
 
+Limits: an allowed exec continues with `SECCOMP_USER_NOTIF_FLAG_CONTINUE`, so
+the kernel reads the path and argv from the target's memory a second time,
+after the guard judged its own copy. Another task sharing that memory can
+rewrite them in between. In a step with exec rules (a `[disallowed]` phrase or
+a capability exec table), the guard denies an exec from a process with more
+than one thread, which closes the sibling-thread rewrite. A `vfork` child of a
+multi-threaded parent (`posix_spawn`, Go, Python `subprocess`), `CLONE_VM`
+tasks and shared mappings stay open: refusing them would refuse the harness's
+own spawns. Treat exec interception as a strong speed bump layered under
+Landlock and the egress proxy, not as a boundary on its own.
+
 Fail-closed by construction: a check that errors, cannot read the target, or
 takes longer than `--exec-timeout-ms` (default 5000) denies; once the guard
 dies every exec fails with `ENOSYS`. Start-up refuses (the worker exits) when
@@ -443,7 +458,10 @@ a buggy/malicious `policy.json` nor a compromised proxy can open the hole:
    lists them (or sets `default: allow`), these are refused with a `DENY
    (builtin)` log line:
    - `169.254.0.0/16` (link-local): AWS/GCP/Azure IMDS (`169.254.169.254`) and
-     the EKS Pod Identity Agent (`169.254.170.23`).
+     the EKS Pod Identity Agent (`169.254.170.23`); their IPv6 forms
+     `fd00:ec2::/32` (`fd00:ec2::254`, `fd00:ec2::23`) and `fe80::/10`.
+   - An IPv6 address carrying an IPv4 one (v4-mapped, v4-compatible, NAT64
+     `64:ff9b::/96`, 6to4 `2002::/16`) is judged as that IPv4.
    - `metadata.google.internal` / `metadata` (GCP metadata DNS names).
    - Any host in `GUARD_PROXY_DENY_HOSTS` (comma-separated) — in dev this carries
      the OpenBao host (`openbao.security.svc.cluster.local`). The sidecar reaches
@@ -490,13 +508,29 @@ The list is built from:
 The proxy's own Vault/OpenBao address is deliberately not derived: the sidecar
 reaches it directly, and the worker must not reach the credential backend. A
 Secrets Manager VPC endpoint used through SigV4 injection is covered as an
-injection host. Link-local (`169.254/16`, `fe80::/10`) stays denied whatever the
-list says. Each private allow or deny is logged once per host and reason
+injection host. Link-local (`169.254/16`, `fe80::/10`) and `fd00:ec2::/32` stay
+denied whatever the list says. Each private allow or deny is logged once per host and reason
 (`private egress ALLOW <host:port> (rule: <source>)` /
 `private egress DENY <host:port>: <reason>`).
 
 `GUARD_PROXY_ALLOW_PRIVATE_IPS=1` is the legacy blanket opt-out: every private
 destination is reachable without binding, and the proxy logs a warning at start.
+
+### Host binding
+
+Every request is bound to the host the policy allowed. A `CONNECT` tunnel's
+first client bytes must be a TLS `ClientHello` whose SNI is the `CONNECT` host
+(an IP-literal `CONNECT` may send none), a single plain HTTP request whose
+`Host` is that host, or another protocol (SSH), which is spliced as is. A
+first line that starts with token characters is read up to its newline (or a
+control byte): the tunnel waits as long as the client is silent, server bytes
+still flow, but a line left incomplete for 10 s closes the tunnel. Plain
+HTTP, in forward and transparent mode, is relayed one request per upstream
+connection: the head is rewritten to `Connection: close`, `Host` must match the
+request target, a request with ambiguous framing (both `Content-Length` and
+`Transfer-Encoding`, or a coding other than `chunked`) is refused, and any byte
+the client sends after the body closes the connection. Plain `ws://` through
+the proxy therefore never upgrades; `wss://` is unaffected.
 
 ### Sidecar mode (`transparent-external`)
 
@@ -707,6 +741,13 @@ skips a container that already mounts a volume of that name or already sets
 `AWS_CONTAINER_*`, and adds the pod volume only when none of that name exists,
 so the guard-proxy ends with one mount and one set of env.
 
+`cloudIdentity.env` is for the cloud SDK. Profile admission refuses a
+`GUARD_PROXY_*` name there (guard-proxy settings go in `spec.guard.env`, under
+its rules) and any per-dispatch name (`GUARD_PROXY_IDENTITY`,
+`GUARD_PROXY_HUMAN_GATE`, `CCTUI_DISPATCH_*`). The mutating webhook also drops a
+per-dispatch name from either profile env list, so none can shadow the
+dispatch's own value.
+
 The validating webhook, for a profile with `cloudIdentity`:
 
 - allows each named volume at pod level, present or not;
@@ -873,7 +914,7 @@ startup**: a partially applied credential config is worse than none.
 | `secret` | yes (except `headers`, ambient `sigv4`) | Secret ref of the credential to inject. |
 | `shape` | no (`bearer`) | `bearer`, `basic`/`git`, `bearer+cookie`/`cookie`, `sigv4`, or `headers`. |
 | `service` | no (`host`) | Label for logs and GitHub-App provider matching — never a lookup key. |
-| `path_prefix` | no | Scopes the rule to a request path; must start with `/`. The **longest** matching prefix wins, ties keep config order, and a request matching no rule forwards the agent's head unchanged. |
+| `path_prefix` | no | Scopes the rule to a request path; must start with `/`. It matches whole segments: `/org/pack` covers `/org/pack` and `/org/pack/…`, never `/org/pack-other`. A path with dot segments, `//`, a backslash or an encoded `/`, `.`, `\` or `%` matches no scoped rule. The **longest** matching prefix wins, ties keep config order, and a request matching no rule forwards the agent's head unchanged. |
 | `username` | no (`x-access-token`) | Basic-auth username. |
 | `cookie_name` / `cookie_secret` | `cookie_secret` required for `bearer+cookie` | Companion session cookie (default name `d`). |
 | `headers` | required for `headers` | Map of header name → secret ref (no `Authorization`). Replaces `secret`. |
@@ -1155,7 +1196,16 @@ entries and a structured entry's `summary`.
 The first declared outcome of a dispatch is the one delivered; later
 declarations still update the session row. A worker lost before declaring one
 still gets the failure body `{ task_id, status: "failed", error }` from the
-death detector. In the UI, only a session whose newest outcome is `result`
+death detector.
+
+A dispatch with a `reply_url` and no `notify_url` arms the death detector on
+`reply_url`: a worker lost before its exit trap (OOM kill, eviction, a pod that
+never started) still resumes the caller with the failure body. That target
+never receives a declared outcome, which stays with the worker's own
+`REPLY_URL` callback, and a 4xx from it (other than 408 and 429) ends the
+delivery, since the worker may already have consumed it. Like `notify_url`, it
+must pass the outbound URL guard (`https`, public address); a `reply_url` that
+fails the guard leaves the dispatch with the worker's trap only. In the UI, only a session whose newest outcome is `result`
 sits in Completed, and the headline shows on its row and in its drawer.
 
 ## Session timer (`CctuiTimer`)
@@ -1414,6 +1464,13 @@ or session id: nothing calls it back, the run reports to the dispatch that
 created it. While that Job is still suspended, `deduplicated` carries
 `queue_position` too. `queue_position` counts the profile's suspended Jobs
 oldest first, the order they are resumed in.
+
+A `502` means nothing was placed: the dispatcher was offline or refused the
+spec. A `504` means the dispatcher took the dispatch but did not answer within
+90 s or dropped its connection first: the worker may still start, the use stays
+counted against the dispatch policy caps, and the dispatch record stays
+`pending`. Retry with the same `session_id`, which joins that run if it
+started (`deduplicated`) and starts it otherwise.
 
 ## Polling for the result
 

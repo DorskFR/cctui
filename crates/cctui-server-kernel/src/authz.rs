@@ -25,7 +25,7 @@ use uuid::Uuid;
 use cctui_proto::api::routes;
 use cctui_proto::features::FeatureSet;
 
-use crate::auth::{AuthContext, Scope};
+use crate::auth::{AuthContext, KeyKind, Scope};
 
 /// How identity is proven for a route.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -95,7 +95,8 @@ pub enum Authz {
     Public,
     /// Any valid principal. Self-scoped list/filter endpoints keep their SQL filter.
     Authenticated,
-    /// A human principal: a user or admin token with `Read`, never a machine key.
+    /// A human principal: a user or admin token with `Read`, never a machine,
+    /// dispatcher, worker or plugin key.
     Human,
     /// A capability gate, no object: `ctx.requires(scope)`.
     Scope(Scope),
@@ -123,6 +124,7 @@ impl Authz {
     async fn enforce(
         &self,
         ctx: &AuthContext,
+        kind: &KeyKind,
         id: Option<String>,
         pool: Option<&PgPool>,
     ) -> Result<(), StatusCode> {
@@ -130,7 +132,7 @@ impl Authz {
             // `/health` is the only genuinely public route and lives outside this layer.
             Self::Public | Self::Authenticated => Ok(()),
             Self::Human => {
-                if ctx.machine_id.is_none() && ctx.has(Scope::Read) {
+                if crate::auth::human_reader(ctx, kind) {
                     Ok(())
                 } else {
                     Err(StatusCode::FORBIDDEN)
@@ -530,6 +532,8 @@ async fn enforce_route(
     next: Next,
 ) -> Result<Response, StatusCode> {
     let ctx = request.extensions().get::<AuthContext>().cloned().ok_or(StatusCode::UNAUTHORIZED)?;
+    let kind =
+        request.extensions().get::<KeyKind>().cloned().unwrap_or_else(|| KeyKind::inferred(&ctx));
 
     let id = match policy.id_from() {
         Some(id_from) => resolve_id(&mut request, id_from).await,
@@ -547,7 +551,7 @@ async fn enforce_route(
         _ => None,
     };
 
-    policy.enforce(&ctx, id, pool.as_ref()).await?;
+    policy.enforce(&ctx, &kind, id, pool.as_ref()).await?;
     Ok(next.run(request).await)
 }
 
@@ -623,6 +627,42 @@ mod tests {
         assert_eq!(status_of(allowed, "/r").await, StatusCode::OK);
         let admin = one_route_app(Authz::Human, Some(admin()));
         assert_eq!(status_of(admin, "/r").await, StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn human_gate_rejects_dispatcher_worker_and_plugin_keys() {
+        use axum::body::Body;
+        use tower::ServiceExt;
+        let app = |kind: KeyKind| {
+            let route = axum::routing::get(|| async { "ok" })
+                .route_layer(middleware::from_fn_with_state(Arc::new(Authz::Human), enforce_route));
+            Router::new().route("/r", route).layer(middleware::from_fn(
+                move |mut req: Request, next: Next| {
+                    let kind = kind.clone();
+                    async move {
+                        req.extensions_mut().insert(user(Uuid::new_v4()));
+                        req.extensions_mut().insert(kind);
+                        next.run(req).await
+                    }
+                },
+            ))
+        };
+        let status = |kind: KeyKind| async move {
+            app(kind)
+                .oneshot(Request::builder().uri("/r").body(Body::empty()).unwrap())
+                .await
+                .unwrap()
+                .status()
+        };
+        for kind in [
+            KeyKind::Dispatcher,
+            KeyKind::Worker,
+            KeyKind::Machine,
+            KeyKind::Plugin("ghreview".to_owned()),
+        ] {
+            assert_eq!(status(kind.clone()).await, StatusCode::FORBIDDEN, "{kind:?}");
+        }
+        assert_eq!(status(KeyKind::Human).await, StatusCode::OK);
     }
 
     /// Admins short-circuit for every kind without touching the (invalid) pool.

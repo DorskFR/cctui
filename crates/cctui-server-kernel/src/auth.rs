@@ -11,8 +11,63 @@ use axum::response::Response;
 use sqlx::PgPool;
 use uuid::Uuid;
 
-/// A resolved principal and, for a dispatched worker's key, its session.
-type Resolved = (AuthContext, Option<String>);
+/// A resolved principal, its credential kind and, for a dispatched worker's
+/// key, its session.
+#[derive(Debug, Clone)]
+pub struct Principal {
+    pub ctx: AuthContext,
+    pub bound: Option<String>,
+    pub kind: KeyKind,
+}
+
+/// What sort of credential authenticated a request. Inserted as a request
+/// extension next to [`AuthContext`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum KeyKind {
+    /// A person's key: user, admin, passkey or device sign-in.
+    Human,
+    Machine,
+    Dispatcher,
+    /// A dispatched worker's session-bound key.
+    Worker,
+    /// A host-minted plugin token, confined to that plugin's backend proxy.
+    Plugin(String),
+}
+
+impl KeyKind {
+    #[must_use]
+    pub const fn is_human(&self) -> bool {
+        matches!(self, Self::Human)
+    }
+
+    /// The kind a bare [`AuthContext`] implies, for callers that built one
+    /// without resolving a key.
+    #[must_use]
+    pub const fn inferred(ctx: &AuthContext) -> Self {
+        if ctx.machine_id.is_some() { Self::Machine } else { Self::Human }
+    }
+
+    fn classify(kind: &str, label: Option<&str>, machine: bool, dispatcher: bool) -> Self {
+        match kind {
+            "ephemeral" => Self::Worker,
+            _ if dispatcher || kind == "dispatcher" => Self::Dispatcher,
+            "plugin" => Self::Plugin(plugin_of_label(label).unwrap_or_default().to_owned()),
+            _ if machine || kind == "machine" => Self::Machine,
+            _ => Self::Human,
+        }
+    }
+}
+
+/// Whether a principal is a person holding `read`: the gate for human-only
+/// routes and the browser and voice sockets.
+#[must_use]
+pub fn human_reader(ctx: &AuthContext, kind: &KeyKind) -> bool {
+    kind.is_human() && ctx.machine_id.is_none() && ctx.has(Scope::Read)
+}
+
+fn plugin_of_label(label: Option<&str>) -> Option<&str> {
+    label?.strip_prefix("plugin:")
+}
 
 /// Cache TTL for positive auth lookups. Bounds revocation latency when a
 /// peer replica misses the purge broadcast.
@@ -147,8 +202,7 @@ impl AuthContext {
 
 #[derive(Clone)]
 struct CacheEntry {
-    ctx: AuthContext,
-    bound: Option<String>,
+    principal: Principal,
     expires: Instant,
 }
 
@@ -202,6 +256,21 @@ pub fn worker_route<'a>(method: &http::Method, path: &'a str) -> WorkerRoute<'a>
     }
 }
 
+/// The plugin whose backend proxy `path` addresses, if it is one.
+#[must_use]
+pub fn plugin_backend_route(path: &str) -> Option<&str> {
+    match path.strip_prefix('/')?.split('/').collect::<Vec<_>>().as_slice() {
+        ["api", "v1", "plugins", id, "backend", rest @ ..]
+            if !id.is_empty()
+                && rest.first().is_some_and(|s| !s.is_empty())
+                && !id.contains('%') =>
+        {
+            Some(id)
+        }
+        _ => None,
+    }
+}
+
 /// Whether `id` was spawned, directly or further down, by session `root`.
 pub async fn session_descends_from(
     pool: &PgPool,
@@ -222,8 +291,9 @@ pub async fn session_descends_from(
     .await
 }
 
-/// Confines a dispatched worker's key to its own session's daemon routes.
-/// Every other credential passes through untouched.
+/// Confines a dispatched worker's key to its own session's daemon routes and a
+/// plugin host token to its plugin's backend proxy. Every other credential
+/// passes through untouched.
 pub async fn worker_key_gate(
     axum::extract::State(config): axum::extract::State<AuthConfig>,
     mut request: Request,
@@ -236,7 +306,17 @@ pub async fn worker_key_gate(
     let Some(token) = bearer_or_cookie(request.headers()) else {
         return Ok(next.run(request).await);
     };
-    let Some((_, Some(bound))) = config.validate_bound(&token).await else {
+    let Some(principal) = config.validate_principal(&token).await else {
+        return Ok(next.run(request).await);
+    };
+    if let KeyKind::Plugin(plugin) = &principal.kind {
+        return if plugin_backend_route(&path).is_some_and(|id| id == plugin) {
+            Ok(next.run(request).await)
+        } else {
+            Err(StatusCode::FORBIDDEN)
+        };
+    }
+    let Some(bound) = principal.bound else {
         return Ok(next.run(request).await);
     };
     let allowed = match worker_route(request.method(), &path) {
@@ -475,7 +555,7 @@ impl AuthConfig {
 
     #[cfg(any(test, feature = "test-support"))]
     fn cache_get(&self, hash: &str) -> Option<AuthContext> {
-        self.cache_entry(hash).map(|entry| entry.ctx)
+        self.cache_entry(hash).map(|entry| entry.principal.ctx)
     }
 
     fn cache_entry(&self, hash: &str) -> Option<CacheEntry> {
@@ -491,7 +571,13 @@ impl AuthConfig {
 
     #[cfg(any(test, feature = "test-support"))]
     pub fn seed_cache(&self, hash: &str, ctx: AuthContext) {
-        self.cache_put(hash.to_owned(), ctx, self.epoch.load(Ordering::SeqCst));
+        let kind = KeyKind::inferred(&ctx);
+        self.seed_principal(hash, Principal { ctx, bound: None, kind });
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn seed_principal(&self, hash: &str, principal: Principal) {
+        self.cache_put(hash.to_owned(), principal, self.epoch.load(Ordering::SeqCst));
     }
 
     #[cfg(any(test, feature = "test-support"))]
@@ -500,17 +586,12 @@ impl AuthConfig {
         self.cache_get(hash).is_some()
     }
 
-    #[cfg(any(test, feature = "test-support"))]
-    fn cache_put(&self, hash: String, ctx: AuthContext, epoch: u64) {
-        self.cache_put_bound(hash, ctx, None, epoch);
-    }
-
-    /// Cache `ctx` unless a purge landed since `epoch` was read.
-    fn cache_put_bound(&self, hash: String, ctx: AuthContext, bound: Option<String>, epoch: u64) {
+    /// Cache `principal` unless a purge landed since `epoch` was read.
+    fn cache_put(&self, hash: String, principal: Principal, epoch: u64) {
         if let Ok(mut cache) = self.cache.lock()
             && self.epoch.load(Ordering::SeqCst) == epoch
         {
-            cache.insert(hash, CacheEntry { ctx, bound, expires: Instant::now() + CACHE_TTL });
+            cache.insert(hash, CacheEntry { principal, expires: Instant::now() + CACHE_TTL });
         }
     }
 
@@ -529,14 +610,19 @@ impl AuthConfig {
     }
 
     pub async fn validate(&self, token: &str) -> Option<AuthContext> {
-        self.validate_bound(token).await.map(|(ctx, _)| ctx)
+        self.validate_principal(token).await.map(|p| p.ctx)
     }
 
     /// [`Self::validate`], plus the session a dispatched worker's key is bound to.
     pub async fn validate_bound(&self, token: &str) -> Option<(AuthContext, Option<String>)> {
+        self.validate_principal(token).await.map(|p| (p.ctx, p.bound))
+    }
+
+    /// [`Self::validate`], plus the credential's kind and bound session.
+    pub async fn validate_principal(&self, token: &str) -> Option<Principal> {
         let hash = sha256_hex(token);
         if let Some(entry) = self.cache_entry(&hash) {
-            return Some((entry.ctx, entry.bound));
+            return Some(entry.principal);
         }
 
         let epoch = self.epoch.load(Ordering::SeqCst);
@@ -545,9 +631,9 @@ impl AuthConfig {
             resolved = self.reseed_env_admin(&hash).await;
         }
         match resolved {
-            Ok(Some((ctx, bound))) => {
-                self.cache_put_bound(hash, ctx.clone(), bound.clone(), epoch);
-                Some((ctx, bound))
+            Ok(Some(principal)) => {
+                self.cache_put(hash, principal.clone(), epoch);
+                Some(principal)
             }
             Ok(None) => None,
             // Only here is revocation state unknowable, so only here may an env
@@ -561,7 +647,7 @@ impl AuthConfig {
                         machine_id: None,
                         scopes: Scope::all().into_iter().collect(),
                     };
-                    (ctx, None)
+                    Principal { ctx, bound: None, kind: KeyKind::Human }
                 })
             }
         }
@@ -569,7 +655,7 @@ impl AuthConfig {
 
     /// An env admin token with no `auth_keys` row at all was never seeded (DB
     /// unavailable at startup): seed it and retry. A revoked row is final.
-    async fn reseed_env_admin(&self, hash: &str) -> Result<Option<Resolved>, sqlx::Error> {
+    async fn reseed_env_admin(&self, hash: &str) -> Result<Option<Principal>, sqlx::Error> {
         let seeded: bool =
             sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM auth_keys WHERE key_hash = $1)")
                 .bind(hash)
@@ -584,11 +670,11 @@ impl AuthConfig {
 
     /// The unified `auth_keys` table first, then the legacy tables so a
     /// credential that hasn't been backfilled still resolves.
-    async fn resolve(&self, hash: &str) -> Result<Option<Resolved>, sqlx::Error> {
+    async fn resolve(&self, hash: &str) -> Result<Option<Principal>, sqlx::Error> {
         if let Some(resolved) = self.validate_api_key(hash).await? {
             return Ok(Some(resolved));
         }
-        Ok(self.validate_legacy(hash).await?.map(|ctx| (ctx, None)))
+        self.validate_legacy(hash).await
     }
 
     /// Resolve a token hash against the unified `auth_keys` table, gating on the owning user
@@ -597,17 +683,21 @@ impl AuthConfig {
     ///
     /// Scopes = `key_acls` ∩ `user_acls`, narrowed to [`worker_key_scopes`] for a
     /// session-bound worker key.
-    async fn validate_api_key(&self, hash: &str) -> Result<Option<Resolved>, sqlx::Error> {
+    async fn validate_api_key(&self, hash: &str) -> Result<Option<Principal>, sqlx::Error> {
         #[derive(sqlx::FromRow)]
         struct KeyRow {
             id: Uuid,
             user_id: Uuid,
             machine_id: Option<Uuid>,
             bound: Option<String>,
+            kind: String,
+            label: Option<String>,
+            dispatcher: bool,
         }
         let row = sqlx::query_as::<_, KeyRow>(
             "SELECT k.id, k.user_id, k.machine_id, \
-             CASE WHEN k.kind = 'ephemeral' THEN k.session_id END AS bound \
+             CASE WHEN k.kind = 'ephemeral' THEN k.session_id END AS bound, \
+             k.kind, k.label, k.dispatcher_id IS NOT NULL AS dispatcher \
              FROM auth_keys k \
              JOIN users u ON u.id = k.user_id \
              WHERE k.key_hash = $1 \
@@ -618,9 +708,11 @@ impl AuthConfig {
         .bind(hash)
         .fetch_optional(&self.pool)
         .await?;
-        let Some(KeyRow { id: key_id, user_id, machine_id, bound }) = row else {
+        let Some(KeyRow { id: key_id, user_id, machine_id, bound, kind, label, dispatcher }) = row
+        else {
             return Ok(None);
         };
+        let kind = KeyKind::classify(&kind, label.as_deref(), machine_id.is_some(), dispatcher);
         let mut scopes = self.effective_scopes(key_id, user_id).await?;
         if bound.is_some() {
             scopes = worker_key_scopes(&scopes);
@@ -629,14 +721,15 @@ impl AuthConfig {
         if let Some(mid) = machine_id {
             self.touch_machine(mid);
         }
-        Ok(Some((AuthContext { user_id, key_id, machine_id, scopes }, bound)))
+        let ctx = AuthContext { user_id, key_id, machine_id, scopes };
+        Ok(Some(Principal { ctx, bound, kind }))
     }
 
     /// Legacy resolution (`machines.key_hash`, `users.key_hash`, `user_tokens`).
     ///
     /// Synthesizes a key identity from the legacy row and scopes from the owner's ceiling so
     /// a not-yet-backfilled token behaves identically.
-    async fn validate_legacy(&self, hash: &str) -> Result<Option<AuthContext>, sqlx::Error> {
+    async fn validate_legacy(&self, hash: &str) -> Result<Option<Principal>, sqlx::Error> {
         // Machine key.
         let row: Option<(Uuid, Uuid)> = sqlx::query_as(
             "SELECT m.id, m.user_id FROM machines m \
@@ -650,12 +743,9 @@ impl AuthConfig {
         if let Some((machine_id, user_id)) = row {
             let scopes = crate::store::acls::user_ceiling(&self.pool, user_id).await?;
             self.touch_machine(machine_id);
-            return Ok(Some(AuthContext {
-                user_id,
-                key_id: machine_id,
-                machine_id: Some(machine_id),
-                scopes,
-            }));
+            let ctx =
+                AuthContext { user_id, key_id: machine_id, machine_id: Some(machine_id), scopes };
+            return Ok(Some(Principal { ctx, bound: None, kind: KeyKind::Machine }));
         }
 
         // Legacy users.key_hash.
@@ -668,12 +758,13 @@ impl AuthConfig {
         .await?;
         if let Some((user_id,)) = row {
             let scopes = crate::store::acls::user_ceiling(&self.pool, user_id).await?;
-            return Ok(Some(AuthContext { user_id, key_id: user_id, machine_id: None, scopes }));
+            let ctx = AuthContext { user_id, key_id: user_id, machine_id: None, scopes };
+            return Ok(Some(Principal { ctx, bound: None, kind: KeyKind::Human }));
         }
 
         // user_tokens.
-        let row: Option<(Uuid, Uuid)> = sqlx::query_as(
-            "SELECT t.id, t.user_id FROM user_tokens t \
+        let row: Option<(Uuid, Uuid, Option<String>)> = sqlx::query_as(
+            "SELECT t.id, t.user_id, t.label FROM user_tokens t \
              JOIN users u ON u.id = t.user_id \
              WHERE t.token_hash = $1 \
              AND t.revoked_at IS NULL \
@@ -683,9 +774,13 @@ impl AuthConfig {
         .bind(hash)
         .fetch_optional(&self.pool)
         .await?;
-        if let Some((token_id, user_id)) = row {
-            let scopes = crate::store::acls::user_ceiling(&self.pool, user_id).await?;
-            return Ok(Some(AuthContext { user_id, key_id: token_id, machine_id: None, scopes }));
+        if let Some((token_id, user_id, label)) = row {
+            let kind = plugin_of_label(label.as_deref())
+                .map_or(KeyKind::Human, |id| KeyKind::Plugin(id.to_owned()));
+            let ceiling = crate::store::acls::user_ceiling(&self.pool, user_id).await?;
+            let scopes = if kind.is_human() { ceiling } else { worker_key_scopes(&ceiling) };
+            let ctx = AuthContext { user_id, key_id: token_id, machine_id: None, scopes };
+            return Ok(Some(Principal { ctx, bound: None, kind }));
         }
 
         Ok(None)
@@ -773,7 +868,7 @@ pub async fn is_human_credential(pool: &PgPool, ctx: &AuthContext) -> Result<boo
     let non_human: bool = sqlx::query_scalar(
         "SELECT EXISTS (SELECT 1 FROM auth_keys WHERE id = $1 \
            AND (dispatcher_id IS NOT NULL OR machine_id IS NOT NULL \
-                OR kind IN ('dispatcher', 'machine', 'ephemeral')))",
+                OR kind IN ('dispatcher', 'machine', 'ephemeral', 'plugin')))",
     )
     .bind(ctx.key_id)
     .fetch_one(pool)
@@ -794,10 +889,11 @@ pub async fn auth_middleware(request: Request, next: Next) -> Result<Response, S
     // token; the cookie keeps it out of URLs and JS-readable storage.
     let token = bearer_or_cookie(request.headers()).ok_or(StatusCode::UNAUTHORIZED)?;
 
-    let ctx = auth_config.validate(&token).await.ok_or(StatusCode::UNAUTHORIZED)?;
+    let principal = auth_config.validate_principal(&token).await.ok_or(StatusCode::UNAUTHORIZED)?;
 
     let mut request = request;
-    request.extensions_mut().insert(ctx);
+    request.extensions_mut().insert(principal.ctx);
+    request.extensions_mut().insert(principal.kind);
     Ok(next.run(request).await)
 }
 
@@ -1263,7 +1359,7 @@ mod tests {
             machine_id: None,
             scopes: std::iter::once(Scope::Read).collect(),
         };
-        cfg.cache_put("h".into(), ctx, 0);
+        cfg.cache_put("h".into(), human(ctx), 0);
         assert!(cfg.cache_get("h").is_some());
         cfg.purge("h");
         assert!(cfg.cache_get("h").is_none());
@@ -1309,8 +1405,8 @@ mod tests {
         let cfg = AuthConfig::new(vec![], pool);
         let relay = Arc::new(RecordingRelay::default());
         cfg.set_peers(relay.clone());
-        cfg.cache_put("a".into(), read_ctx(), 0);
-        cfg.cache_put("b".into(), read_ctx(), 0);
+        cfg.cache_put("a".into(), human(read_ctx()), 0);
+        cfg.cache_put("b".into(), human(read_ctx()), 0);
 
         cfg.purge_local(&CachePurge::Key { key_hash: "a".into() });
         assert!(cfg.cache_get("a").is_none());
@@ -1327,7 +1423,7 @@ mod tests {
         let cfg = AuthConfig::new(vec![], pool);
         let epoch = cfg.epoch.load(Ordering::SeqCst);
         cfg.purge_local(&CachePurge::Key { key_hash: "h".into() });
-        cfg.cache_put("h".into(), read_ctx(), epoch);
+        cfg.cache_put("h".into(), human(read_ctx()), epoch);
         assert!(cfg.cache_get("h").is_none());
     }
 
@@ -1367,6 +1463,9 @@ mod tests {
             .route("/api/v1/sessions/{id}/messages", axum::routing::get(bound))
             .route("/api/v1/sessions", axum::routing::get(bound))
             .route("/api/v1/daemon/sessions/{id}/limits", axum::routing::get(bound))
+            .route("/api/v1/plugins/{id}/backend/{*path}", axum::routing::get(bound))
+            .route("/api/v1/ws", axum::routing::get(bound))
+            .route("/metrics", axum::routing::get(bound))
             .layer(axum::middleware::from_fn_with_state(config, worker_key_gate))
     }
 
@@ -1388,6 +1487,178 @@ mod tests {
             machine_id: Some(Uuid::new_v4()),
             scopes: Scope::all().into_iter().collect(),
         }
+    }
+
+    fn human(ctx: AuthContext) -> Principal {
+        Principal { ctx, bound: None, kind: KeyKind::Human }
+    }
+
+    fn worker_principal(bound: &str) -> Principal {
+        Principal { ctx: full_ctx(), bound: Some(bound.to_owned()), kind: KeyKind::Worker }
+    }
+
+    fn plugin_principal(plugin: &str) -> Principal {
+        let mut ctx = full_ctx();
+        ctx.machine_id = None;
+        ctx.scopes = std::iter::once(Scope::Read).collect();
+        Principal { ctx, bound: None, kind: KeyKind::Plugin(plugin.to_owned()) }
+    }
+
+    #[test]
+    fn plugin_backend_route_names_only_the_proxy_prefix() {
+        assert_eq!(
+            plugin_backend_route("/api/v1/plugins/ghreview/backend/v1/status"),
+            Some("ghreview")
+        );
+        assert_eq!(
+            plugin_backend_route("/api/v1/plugins/ghreview/backend/x/%2F/y"),
+            Some("ghreview")
+        );
+        for path in [
+            "/api/v1/plugins/ghreview/backend",
+            "/api/v1/plugins/ghreview/backend/",
+            "/api/v1/plugins/ghreview/backend//x",
+            "/api/v1/plugins/ghreview",
+            "/api/v1/plugins",
+            "/api/v1/plugins//backend/x",
+            "/api/v1/plugins/%67hreview/backend/x",
+            "/api/v1/admin/plugins/ghreview/backend/x",
+            "/api/v1/sessions",
+            "/metrics",
+        ] {
+            assert_eq!(plugin_backend_route(path), None, "{path}");
+        }
+    }
+
+    #[test]
+    fn a_key_kind_is_classified_from_its_row() {
+        assert_eq!(KeyKind::classify("ephemeral", None, true, false), KeyKind::Worker);
+        assert_eq!(KeyKind::classify("dispatcher", None, false, false), KeyKind::Dispatcher);
+        assert_eq!(KeyKind::classify("user", None, false, true), KeyKind::Dispatcher);
+        assert_eq!(KeyKind::classify("machine", None, false, false), KeyKind::Machine);
+        assert_eq!(KeyKind::classify("user", None, true, false), KeyKind::Machine);
+        assert_eq!(
+            KeyKind::classify("plugin", Some("plugin:ghreview"), false, false),
+            KeyKind::Plugin("ghreview".to_owned())
+        );
+        assert_eq!(
+            KeyKind::classify("plugin", Some("renamed"), false, false),
+            KeyKind::Plugin(String::new()),
+            "a plugin key whose label names no plugin reaches no backend"
+        );
+        for human in ["user", "admin", "passkey", "session"] {
+            assert_eq!(KeyKind::classify(human, None, false, false), KeyKind::Human, "{human}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_plugin_token_reaches_only_its_own_backend() {
+        let pool = PgPool::connect_lazy("postgres://invalid").unwrap();
+        pool.close().await;
+        let config = AuthConfig::new(Vec::new(), pool);
+        config.seed_principal(&sha256_hex("plugin-key"), plugin_principal("ghreview"));
+        config.seed_principal(&sha256_hex("orphan-key"), plugin_principal(""));
+        let app = gated_app(config);
+        let plugin = ("Authorization", "Bearer plugin-key");
+
+        let own = "/api/v1/plugins/ghreview/backend/v1/status";
+        assert_eq!(gated_status(&app, "GET", own, plugin).await, 200);
+        let cookie = ("Cookie", "cctui_auth=plugin-key");
+        assert_eq!(gated_status(&app, "GET", own, cookie).await, 200);
+        for path in [
+            "/api/v1/plugins/other/backend/v1/status",
+            "/api/v1/sessions",
+            "/api/v1/sessions/s-1/messages",
+            "/api/v1/daemon/sessions/s-1/limits",
+            "/api/v1/ws",
+            "/metrics",
+        ] {
+            assert_eq!(gated_status(&app, "GET", path, plugin).await, 403, "{path}");
+            assert_eq!(gated_status(&app, "GET", path, cookie).await, 403, "{path}");
+        }
+        assert_eq!(gated_status(&app, "POST", "/api/v1/sessions/spawn", plugin).await, 403);
+
+        let orphan = ("Authorization", "Bearer orphan-key");
+        assert_eq!(gated_status(&app, "GET", own, orphan).await, 403);
+    }
+
+    #[tokio::test]
+    async fn the_middleware_hands_routes_the_key_kind() {
+        use tower::ServiceExt;
+        let pool = PgPool::connect_lazy("postgres://invalid").unwrap();
+        pool.close().await;
+        let config = AuthConfig::new(Vec::new(), pool);
+        config.seed_principal(&sha256_hex("plugin-key"), plugin_principal("ghreview"));
+        let app = axum::Router::new()
+            .route(
+                "/kind",
+                axum::routing::get(|axum::Extension(kind): axum::Extension<KeyKind>| async move {
+                    format!("{kind:?}")
+                }),
+            )
+            .layer(axum::middleware::from_fn(auth_middleware))
+            .layer(axum::Extension(config));
+        let request = Request::builder()
+            .uri("/kind")
+            .header("Authorization", "Bearer plugin-key")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let response = app.oneshot(request).await.unwrap();
+        let body = axum::body::to_bytes(response.into_body(), 64).await.unwrap();
+        assert_eq!(body.as_ref(), br#"Plugin("ghreview")"#);
+    }
+
+    #[tokio::test]
+    async fn plugin_and_dispatcher_keys_resolve_as_non_human() {
+        let name = "plugin_and_dispatcher_keys_resolve_as_non_human";
+        let Some(url) = crate::test_support::db_url(name) else { return };
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&url)
+            .await
+            .expect("connect test db");
+        let uid = Uuid::new_v4();
+        sqlx::query("INSERT INTO users (id, name, key_hash) VALUES ($1, $2, $3)")
+            .bind(uid)
+            .bind(format!("key-kind-{uid}"))
+            .bind(format!("kh-{uid}"))
+            .execute(&pool)
+            .await
+            .unwrap();
+        let mut conn = pool.acquire().await.unwrap();
+        crate::store::acls::set_user_ceiling(&mut conn, uid, &Scope::all()).await.unwrap();
+        drop(conn);
+        let config = AuthConfig::new(Vec::new(), pool.clone());
+        let mut kinds = Vec::new();
+        for (kind, label) in
+            [("plugin", Some("plugin:ghreview")), ("dispatcher", None), ("user", None)]
+        {
+            let token = format!("{kind}-{uid}");
+            let key = NewKey {
+                user_id: uid,
+                key_hash: &sha256_hex(&token),
+                key_preview: None,
+                label,
+                kind,
+                machine_id: None,
+                dispatcher_id: None,
+                expires_at: None,
+                passkey_id: None,
+            };
+            register_key(&pool, key, [Scope::Read]).await.unwrap();
+            let principal = config.validate_principal(&token).await.expect("the key resolves");
+            let human = is_human_credential(&pool, &principal.ctx).await.unwrap();
+            kinds.push((principal.kind, human));
+        }
+        assert_eq!(
+            kinds,
+            [
+                (KeyKind::Plugin("ghreview".to_owned()), false),
+                (KeyKind::Dispatcher, false),
+                (KeyKind::Human, true),
+            ]
+        );
+        sqlx::query("DELETE FROM users WHERE id = $1").bind(uid).execute(&pool).await.unwrap();
     }
 
     #[test]
@@ -1446,8 +1717,8 @@ mod tests {
         let pool = PgPool::connect_lazy("postgres://invalid").unwrap();
         pool.close().await;
         let config = AuthConfig::new(Vec::new(), pool);
-        config.cache_put_bound(sha256_hex("worker-key"), full_ctx(), Some("s-own".into()), 0);
-        config.cache_put_bound(sha256_hex("user-key"), full_ctx(), None, 0);
+        config.seed_principal(&sha256_hex("worker-key"), worker_principal("s-own"));
+        config.seed_cache(&sha256_hex("user-key"), full_ctx());
         let app = gated_app(config);
         let worker = ("Authorization", "Bearer worker-key");
 
@@ -1472,7 +1743,7 @@ mod tests {
         let pool = PgPool::connect_lazy("postgres://invalid").unwrap();
         pool.close().await;
         let config = AuthConfig::new(Vec::new(), pool);
-        config.cache_put_bound(sha256_hex("worker-key"), full_ctx(), Some("s-own".into()), 0);
+        config.seed_principal(&sha256_hex("worker-key"), worker_principal("s-own"));
         let request = Request::builder()
             .uri("/api/v1/sessions")
             .header("Authorization", "Bearer worker-key")

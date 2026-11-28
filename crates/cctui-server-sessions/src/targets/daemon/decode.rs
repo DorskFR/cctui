@@ -114,10 +114,14 @@ fn parse_lenient(mut value: Value) -> Option<DaemonFrameUp> {
 
 /// `event/<kind>` for an `Event`, else the frame's own `type`.
 fn frame_kind(value: &Value) -> String {
-    let tag = |v: &Value| v.get("type").and_then(Value::as_str).unwrap_or("?").to_owned();
+    let field = |v: &Value, key: &str| v.get(key).and_then(Value::as_str).map(str::to_owned);
+    let tag = field(value, "type").unwrap_or_else(|| "?".to_owned());
     match value.get("event") {
-        Some(event) if tag(value) == "event" => format!("event/{}", tag(event)),
-        _ => tag(value),
+        Some(event) if tag == "event" => {
+            let inner = field(event, "kind").or_else(|| field(event, "type"));
+            format!("event/{}", inner.as_deref().unwrap_or("?"))
+        }
+        _ => tag,
     }
 }
 
@@ -368,7 +372,7 @@ mod tests {
         let mut frame =
             serde_json::to_value(DaemonFrameUp::Batch { frames: vec![event("s0"), event("s1")] })
                 .unwrap();
-        let unknown = json!({"type":"event","adapter_id":"a","event":{"type":"from_the_future"}});
+        let unknown = json!({"type":"event","adapter_id":"a","event":{"kind":"from_the_future"}});
         frame["frames"].as_array_mut().unwrap().insert(1, unknown);
         let compressed = cctui_proto::compress::zstd_compress(&serde_json::to_vec(&frame).unwrap());
         let leaves = expand_batch(decode_binary_frame(&compressed).expect("decodes"));
@@ -389,7 +393,7 @@ mod tests {
 
     #[test]
     fn a_lone_unknown_frame_or_garbage_is_dropped() {
-        let lone = json!({"type":"event","adapter_id":"a","event":{"type":"from_the_future"}});
+        let lone = json!({"type":"event","adapter_id":"a","event":{"kind":"from_the_future"}});
         assert!(parse_frame(&serde_json::to_vec(&lone).unwrap()).is_none());
         assert!(parse_frame(b"not json").is_none());
     }
@@ -403,7 +407,10 @@ mod tests {
 
     #[test]
     fn frame_kind_names_the_event_inside_an_event_frame() {
-        assert_eq!(frame_kind(&json!({"type":"event","event":{"type":"title"}})), "event/title");
+        let title = json!({"type":"event","adapter_id":"a","event":{"kind":"title","title":"t"}});
+        assert_eq!(frame_kind(&title), "event/title");
+        assert_eq!(frame_kind(&json!({"type":"event","event":{"type":"legacy"}})), "event/legacy");
+        assert_eq!(frame_kind(&json!({"type":"event","event":{}})), "event/?");
         assert_eq!(frame_kind(&json!({"type":"heartbeat"})), "heartbeat");
         assert_eq!(frame_kind(&json!({})), "?");
     }

@@ -50,8 +50,19 @@ const READ_FILE_FORWARD_TIMEOUT: std::time::Duration = std::time::Duration::from
 const TRANSCRIPT_AUDIT_FORWARD_TIMEOUT: std::time::Duration =
     cctui_server_kernel::bus::TRANSCRIPT_AUDIT_TIMEOUT
         .saturating_add(std::time::Duration::from_secs(10));
-/// Timeout for a forwarded dispatcher round-trip (peer waits 30s).
+/// Timeout for a forwarded dispatcher status, cancel or dedup round-trip (peer waits 30s).
 const DISPATCHER_FORWARD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(35);
+/// Outlasts the bus's `DISPATCH_REPLY_TIMEOUT` for a forwarded `Dispatch`.
+const DISPATCH_FORWARD_TIMEOUT: std::time::Duration =
+    cctui_server_kernel::bus::DISPATCH_REPLY_TIMEOUT
+        .saturating_add(std::time::Duration::from_secs(5));
+const fn dispatcher_forward_budget(frame: &DispatcherFrameDown) -> std::time::Duration {
+    if matches!(frame, DispatcherFrameDown::Dispatch { .. }) {
+        DISPATCH_FORWARD_TIMEOUT
+    } else {
+        DISPATCHER_FORWARD_TIMEOUT
+    }
+}
 /// Timeout for one relay POST to one peer. Publish is best-effort; a slow peer
 /// must not back the relay queue up for long.
 const RELAY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
@@ -694,9 +705,10 @@ impl Transport for PeerHttpTransport {
         request_id: Uuid,
         frame: DispatcherFrameDown,
     ) -> Result<DispatcherFrameUp, BusError> {
+        let budget = dispatcher_forward_budget(&frame);
         let request = RouteRequest::DispatcherRequest { dispatcher, request_id, frame };
         let target = Target::dispatcher(dispatcher);
-        match self.route(target, &request, DISPATCHER_FORWARD_TIMEOUT).await? {
+        match self.route(target, &request, budget).await? {
             RouteResponse::DispatcherReply { frame } => Ok(frame),
             other => Err(BusError::Transport(format!("unexpected peer reply: {other:?}"))),
         }
@@ -955,6 +967,18 @@ impl cctui_server_sessions::guard_step::ForgetRelay for PeerGuardForget {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_forwarded_dispatch_outlasts_the_owners_reply_budget() {
+        let spec: cctui_proto::ws::WireDispatchSpec =
+            serde_json::from_value(serde_json::json!({"session_id": "s", "payload": {}})).unwrap();
+        let dispatch = DispatcherFrameDown::Dispatch { request_id: Uuid::nil(), spec };
+        assert!(
+            dispatcher_forward_budget(&dispatch) > cctui_server_kernel::bus::DISPATCH_REPLY_TIMEOUT
+        );
+        let status = DispatcherFrameDown::Status { request_id: Uuid::nil(), handle: "h".into() };
+        assert_eq!(dispatcher_forward_budget(&status), DISPATCHER_FORWARD_TIMEOUT);
+    }
 
     async fn stub_peer(delay: std::time::Duration, received: Arc<AtomicU64>) -> String {
         let app = axum::Router::new().route(

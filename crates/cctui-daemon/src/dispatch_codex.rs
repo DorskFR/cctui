@@ -283,11 +283,12 @@ impl CodexDispatch {
     }
 
     async fn run_inner(&self, mut cmd: tokio::process::Command) -> anyhow::Result<CodexOutcome> {
-        use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
+        use tokio::io::{AsyncBufReadExt, BufReader};
 
+        cmd.kill_on_drop(true);
         let mut child = cmd.spawn().context("spawning codex exec")?;
         let stdout = child.stdout.take().context("codex exec stdout missing")?;
-        let mut stderr_pipe = child.stderr.take();
+        let stderr_task = child.stderr.take().map(|pipe| tokio::spawn(drain_stderr_tail(pipe)));
         let session_id = std::env::var("SESSION_ID").ok().filter(|s| !s.is_empty());
 
         let work = async {
@@ -299,25 +300,30 @@ impl CodexDispatch {
                 buf.push('\n');
             }
             let status = child.wait().await.context("awaiting codex exec")?;
-            let mut stderr = String::new();
-            if let Some(mut pipe) = stderr_pipe.take() {
-                let _ = pipe.read_to_string(&mut stderr).await;
-            }
-            anyhow::Ok((buf, status, stderr))
+            anyhow::Ok((buf, status))
         };
-
-        let (stdout, status, stderr) =
-            match tokio::time::timeout(std::time::Duration::from_secs(self.timeout_secs), work)
+        let finished =
+            tokio::time::timeout(std::time::Duration::from_secs(self.timeout_secs), work).await;
+        let Ok(finished) = finished else {
+            let _ = child.start_kill();
+            let _ = child.wait().await;
+            if let Some(task) = stderr_task {
+                task.abort();
+            }
+            return Ok(CodexOutcome::failed(format!(
+                "codex exec exceeded {}s timeout",
+                self.timeout_secs
+            )));
+        };
+        let (stdout, status) = finished?;
+        let stderr = match stderr_task {
+            Some(task) => tokio::time::timeout(STDERR_JOIN_GRACE, task)
                 .await
-            {
-                Ok(res) => res?,
-                Err(_) => {
-                    return Ok(CodexOutcome::failed(format!(
-                        "codex exec exceeded {}s timeout",
-                        self.timeout_secs
-                    )));
-                }
-            };
+                .ok()
+                .and_then(Result::ok)
+                .unwrap_or_default(),
+            None => String::new(),
+        };
         let mut outcome = parse_events(&stdout);
         if let (Some(sid), Some(tid)) = (session_id.as_deref(), outcome.thread_id.as_deref()) {
             register_dispatch_thread(tid, sid);
@@ -555,6 +561,30 @@ pub fn payload_env(payload: &Value) -> BTreeMap<String, String> {
         .unwrap_or_default()
 }
 
+const STDERR_TAIL_BYTES: usize = 16 * 1024;
+const STDERR_JOIN_GRACE: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Read `pipe` to EOF so the child never blocks on a full stderr pipe, keeping
+/// only the last `STDERR_TAIL_BYTES`.
+async fn drain_stderr_tail(mut pipe: impl tokio::io::AsyncRead + Unpin) -> String {
+    use tokio::io::AsyncReadExt;
+    let mut tail: Vec<u8> = Vec::new();
+    let mut chunk = [0u8; 8192];
+    while let Ok(n) = pipe.read(&mut chunk).await {
+        if n == 0 {
+            break;
+        }
+        tail.extend_from_slice(&chunk[..n]);
+        if tail.len() > STDERR_TAIL_BYTES * 2 {
+            tail.drain(..tail.len() - STDERR_TAIL_BYTES);
+        }
+    }
+    if tail.len() > STDERR_TAIL_BYTES {
+        tail.drain(..tail.len() - STDERR_TAIL_BYTES);
+    }
+    String::from_utf8_lossy(&tail).into_owned()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -572,6 +602,42 @@ mod tests {
             result_file: "/tmp/cctui-result.json".to_owned(),
             timeout_secs: 500,
         }
+    }
+
+    fn sh(script: &str) -> tokio::process::Command {
+        let mut cmd = tokio::process::Command::new("sh");
+        cmd.args(["-c", script]).stdout(Stdio::piped()).stderr(Stdio::piped());
+        cmd
+    }
+
+    #[tokio::test]
+    async fn a_stderr_flood_beyond_the_pipe_buffer_reports_the_exit_not_a_timeout() {
+        let mut d = dispatch("go");
+        d.timeout_secs = 20;
+        let cmd = sh("head -c 300000 /dev/zero | tr '\\0' x >&2; echo boom-tail >&2; exit 3");
+        let outcome = d.run_inner(cmd).await.unwrap();
+        assert_eq!(outcome.status, "failed");
+        let error = outcome.error.unwrap();
+        assert!(error.contains("exited with"), "{error}");
+        assert!(error.contains("boom-tail"), "{error}");
+        assert!(error.len() < STDERR_TAIL_BYTES + 200, "{}", error.len());
+    }
+
+    #[tokio::test]
+    async fn a_timed_out_codex_exec_is_killed_and_reaped() {
+        let temp = tempfile::tempdir().unwrap();
+        let pid_file = temp.path().join("pid");
+        let mut d = dispatch("go");
+        d.timeout_secs = 1;
+        let cmd = sh(&format!("echo $$ > {}; exec sleep 60", pid_file.display()));
+        let outcome = d.run_inner(cmd).await.unwrap();
+        assert!(outcome.error.unwrap().contains("timeout"));
+        let pid = std::fs::read_to_string(&pid_file).unwrap();
+        assert!(
+            !std::path::Path::new(&format!("/proc/{}", pid.trim())).exists(),
+            "codex exec pid {} still alive after timeout",
+            pid.trim()
+        );
     }
 
     #[tokio::test]

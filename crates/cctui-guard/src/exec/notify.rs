@@ -326,9 +326,25 @@ impl Task {
     }
 }
 
+#[must_use]
+pub fn thread_count(status: &str) -> Option<u32> {
+    status.lines().find_map(|l| l.strip_prefix("Threads:")).and_then(|v| v.trim().parse().ok())
+}
+
+const SHARED_THREADS: &str = "a multi-threaded process may not exec while this step has exec \
+                              rules: another thread could rewrite the checked arguments";
+const UNKNOWN_THREADS: &str = "cannot read the process's thread count";
+
 /// Read the exec out of the target and judge it. The notification id is
 /// re-validated after opening the target's memory (so the pid still names
 /// the target) and after reading it (so the syscall is still the one pending).
+///
+/// An allow answers with `SECCOMP_USER_NOTIF_FLAG_CONTINUE`, so the kernel
+/// reads path and argv from the target again: the id check does not prove the
+/// bytes are unchanged. A sibling thread is refused in restricted steps; a
+/// task sharing the memory another way (a `vfork` child of a multi-threaded
+/// parent, `CLONE_VM`, shared mappings) can still rewrite them, so the exec
+/// guard is a speed bump, not a boundary.
 fn inspect(listener: &OwnedFd, notif: Notif, engine: &WorkflowEngine) -> Inspected {
     let Some(kind) = classify(notif.arch, notif.nr) else {
         return Inspected::Unreadable(format!(
@@ -350,10 +366,18 @@ fn inspect(listener: &OwnedFd, notif: Notif, engine: &WorkflowEngine) -> Inspect
         Err(_) if !valid() => return Inspected::Gone,
         Err(e) => return Inspected::Unreadable(format!("cannot read the exec arguments: {e}")),
     };
+    let threads = std::fs::read_to_string(format!("/proc/{}/status", notif.pid))
+        .ok()
+        .and_then(|status| thread_count(&status));
     if !valid() {
         return Inspected::Gone;
     }
-    let verdict = engine.check_exec(&request.path, &request.argv, &request.match_commands());
+    let verdict = if threads != Some(1) && engine.exec_is_restricted() {
+        let reason = if threads.is_some() { SHARED_THREADS } else { UNKNOWN_THREADS };
+        engine.refuse_exec(&request.path, &request.argv, reason)
+    } else {
+        engine.check_exec(&request.path, &request.argv, &request.match_commands())
+    };
     Inspected::Checked { outcome: verdict.into(), request }
 }
 
@@ -384,6 +408,14 @@ mod tests {
         assert!(has_cap("CapEff:\t0000000000080000\n", CAP_SYS_PTRACE));
         assert!(!has_cap("CapEff:\t00000000a80425fb\n", CAP_SYS_PTRACE));
         assert!(!has_cap("garbage", CAP_SYS_PTRACE));
+    }
+
+    #[test]
+    fn reads_thread_count() {
+        assert_eq!(thread_count("Name:\tx\nThreads:\t1\nCpus_allowed:\tf\n"), Some(1));
+        assert_eq!(thread_count("Threads:\t12\n"), Some(12));
+        assert_eq!(thread_count("Name:\tx\n"), None);
+        assert_eq!(thread_count("Threads:\tmany\n"), None);
     }
 
     #[test]

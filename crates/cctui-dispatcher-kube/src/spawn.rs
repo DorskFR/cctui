@@ -207,6 +207,11 @@ impl Spawner {
             .and_then(Value::as_str)
             .filter(|i| !i.is_empty())
             .map(ToOwned::to_owned);
+        if let Some(identity) = identity.as_deref().filter(|i| !valid_identity(i)) {
+            anyhow::bail!(
+                "payload identity {identity:?} must be 1-32 lowercase letters, digits or `-`"
+            );
+        }
         let task_name =
             obj.as_ref().and_then(|o| o.get("name")).and_then(Value::as_str).map(ToOwned::to_owned);
         let env_map = payload.as_object_mut().and_then(|o| {
@@ -900,7 +905,7 @@ impl Spawner {
             .map_or("<unknown>", String::as_str);
 
         let suspended = job.spec.as_ref().and_then(|s| s.suspend).unwrap_or(false);
-        let has_pods = !self.job_has_no_pods(name).await;
+        let has_pods = !self.job_has_no_pods(job).await;
         match drift_disposition(Self::job_never_ran(job), has_pods, suspended) {
             Disposition::Recreate => {}
             Disposition::LeaveAlone => {
@@ -961,9 +966,8 @@ impl Spawner {
 
     /// Whether the Job owns no pod at all. A listing error answers `false`: an
     /// API hiccup must never be read as proof that nothing ran.
-    async fn job_has_no_pods(&self, job_name: &str) -> bool {
-        let lp = ListParams::default().labels(&format!("job-name={job_name}"));
-        self.pods().list(&lp).await.is_ok_and(|pods| pods.items.is_empty())
+    async fn job_has_no_pods(&self, job: &Job) -> bool {
+        self.pods().list(&pods_of(job)).await.is_ok_and(|pods| pods.items.is_empty())
     }
 
     /// Rebuild a Job from the current profile, preserving its dispatch identity:
@@ -1080,17 +1084,17 @@ impl Spawner {
         }
         match Self::job_terminal_state(&job) {
             Some("Complete") => {
-                return Ok((HandleState::Complete, self.pod_oom_reason(name).await));
+                return Ok((HandleState::Complete, self.pod_oom_reason(&job).await));
             }
             Some("Failed") => {
-                if let Some(oom) = self.pod_oom_reason(name).await {
+                if let Some(oom) = self.pod_oom_reason(&job).await {
                     return Ok((HandleState::Failed, Some(oom)));
                 }
-                if let Some(message) = self.worker_termination_message(name).await {
+                if let Some(message) = self.worker_termination_message(&job).await {
                     return Ok((HandleState::Failed, Some(message)));
                 }
                 let reason = Self::job_failed_reason(&job);
-                return Ok((HandleState::Failed, reason.or(self.pod_failure_reason(name).await)));
+                return Ok((HandleState::Failed, reason.or(self.pod_failure_reason(&job).await)));
             }
             _ => {}
         }
@@ -1100,7 +1104,7 @@ impl Spawner {
         // Job not terminal — look for a doomed pod the Job condition won't
         // surface until backoff is exhausted.
         Ok(self
-            .pod_failure_reason(name)
+            .pod_failure_reason(&job)
             .await
             .map_or((HandleState::Running, None), |reason| (HandleState::Failed, Some(reason))))
     }
@@ -1139,9 +1143,8 @@ impl Spawner {
     /// Why a finished Job's container ended when the kernel OOM killed it,
     /// which a clean entrypoint exit or the Job's backoff condition hides. A
     /// listing error reads as no OOM kill, so the status still answers.
-    async fn pod_oom_reason(&self, job_name: &str) -> Option<String> {
-        let lp = ListParams::default().labels(&format!("job-name={job_name}"));
-        oom_killed(&self.pods().list(&lp).await.ok()?.items)
+    async fn pod_oom_reason(&self, job: &Job) -> Option<String> {
+        oom_killed(&self.pods().list(&pods_of(job)).await.ok()?.items)
     }
 
     /// Inspect the Job's pods for a terminal-but-not-yet-Job-Failed condition:
@@ -1150,11 +1153,10 @@ impl Spawner {
     /// when one is found, else `None` (still legitimately running/starting). A
     /// listing error degrades to `None` so a transient API hiccup never
     /// misreports a live workload as dead.
-    async fn pod_failure_reason(&self, job_name: &str) -> Option<String> {
-        let lp = ListParams::default().labels(&format!("job-name={job_name}"));
-        let pods = self.pods().list(&lp).await.ok()?;
+    async fn pod_failure_reason(&self, job: &Job) -> Option<String> {
+        let pods = self.pods().list(&pods_of(job)).await.ok()?;
         for pod in pods {
-            let status = pod.status.as_ref()?;
+            let Some(status) = pod.status.as_ref() else { continue };
             // Any container (init or main) stuck waiting on a doomed reason, or
             // terminated by OOM, is fatal for this pod.
             let waiting_or_oom = status
@@ -1226,6 +1228,21 @@ impl Spawner {
             _ => Ok(()),
         }
     }
+}
+
+fn valid_identity(identity: &str) -> bool {
+    identity.len() <= 32
+        && identity.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+}
+
+/// The pods of this very Job. A name label also matches pods of an earlier,
+/// still-collecting Job of the same name, so the controller uid selects them.
+fn pods_of(job: &Job) -> ListParams {
+    let selector = job.metadata.uid.as_deref().map_or_else(
+        || format!("job-name={}", job.metadata.name.as_deref().unwrap_or_default()),
+        |uid| format!("batch.kubernetes.io/controller-uid={uid}"),
+    );
+    ListParams::default().labels(&selector)
 }
 
 /// Background propagation, scoped to the Job `uid` names when given.
@@ -2931,6 +2948,30 @@ mod tests {
             .filter_map(|j| j.metadata.name.as_deref())
             .collect();
         assert_eq!(resumed, ["early", "late"]);
+    }
+
+    #[test]
+    fn a_malformed_identity_never_reaches_the_guard_annotation() {
+        let profile = lean_profile();
+        for bad in ["Zephyr", "zephyr/../x", "z#k", "${IDENTITY}"] {
+            let s = spec("s1", json!({ "identity": bad }));
+            assert!(Spawner::run_env("https://c", &profile, &s).is_err(), "{bad}");
+        }
+        let s = spec("s1", json!({ "identity": "zephyr-2" }));
+        let env = Spawner::run_env("https://c", &profile, &s).unwrap();
+        assert_eq!(env.identity.as_deref(), Some("zephyr-2"));
+    }
+
+    #[test]
+    fn a_redispatched_jobs_pods_are_selected_by_its_uid_not_its_name() {
+        let mut job = Job::default();
+        job.metadata.name = Some("worker-x".into());
+        assert_eq!(pods_of(&job).label_selector.as_deref(), Some("job-name=worker-x"));
+        job.metadata.uid = Some("uid-new".into());
+        assert_eq!(
+            pods_of(&job).label_selector.as_deref(),
+            Some("batch.kubernetes.io/controller-uid=uid-new"),
+        );
     }
 
     #[test]

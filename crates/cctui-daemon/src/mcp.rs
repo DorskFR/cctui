@@ -1012,12 +1012,22 @@ fn call_daemon_with(
             return (format!("{tool} unavailable: cannot reach the cctui daemon ({err})"), true);
         }
     };
-    let mut child = args
+    let target = args
         .get("session_id")
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|s| kind == "spawn_agent" && !s.is_empty())
         .map(str::to_owned);
+    let has_prompt =
+        args.get("prompt").and_then(Value::as_str).is_some_and(|p| !p.trim().is_empty());
+    // A follow-up's child is known only once the daemon confirms delivery:
+    // reattaching before that would answer with the child's previous turn.
+    let follow_up = target.clone().filter(|_| has_prompt);
+    let mut child = target.filter(|_| !has_prompt);
+    let lost = |child: Option<&str>| match (child, follow_up.as_deref()) {
+        (None, Some(target)) => undelivered_error(tool, target),
+        _ => dropped_error(tool, kind, child, reattach.peers),
+    };
     let mut progress = Progress { token, outbox, seq: 0 };
     let mut reattaches = 0;
     loop {
@@ -1032,16 +1042,14 @@ fn call_daemon_with(
         ) {
             Exchange::Done(text, is_error) => return (text, is_error),
             Exchange::Malformed => return (format!("{tool} failed: malformed daemon reply"), true),
-            Exchange::Lost { closed: false } => {
-                return (dropped_error(tool, kind, child.as_deref(), reattach.peers), true);
-            }
+            Exchange::Lost { closed: false } => return (lost(child.as_deref()), true),
             Exchange::Lost { closed: true } => {}
         }
         let Some(target) = child.clone().filter(|_| reattaches < MAX_REATTACHES) else {
-            return (dropped_error(tool, kind, child.as_deref(), reattach.peers), true);
+            return (lost(child.as_deref()), true);
         };
         let Some(next) = reconnect(sock, reattach.window) else {
-            return (dropped_error(tool, kind, Some(&target), reattach.peers), true);
+            return (lost(Some(&target)), true);
         };
         reattaches += 1;
         stream = next;
@@ -1173,6 +1181,15 @@ fn dropped_error(tool: &str, kind: &str, child: Option<&str>, peers: bool) -> St
              prompt: that returns its final message, at once if it already finished."
             )
         },
+    )
+}
+
+fn undelivered_error(tool: &str, child: &str) -> String {
+    format!(
+        "{tool} lost its connection to the cctui daemon (most likely a daemon restart or \
+         self-update) before the follow-up to {child} was confirmed delivered. It may never have \
+         reached the child: check its transcript with CctuiHistory, and send the prompt again \
+         with session_id {child:?} if it is missing."
     )
 }
 
@@ -1875,7 +1892,7 @@ mod tests {
             "parent-1",
             &sock_path,
             "spawn_agent",
-            &json!({ "session_id": "child-9", "prompt": "and the tests?", "timeout_secs": 30 }),
+            &json!({ "session_id": "child-9", "timeout_secs": 30 }),
             None,
             &Outbox::new(),
             Reattach { window: Duration::from_millis(600), peers: true },
@@ -1885,6 +1902,69 @@ mod tests {
         assert!(text.contains("THE CHILD IS NOT AFFECTED"), "{text}");
         assert!(text.contains("delivered to this session as a message"), "{text}");
         assert!(text.contains("session_id \"child-9\" and no prompt"), "{text}");
+    }
+
+    #[test]
+    fn a_follow_up_dropped_before_delivery_is_not_reattached() {
+        let dir = tempfile::tempdir().unwrap();
+        let sock_path = dir.path().join("agent.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&sock_path).unwrap();
+        let server = std::thread::spawn(move || {
+            let (first, _) = listener.accept().unwrap();
+            let mut line = String::new();
+            BufReader::new(first.try_clone().unwrap()).read_line(&mut line).unwrap();
+            drop(first);
+            listener.set_nonblocking(true).unwrap();
+            std::thread::sleep(Duration::from_millis(800));
+            listener.accept().is_ok()
+        });
+        let (text, is_error) = call_daemon_with(
+            "parent-1",
+            &sock_path,
+            "spawn_agent",
+            &json!({ "session_id": "child-9", "prompt": "now fix the tests", "timeout_secs": 30 }),
+            None,
+            &Outbox::new(),
+            Reattach { window: Duration::from_secs(5), peers: true },
+        );
+        let reattached = server.join().unwrap();
+        assert!(!reattached, "an attach would answer with the child's previous turn");
+        assert!(is_error);
+        assert!(text.contains("before the follow-up to child-9 was confirmed delivered"), "{text}");
+        assert!(text.contains("session_id \"child-9\""), "{text}");
+    }
+
+    #[test]
+    fn a_delivered_follow_up_is_reattached_without_its_prompt() {
+        let dir = tempfile::tempdir().unwrap();
+        let sock_path = dir.path().join("agent.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&sock_path).unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut first, _) = listener.accept().unwrap();
+            let mut line = String::new();
+            BufReader::new(first.try_clone().unwrap()).read_line(&mut line).unwrap();
+            let delivered = json!({ "progress": "follow-up sent", "child": "child-9" });
+            writeln!(first, "{delivered}").unwrap();
+            drop(first);
+            let (mut second, _) = listener.accept().unwrap();
+            let mut line = String::new();
+            BufReader::new(second.try_clone().unwrap()).read_line(&mut line).unwrap();
+            writeln!(second, "{}", json!({ "ok": true, "result": "tests fixed" })).unwrap();
+            serde_json::from_str::<Value>(&line).unwrap()
+        });
+        let (text, is_error) = call_daemon_with(
+            "parent-1",
+            &sock_path,
+            "spawn_agent",
+            &json!({ "session_id": "child-9", "prompt": "now fix the tests", "timeout_secs": 30 }),
+            None,
+            &Outbox::new(),
+            Reattach { window: Duration::from_secs(5), peers: true },
+        );
+        let reattach = server.join().unwrap();
+        assert!(!is_error, "{text}");
+        assert_eq!(text, "tests fixed");
+        assert_eq!(reattach["args"], json!({ "session_id": "child-9" }));
     }
 
     #[test]

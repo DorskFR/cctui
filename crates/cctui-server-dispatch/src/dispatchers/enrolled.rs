@@ -217,7 +217,7 @@ fn backend_error(name: &str, err: &BusError) -> DispatchError {
         BusError::Disconnected => {
             format!("dispatcher '{name}' disconnected before replying")
         }
-        BusError::Timeout => format!("dispatcher '{name}' did not reply within 30s"),
+        BusError::Timeout => format!("dispatcher '{name}' did not reply in time"),
         other => format!("dispatcher '{name}' round-trip failed: {other}"),
     })
 }
@@ -226,6 +226,15 @@ fn backend_error(name: &str, err: &BusError) -> DispatchError {
 /// re-sending it cannot duplicate work.
 const fn never_delivered(err: &BusError) -> bool {
     matches!(err, BusError::NoDispatcher(_) | BusError::Closed)
+}
+
+/// A dispatch that may have reached the dispatcher is unconfirmed, never
+/// refused: it can still start a worker.
+fn dispatch_error(name: &str, err: &BusError) -> DispatchError {
+    match backend_error(name, err) {
+        DispatchError::Backend(msg) if !never_delivered(err) => DispatchError::Unconfirmed(msg),
+        other => other,
+    }
 }
 
 /// Send a `Dispatch` frame, holding it across a dispatcher restart rather than
@@ -293,7 +302,7 @@ async fn dispatch_held_with(
                      dispatched, the caller must retry or release the claim"
                 );
             }
-            return Err(backend_error(name, &err));
+            return Err(dispatch_error(name, &err));
         }
 
         let backoff = hold_schedule().delay_for(u32::try_from(attempt).unwrap_or(u32::MAX));
@@ -758,6 +767,33 @@ mod tests {
         let announced = EnrolledDispatcher::new("k8s", id, bus).with_dedup_check(true);
         assert!(announced.dedup_check(&spec).await.is_none());
         fake.await.unwrap();
+    }
+
+    /// A dispatcher that took the frame and never answered may still start the
+    /// worker, so the dispatch is unconfirmed, not refused, and only after the
+    /// dispatch budget rather than the short status one.
+    #[tokio::test(start_paused = true)]
+    async fn a_delivered_dispatch_without_a_reply_is_unconfirmed() {
+        let bus = bus();
+        let id = Uuid::new_v4();
+        let (tx, mut rx) = mpsc::channel::<DispatcherFrameDown>(8);
+        bus.register_dispatcher(id, tx);
+        let silent = tokio::spawn(async move {
+            let frame = rx.recv().await;
+            assert!(matches!(frame, Some(DispatcherFrameDown::Dispatch { .. })));
+            std::future::pending::<()>().await;
+        });
+
+        let started = tokio::time::Instant::now();
+        let err = dispatch_held(&bus, id, "k8s", &spec("sess-slow"), Duration::from_secs(10))
+            .await
+            .unwrap_err();
+        assert!(matches!(&err, DispatchError::Unconfirmed(m) if m.contains("k8s")), "{err}");
+        assert!(
+            started.elapsed() >= cctui_server_kernel::bus::DISPATCH_REPLY_TIMEOUT,
+            "a slow spawn must get the full dispatch budget"
+        );
+        silent.abort();
     }
 
     #[tokio::test(start_paused = true)]

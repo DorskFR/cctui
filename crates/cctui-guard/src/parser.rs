@@ -350,7 +350,7 @@ pub fn parse_guard_block(content: &str, step: u32) -> Result<GuardBlock, ParseEr
         if raw.trim().is_empty() || raw.trim_start().starts_with('#') {
             continue;
         }
-        let dedented = if raw.len() >= base { &raw[base..] } else { raw.trim_start() };
+        let dedented = raw.get(base..).unwrap_or_else(|| raw.trim_start());
         let indent = dedented.len() - dedented.trim_start().len();
         let stripped = dedented.trim();
 
@@ -1046,6 +1046,14 @@ mod prompt_sets_tests {
 #[cfg(test)]
 mod guard_block_tests {
     use super::*;
+
+    #[test]
+    fn mixed_unicode_whitespace_indent_does_not_panic() {
+        let content = "\u{a0}max-visits: 2\n \u{a0}exit: true\n";
+        let block = parse_guard_block(content, 1).unwrap();
+        assert_eq!(block.max_visits, Some(2));
+        assert!(block.exit);
+    }
 
     #[test]
     fn flow_transitions_and_max_visits() {

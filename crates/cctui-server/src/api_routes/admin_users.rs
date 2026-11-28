@@ -9,7 +9,7 @@ use cctui_server_kernel::authz::Authn;
 use cctui_server_kernel::authz::Authz::Scope as ScopeAz;
 
 pub(super) fn register(r: Routes) -> Routes {
-    r.add(
+    let r = r.add(
         &[Method::DELETE, Method::PATCH],
         "/admin/users/{id}",
         "Revoke or update a user (admin).",
@@ -70,6 +70,22 @@ pub(super) fn register(r: Routes) -> Routes {
         ScopeAz(auth::Scope::Admin),
     )
     .add(
+        &[GET],
+        "/admin/users/{id}/passkeys",
+        "List a user's passkeys (admin).",
+        get(cctui_server_accounts::routes::passkeys::admin_list::<crate::state::AppState>),
+        Authn::Bearer,
+        ScopeAz(auth::Scope::Admin),
+    )
+    .add(
+        &[Method::DELETE],
+        "/admin/users/{id}/passkeys/{passkey}",
+        "Revoke a user's passkey and end the sessions it opened (admin).",
+        delete(cctui_server_accounts::routes::passkeys::admin_revoke::<crate::state::AppState>),
+        Authn::Bearer,
+        ScopeAz(auth::Scope::Admin),
+    )
+    .add(
         &[GET, Method::PUT, Method::DELETE],
         "/admin/users/{id}/dispatch-policy",
         "Get, replace or remove a user's dispatch policy (admin).",
@@ -78,8 +94,12 @@ pub(super) fn register(r: Routes) -> Routes {
             .delete(cctui_server_dispatch::routes::dispatch_policy::delete_policy::<crate::state::AppState>),
         Authn::Bearer,
         ScopeAz(auth::Scope::Admin),
-    )
-    .add(
+    );
+    machines(r)
+}
+
+fn machines(r: Routes) -> Routes {
+    r.add(
         &[Method::DELETE, Method::PATCH],
         "/admin/machines/{id}",
         "Revoke or rename a machine (admin).",

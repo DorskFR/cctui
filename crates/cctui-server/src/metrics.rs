@@ -14,10 +14,13 @@
 //!
 //! ## Auth
 //!
-//! Same Bearer scheme as `/api/v1` (any user or admin token), because the output
-//! names accounts and their consumption. `CCTUI_METRICS_PUBLIC=1` opts into an
-//! unauthenticated endpoint for the usual scrape-inside-the-cluster case; it is
-//! off by default so the endpoint cannot become accidentally public.
+//! Same Bearer scheme as `/api/v1`, because the output names accounts and their
+//! consumption. An admin token sees the whole instance; any other user's token
+//! sees only that user's accounts, machines and sessions; machine, dispatcher,
+//! worker and plugin keys are refused. `CCTUI_METRICS_PUBLIC=1` opts into an
+//! unauthenticated, instance-wide endpoint for the usual
+//! scrape-inside-the-cluster case; it is off by default so the endpoint cannot
+//! become accidentally public.
 
 use std::fmt::Write as _;
 
@@ -113,17 +116,21 @@ const PROVIDER_TOTALS_SQL: &str = "SELECT p.id, a.name AS account_name, p.provid
             COALESCE(SUM(stu.cache_read_tokens), 0)::bigint     AS cache_read_tokens, \
             COALESCE(SUM(stu.cache_creation_tokens), 0)::bigint AS cache_creation_tokens \
      FROM account_providers p \
-     JOIN accounts a ON a.id = p.account_id \
+     JOIN accounts a ON a.id = p.account_id AND ($1::uuid IS NULL OR a.user_id = $1) \
      LEFT JOIN session_tokens st ON st.account_id = p.id \
      LEFT JOIN session_usage_totals stu ON stu.session_id = st.session_id \
      GROUP BY p.id, a.name, p.provider, p.family, p.soft_limits_json \
      ORDER BY a.name, p.provider";
 
-/// Read every number a scrape needs. Each part degrades to empty on a DB error:
-/// a partial scrape beats a 500, and the missing series is itself the signal.
-pub async fn snapshot(state: &AppState) -> Snapshot {
-    let rows: Vec<ProviderRow> =
-        sqlx::query_as(PROVIDER_TOTALS_SQL).fetch_all(&state.pool).await.unwrap_or_default();
+/// Read every number a scrape needs, for `owner`'s rows only, or the whole
+/// instance when `None`. Each part degrades to empty on a DB error: a partial
+/// scrape beats a 500, and the missing series is itself the signal.
+pub async fn snapshot(state: &AppState, owner: Option<Uuid>) -> Snapshot {
+    let rows: Vec<ProviderRow> = sqlx::query_as(PROVIDER_TOTALS_SQL)
+        .bind(owner)
+        .fetch_all(&state.pool)
+        .await
+        .unwrap_or_default();
     let now = Utc::now();
     let providers = rows
         .into_iter()
@@ -145,24 +152,26 @@ pub async fn snapshot(state: &AppState) -> Snapshot {
         })
         .collect();
 
-    let sessions_by_status: Vec<(String, i64)> =
-        sqlx::query_as("SELECT status, COUNT(*)::bigint FROM sessions GROUP BY status")
-            .fetch_all(&state.pool)
-            .await
-            .unwrap_or_default();
+    let sessions_by_status: Vec<(String, i64)> = sqlx::query_as(
+        "SELECT status, COUNT(*)::bigint FROM sessions \
+         WHERE $1::uuid IS NULL OR user_id = $1 GROUP BY status",
+    )
+    .bind(owner)
+    .fetch_all(&state.pool)
+    .await
+    .unwrap_or_default();
     let machines_live: i64 = sqlx::query_scalar(
         "SELECT COUNT(*)::bigint FROM machines \
          WHERE deleted_at IS NULL AND revoked_at IS NULL \
-           AND last_seen_at > now() - make_interval(secs => $1)",
+           AND last_seen_at > now() - make_interval(secs => $1) \
+           AND ($2::uuid IS NULL OR user_id = $2)",
     )
     .bind(MACHINE_ONLINE_SECS as f64)
+    .bind(owner)
     .fetch_one(&state.pool)
     .await
     .unwrap_or(0);
-    let sessions_live = {
-        let registry = state.registry.read().await;
-        i64::try_from(registry.list().len()).unwrap_or(i64::MAX)
-    };
+    let sessions_live = live_sessions(state, owner).await;
 
     Snapshot {
         version: env!("CARGO_PKG_VERSION"),
@@ -171,6 +180,28 @@ pub async fn snapshot(state: &AppState) -> Snapshot {
         sessions_live,
         machines_live,
     }
+}
+
+async fn live_sessions(state: &AppState, owner: Option<Uuid>) -> i64 {
+    let machines: Option<Vec<String>> = match owner {
+        None => None,
+        Some(owner) => Some(
+            sqlx::query_scalar("SELECT id::text FROM machines WHERE user_id = $1")
+                .bind(owner)
+                .fetch_all(&state.pool)
+                .await
+                .unwrap_or_default(),
+        ),
+    };
+    let live = state
+        .registry
+        .read()
+        .await
+        .list()
+        .into_iter()
+        .filter(|h| machines.as_ref().is_none_or(|m| m.contains(&h.session.machine_id)))
+        .count();
+    i64::try_from(live).unwrap_or(i64::MAX)
 }
 
 /// Escape a label value per the exposition format: backslash, double quote and

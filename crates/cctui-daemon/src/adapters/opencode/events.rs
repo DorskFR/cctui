@@ -126,10 +126,20 @@ pub fn status_kind(status: &serde_json::Value) -> Option<StatusKind> {
 }
 
 /// Incremental `text/event-stream` framer: feeds raw chunks in, yields the
-/// `data:` payload of each complete frame.
+/// `data:` payload of each complete frame. Buffers bytes so a UTF-8 character
+/// split across chunks is decoded whole.
 #[derive(Debug, Default)]
 pub struct SseDecoder {
-    buf: String,
+    buf: Vec<u8>,
+}
+
+fn frame_end(buf: &[u8]) -> Option<usize> {
+    let lf = buf.windows(2).position(|w| w == b"\n\n").map(|i| i + 2);
+    let crlf = buf.windows(4).position(|w| w == b"\r\n\r\n").map(|i| i + 4);
+    match (lf, crlf) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (a, b) => a.or(b),
+    }
 }
 
 impl SseDecoder {
@@ -138,11 +148,13 @@ impl SseDecoder {
         Self::default()
     }
 
-    pub fn push(&mut self, chunk: &str) -> Vec<String> {
-        self.buf.push_str(chunk);
+    pub fn push(&mut self, chunk: impl AsRef<[u8]>) -> Vec<String> {
+        self.buf.extend_from_slice(chunk.as_ref());
         let mut out = Vec::new();
-        while let Some(idx) = self.buf.find("\n\n") {
-            let frame: String = self.buf.drain(..idx + 2).collect();
+        while let Some(end) = frame_end(&self.buf) {
+            let raw: Vec<u8> = self.buf.drain(..end).collect();
+            let frame = String::from_utf8(raw)
+                .unwrap_or_else(|err| String::from_utf8_lossy(err.as_bytes()).into_owned());
             let mut data = String::new();
             for line in frame.lines() {
                 if let Some(rest) = line.strip_prefix("data:") {
@@ -163,6 +175,22 @@ impl SseDecoder {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn decoder_keeps_a_utf8_character_split_across_chunks() {
+        let frame = "data: {\"t\":\"hi 😀 é\"}\n\n".as_bytes();
+        let cut = frame.iter().position(|&b| b == 0xF0).unwrap() + 2;
+        let mut d = SseDecoder::new();
+        assert!(d.push(&frame[..cut]).is_empty());
+        assert_eq!(d.push(&frame[cut..]), vec!["{\"t\":\"hi 😀 é\"}".to_owned()]);
+    }
+
+    #[test]
+    fn decoder_splits_crlf_frames() {
+        let mut d = SseDecoder::new();
+        let got = d.push("data: {\"a\":1}\r\n\r\ndata: {\"b\":2}\r\n\r\n");
+        assert_eq!(got, vec!["{\"a\":1}".to_owned(), "{\"b\":2}".to_owned()]);
+    }
 
     #[test]
     fn decoder_splits_frames_and_ignores_comments() {

@@ -33,10 +33,11 @@ pub fn is_sha256_hex(s: &str) -> bool {
     s.len() == 64 && s.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
 }
 
+/// The machine key's user.
 async fn require_machine<S: KernelContext>(
     state: &S,
     headers: &header::HeaderMap,
-) -> Result<(), StatusCode> {
+) -> Result<uuid::Uuid, StatusCode> {
     let token = headers
         .get(header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
@@ -46,7 +47,7 @@ async fn require_machine<S: KernelContext>(
     if ctx.machine_id.is_none() {
         return Err(StatusCode::FORBIDDEN);
     }
-    Ok(())
+    Ok(ctx.user_id)
 }
 
 pub async fn put_blob<S: KernelContext>(
@@ -55,7 +56,7 @@ pub async fn put_blob<S: KernelContext>(
     Path(hash): Path<String>,
     body: Bytes,
 ) -> Result<StatusCode, StatusCode> {
-    require_machine(&state, &headers).await?;
+    let user_id = require_machine(&state, &headers).await?;
 
     if !is_sha256_hex(&hash) {
         return Err(StatusCode::BAD_REQUEST);
@@ -69,7 +70,7 @@ pub async fn put_blob<S: KernelContext>(
 
     let media_type = sniff_media_type("", &body);
 
-    match store_blob(state.pool(), &body, Some(media_type)).await {
+    match store_upload(state.pool(), &body, Some(media_type), user_id).await {
         Ok(StoredBlob { created: true, .. }) => Ok(StatusCode::CREATED),
         Ok(StoredBlob { created: false, .. }) => Ok(StatusCode::OK),
         Err(e) => {
@@ -80,6 +81,27 @@ pub async fn put_blob<S: KernelContext>(
 }
 
 pub use cctui_server_kernel::blobs_types::StoredBlob;
+
+/// [`store_blob`] that records `user_id` as an uploader, also when the hash
+/// was already stored: the upload proves the user holds the bytes.
+pub async fn store_upload(
+    pool: &sqlx::PgPool,
+    bytes: &[u8],
+    media_type: Option<&str>,
+    user_id: uuid::Uuid,
+) -> Result<StoredBlob, sqlx::Error> {
+    let mut tx = pool.begin().await?;
+    let stored = store_blob_in(&mut tx, bytes, media_type).await?;
+    sqlx::query(
+        "INSERT INTO blob_uploaders (hash, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+    )
+    .bind(&stored.hash)
+    .bind(user_id)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(stored)
+}
 
 /// Idempotent: an existing hash is left as is (`created: false`).
 pub async fn store_blob(
@@ -110,23 +132,30 @@ pub async fn store_blob_with(
     let hash = hex::encode(Sha256::digest(bytes));
     let byte_len = i64::try_from(bytes.len()).unwrap_or(i64::MAX);
     let external = store.is_external();
+    let mut tx = sqlx::Connection::begin(conn).await?;
+    let created = sqlx::query(STORE_SQL)
+        .bind(&hash)
+        .bind(media_type)
+        .bind(byte_len)
+        .bind(if external { &[][..] } else { bytes })
+        .bind(external)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected()
+        == 1;
     if external {
         store.write_external(&hash, bytes).await?;
     }
-    let rows = sqlx::query(
-        "INSERT INTO daemon_blobs (hash, media_type, byte_len, bytes, file_stored) VALUES ($1, $2, $3, $4, $5) \
-         ON CONFLICT (hash) DO NOTHING",
-    )
-    .bind(&hash)
-    .bind(media_type)
-    .bind(byte_len)
-    .bind(if external { &[][..] } else { bytes })
-    .bind(external)
-    .execute(conn)
-    .await?
-    .rows_affected();
-    Ok(StoredBlob { hash, created: rows == 1 })
+    tx.commit().await?;
+    Ok(StoredBlob { hash, created })
 }
+
+/// Inserts the row or, when it exists, locks it without rewriting it, so the
+/// external bytes are written under the same row lock that
+/// [`blob_store::delete_unreferenced_with`] takes before removing them.
+const STORE_SQL: &str = "INSERT INTO daemon_blobs (hash, media_type, byte_len, bytes, file_stored) \
+     VALUES ($1, $2, $3, $4, $5) \
+     ON CONFLICT (hash) DO UPDATE SET media_type = daemon_blobs.media_type WHERE FALSE";
 
 /// Uploads authorize through `session_attachments` rather than a link row:
 /// spawn uploads are recorded before the `sessions` row exists, so they cannot
@@ -408,6 +437,53 @@ mod tests {
 
         sqlx::query("DELETE FROM daemon_blobs WHERE hash = $1")
             .bind(&hash)
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn every_upload_records_its_uploader_even_when_the_blob_exists() {
+        let Some(pool) = test_pool("every_upload_records_its_uploader").await else { return };
+        let bytes = format!("blob-uploader-{}", uuid::Uuid::new_v4()).into_bytes();
+        let (first, second) = (uuid::Uuid::new_v4(), uuid::Uuid::new_v4());
+        for uid in [first, second] {
+            sqlx::query("INSERT INTO users (id, name, key_hash) VALUES ($1, $2, $3)")
+                .bind(uid)
+                .bind(format!("uploader-{uid}"))
+                .bind(format!("uploader-{uid}-hash"))
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+        let created = store_upload(&pool, &bytes, Some("image/png"), first).await.unwrap();
+        assert!(created.created);
+        let again = store_upload(&pool, &bytes, Some("image/png"), second).await.unwrap();
+        assert!(!again.created, "the second upload finds the blob stored");
+        let mut uploaders: Vec<uuid::Uuid> =
+            sqlx::query_scalar("SELECT user_id FROM blob_uploaders WHERE hash = $1")
+                .bind(&created.hash)
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        uploaders.sort_unstable();
+        let mut expected = vec![first, second];
+        expected.sort_unstable();
+        assert_eq!(uploaders, expected);
+
+        sqlx::query("DELETE FROM daemon_blobs WHERE hash = $1")
+            .bind(&created.hash)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let left: i64 = sqlx::query_scalar("SELECT count(*) FROM blob_uploaders WHERE hash = $1")
+            .bind(&created.hash)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(left, 0, "uploader rows go with the blob");
+        sqlx::query("DELETE FROM users WHERE id = ANY($1)")
+            .bind(vec![first, second])
             .execute(&pool)
             .await
             .unwrap();

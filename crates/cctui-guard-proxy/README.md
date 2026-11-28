@@ -10,13 +10,14 @@ Two modes share one policy engine and one health endpoint:
   as raw bytes (a TLS `ClientHello` or a plaintext HTTP request). The proxy
   recovers the original destination via `SO_ORIGINAL_DST`, peeks the SNI / `Host`
   header to recover the intended hostname, evaluates policy on `host:port`, and
-  splices bytes through if allowed. Requires `NET_ADMIN` on the worker to install
+  splices TLS through, or relays a single plain HTTP request, if allowed. Requires `NET_ADMIN` on the worker to install
   the iptables rules.
 - **forward** — a standard HTTP proxy (`CONNECT` for TLS, absolute-URI for plain
   HTTP) on the same port. For the no-`NET_ADMIN` path (rootless Docker, Apple
   container, gVisor): the worker exports `HTTP_PROXY`/`HTTPS_PROXY` pointing at
   this proxy instead of installing iptables rules. Same policy evaluation, on the
-  requested `host:port`.
+  requested `host:port`; a tunnel's TLS SNI or HTTP `Host` must be that host, and
+  plain HTTP is relayed one request per connection.
 
 IPv4 only — IPv6 egress is denied at the iptables layer by the worker entrypoint.
 The proxy dials the worker's original destination first, then the name's other

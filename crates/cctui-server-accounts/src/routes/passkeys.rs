@@ -258,19 +258,15 @@ pub async fn register_finish<S: AccountsHost>(
     }))
 }
 
-/// `GET /passkeys` — the caller's own keys, newest first.
-pub async fn list<S: KernelContext>(
-    State(state): State<S>,
-    Extension(ctx): Extension<AuthContext>,
-) -> ApiResult<Json<PasskeyListResponse>> {
+async fn passkeys_of(pool: &PgPool, user_id: Uuid) -> ApiResult<PasskeyListResponse> {
     let rows = sqlx::query_as::<_, (Uuid, String, bool, DateTime<Utc>, Option<DateTime<Utc>>)>(
         "SELECT id, label, discoverable, created_at, last_used_at FROM webauthn_credentials \
          WHERE user_id = $1 ORDER BY created_at DESC",
     )
-    .bind(ctx.user_id)
-    .fetch_all(state.pool())
+    .bind(user_id)
+    .fetch_all(pool)
     .await?;
-    Ok(Json(PasskeyListResponse {
+    Ok(PasskeyListResponse {
         passkeys: rows
             .into_iter()
             .map(|(id, label, discoverable, created_at, last_used_at)| PasskeyRow {
@@ -281,7 +277,25 @@ pub async fn list<S: KernelContext>(
                 last_used_at,
             })
             .collect(),
-    }))
+    })
+}
+
+/// `GET /passkeys` — the caller's own keys, newest first.
+pub async fn list<S: KernelContext>(
+    State(state): State<S>,
+    Extension(ctx): Extension<AuthContext>,
+) -> ApiResult<Json<PasskeyListResponse>> {
+    passkeys_of(state.pool(), ctx.user_id).await.map(Json)
+}
+
+/// `GET /admin/users/{id}/passkeys` — another user's keys, newest first.
+pub async fn admin_list<S: KernelContext>(
+    State(state): State<S>,
+    Extension(ctx): Extension<AuthContext>,
+    Path(user_id): Path<Uuid>,
+) -> ApiResult<Json<PasskeyListResponse>> {
+    ctx.requires(Scope::Admin).map_err(|s| AppError::new(s, "admin token required"))?;
+    passkeys_of(state.pool(), user_id).await.map(Json)
 }
 
 /// `PATCH /passkeys/{id}` — rename one of the caller's keys.
@@ -306,6 +320,27 @@ pub async fn relabel<S: KernelContext>(
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// Drops one of `user_id`'s keys and ends the sessions it opened, returning how
+/// many it ended.
+async fn revoke_passkey(
+    passkeys: &Passkeys,
+    pool: &PgPool,
+    auth_config: &auth::AuthConfig,
+    user_id: Uuid,
+    id: Uuid,
+) -> ApiResult<usize> {
+    let credentials = PgCredentials::new(pool);
+    passkeys
+        .remove(&credentials, &user_id, &id, PasskeyRole::Alternative, true)
+        .await
+        .map_err(passkey_error)?;
+    let hashes = credentials.revoked();
+    for hash in &hashes {
+        auth_config.purge(hash);
+    }
+    Ok(hashes.len())
+}
+
 /// `DELETE /passkeys/{id}` — drop one of the caller's keys and end the sessions
 /// it opened.
 pub async fn revoke<S: AccountsHost>(
@@ -315,16 +350,27 @@ pub async fn revoke<S: AccountsHost>(
 ) -> ApiResult<StatusCode> {
     let pool = state.kernel_pool();
     require_full_human_credential(pool, &ctx).await?;
-    let credentials = PgCredentials::new(pool);
-    relying_party(&state)?
-        .remove(&credentials, &ctx.user_id, &id, PasskeyRole::Alternative, true)
-        .await
-        .map_err(passkey_error)?;
-    let hashes = credentials.revoked();
-    for hash in &hashes {
-        state.auth_config().purge(hash);
-    }
-    tracing::info!(user_id = %ctx.user_id, passkey_id = %id, sessions = hashes.len(), "passkey revoked");
+    let sessions =
+        revoke_passkey(relying_party(&state)?, pool, state.auth_config(), ctx.user_id, id).await?;
+    tracing::info!(user_id = %ctx.user_id, passkey_id = %id, sessions, "passkey revoked");
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// `DELETE /admin/users/{id}/passkeys/{passkey}` — drop another user's key and
+/// end the sessions it opened.
+pub async fn admin_revoke<S: AccountsHost>(
+    State(state): State<S>,
+    Extension(ctx): Extension<AuthContext>,
+    Path((user_id, id)): Path<(Uuid, Uuid)>,
+) -> ApiResult<StatusCode> {
+    ctx.requires(Scope::Admin).map_err(|s| AppError::new(s, "admin token required"))?;
+    let pool = state.kernel_pool();
+    let sessions =
+        revoke_passkey(relying_party(&state)?, pool, state.auth_config(), user_id, id).await?;
+    tracing::info!(
+        admin_id = %ctx.user_id, %user_id, passkey_id = %id, sessions,
+        "passkey revoked by an admin"
+    );
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -685,6 +731,83 @@ mod tests {
         assert!(matches!(again, Err(kagi::Error::NotFound)));
 
         sqlx::query("DELETE FROM users WHERE id = $1").bind(uid).execute(&pool).await.ok();
+    }
+
+    async fn passkey_with_session(pool: &PgPool, uid: Uuid) -> (Uuid, String) {
+        let passkey_id: Uuid = sqlx::query_scalar(
+            "INSERT INTO webauthn_credentials (user_id, credential_id, passkey, label) \
+             VALUES ($1, gen_random_uuid()::text::bytea, '{}', 'test') RETURNING id",
+        )
+        .bind(uid)
+        .fetch_one(pool)
+        .await
+        .expect("insert passkey");
+        let token = auth::user_token(&auth::mint_secret());
+        auth::register_key(
+            pool,
+            auth::NewKey {
+                user_id: uid,
+                key_hash: &auth::sha256_hex(&token),
+                key_preview: None,
+                label: Some("passkey: test"),
+                kind: SESSION_KIND,
+                machine_id: None,
+                dispatcher_id: None,
+                expires_at: Some(Utc::now() + Duration::days(SESSION_DAYS)),
+                passkey_id: Some(passkey_id),
+            },
+            [Scope::Read],
+        )
+        .await
+        .expect("register key");
+        (passkey_id, token)
+    }
+
+    #[tokio::test]
+    async fn an_admin_lists_and_revokes_another_users_passkey() {
+        let Some(url) = cctui_server_kernel::test_support::db_url(
+            "an_admin_lists_and_revokes_another_users_passkey",
+        ) else {
+            return;
+        };
+        let pool = PgPool::connect(&url).await.expect("connect test db");
+        let host = cctui_server_kernel::test_support::TestHost::new(pool.clone());
+        let passkeys = relying_party_on(&pool);
+        let admin = user(&pool, "'admin', 'read'").await;
+        let (_, admin_ctx) = key(&pool, admin, "user", &[Scope::Admin, Scope::Read]).await;
+        let (_, reader_ctx) = key(&pool, admin, "user", &[Scope::Read]).await;
+        let target = user(&pool, "'read'").await;
+        let bystander = user(&pool, "'read'").await;
+        let (passkey_id, token) = passkey_with_session(&pool, target).await;
+        let (kept_id, kept_token) = passkey_with_session(&pool, bystander).await;
+        let cfg = &host.auth_config;
+        let listed =
+            |ctx: AuthContext| admin_list(State(host.clone()), Extension(ctx), Path(target));
+
+        let rows = listed(admin_ctx.clone()).await.expect("admin lists").0.passkeys;
+        assert_eq!(rows.iter().map(|r| r.id).collect::<Vec<_>>(), vec![passkey_id]);
+        assert!(matches!(
+            listed(reader_ctx).await,
+            Err(AppError::Status(code, _)) if code == StatusCode::FORBIDDEN
+        ));
+
+        let wrong_owner = revoke_passkey(&passkeys, &pool, cfg, bystander, passkey_id).await;
+        assert!(matches!(
+            wrong_owner,
+            Err(AppError::Status(code, _)) if code == StatusCode::NOT_FOUND
+        ));
+        assert!(cfg.validate(&token).await.is_some(), "a refused revoke ends nothing");
+
+        let ended = revoke_passkey(&passkeys, &pool, cfg, target, passkey_id).await;
+        assert_eq!(ended.expect("admin revokes"), 1);
+        assert!(cfg.validate(&token).await.is_none(), "the passkey's session is dead");
+        assert!(listed(admin_ctx).await.expect("admin lists").0.passkeys.is_empty());
+        assert_eq!(passkeys_of(&pool, bystander).await.unwrap().passkeys[0].id, kept_id);
+        assert!(cfg.validate(&kept_token).await.is_some(), "another user's session survives");
+
+        for uid in [admin, target, bystander] {
+            sqlx::query("DELETE FROM users WHERE id = $1").bind(uid).execute(&pool).await.ok();
+        }
     }
 
     #[tokio::test]

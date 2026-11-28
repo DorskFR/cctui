@@ -35,6 +35,12 @@ pub const GUARD_PROXY_CONTAINER: &str = "guard-proxy";
 const CONFIGMAP_GUARD_PROXY_ENV: &str = "guard-proxy-env";
 const CONFIGMAP_GUARD_PROXY_INJECT: &str = "guard-proxy-inject";
 pub const GUARD_ENV_HUMAN_GATE: &str = "GUARD_PROXY_HUMAN_GATE";
+pub const GUARD_ENV_IDENTITY: &str = "GUARD_PROXY_IDENTITY";
+const ENV_DISPATCH_ID: &str = "CCTUI_DISPATCH_ID";
+const ENV_DISPATCH_SERVER_URL: &str = "CCTUI_DISPATCH_SERVER_URL";
+/// Guard-proxy env the envelope sets per dispatch; a profile never supplies it.
+pub const GUARD_ENV_PER_DISPATCH: [&str; 4] =
+    [GUARD_ENV_IDENTITY, GUARD_ENV_HUMAN_GATE, ENV_DISPATCH_ID, ENV_DISPATCH_SERVER_URL];
 pub const NET_INIT_ENV_DNS_RESOLVER: &str = "WORKER_DNS_RESOLVER";
 /// Overridable at runtime via `CCTUI_ORCH_DNS_RESOLVER`, per profile via
 /// `spec.dnsResolver`.
@@ -651,7 +657,7 @@ fn guard_proxy_container(cfg: &EnvelopeConfig) -> Container {
     let mut env = Vec::new();
     if let Some(identity) = &cfg.guard_identity {
         env.push(EnvVar {
-            name: "GUARD_PROXY_IDENTITY".to_owned(),
+            name: GUARD_ENV_IDENTITY.to_owned(),
             value: Some(identity.clone()),
             value_from: None,
         });
@@ -665,7 +671,7 @@ fn guard_proxy_container(cfg: &EnvelopeConfig) -> Container {
     }];
     if let Some(guard) = &cfg.guard {
         env_from.extend(guard.env_from.iter().flatten().cloned());
-        env.extend(guard.env.iter().flatten().cloned());
+        env.extend(profile_env(guard.env.as_ref()));
     }
 
     let mut mounts = vec![
@@ -679,13 +685,12 @@ fn guard_proxy_container(cfg: &EnvelopeConfig) -> Container {
     }
     if let Some(identity) = cfg.guard.as_ref().and_then(|g| g.cloud_identity.as_ref()) {
         mounts.extend(identity.volume_mounts.iter().cloned());
-        env.extend(identity.env.iter().flatten().cloned());
+        env.extend(profile_env(identity.env.as_ref()));
     }
     if cfg.dispatched {
-        env.push(annotation_env("CCTUI_DISPATCH_ID", ANNOTATION_DISPATCH_ID));
-        env.push(annotation_env("CCTUI_DISPATCH_SERVER_URL", ANNOTATION_SERVER_URL));
+        env.push(annotation_env(ENV_DISPATCH_ID, ANNOTATION_DISPATCH_ID));
+        env.push(annotation_env(ENV_DISPATCH_SERVER_URL, ANNOTATION_SERVER_URL));
     }
-    env.retain(|e| e.name != GUARD_ENV_HUMAN_GATE);
     if let Some(gate) = cfg.human_gate {
         env.push(EnvVar {
             name: GUARD_ENV_HUMAN_GATE.to_owned(),
@@ -730,6 +735,13 @@ fn guard_proxy_container(cfg: &EnvelopeConfig) -> Container {
         )),
         ..Container::default()
     }
+}
+
+fn profile_env(env: Option<&Vec<EnvVar>>) -> impl Iterator<Item = EnvVar> + '_ {
+    env.into_iter()
+        .flatten()
+        .filter(|e| !GUARD_ENV_PER_DISPATCH.contains(&e.name.as_str()))
+        .cloned()
 }
 
 fn annotation_env(name: &str, annotation: &str) -> EnvVar {
@@ -1748,6 +1760,41 @@ mod tests {
         let id =
             gp.env.as_ref().unwrap().iter().find(|e| e.name == "GUARD_PROXY_IDENTITY").unwrap();
         assert_eq!(id.value.as_deref(), Some("release-bot"));
+    }
+
+    #[test]
+    fn profile_env_never_shadows_per_dispatch_env() {
+        let mut pod = lean_pod();
+        pod.metadata
+            .annotations
+            .as_mut()
+            .unwrap()
+            .insert(ANNOTATION_GUARD_IDENTITY.to_owned(), "release-bot".to_owned());
+        let forged = serde_json::json!([
+            { "name": GUARD_ENV_IDENTITY, "value": "admin" },
+            { "name": GUARD_ENV_HUMAN_GATE, "value": "off" },
+            { "name": ENV_DISPATCH_ID, "value": "forged" },
+            { "name": ENV_DISPATCH_SERVER_URL, "value": "http://evil" }
+        ]);
+        let guard: GuardSpec = serde_json::from_value(serde_json::json!({
+            "env": forged,
+            "cloudIdentity": {
+                "volumeMounts": [{ "name": "eks-pod-identity-token", "mountPath": "/t" }],
+                "env": forged
+            }
+        }))
+        .unwrap();
+        let out = apply_with(&pod, Some(&guard));
+        let gp = &out.spec.as_ref().unwrap().init_containers.as_ref().unwrap()[1];
+        let env = gp.env.as_ref().unwrap();
+        let named = |n: &str| env.iter().filter(|e| e.name == n).collect::<Vec<_>>();
+        let identity = named(GUARD_ENV_IDENTITY);
+        assert_eq!(identity.len(), 1);
+        assert_eq!(identity[0].value.as_deref(), Some("release-bot"));
+        assert!(named(GUARD_ENV_HUMAN_GATE).is_empty(), "no gate declared, none rendered");
+        for n in [ENV_DISPATCH_ID, ENV_DISPATCH_SERVER_URL] {
+            assert!(named(n).iter().all(|e| e.value.is_none()), "{n} comes only from annotations");
+        }
     }
 
     fn rendered_gate(human_gate: Option<HumanGate>, guard: Option<&GuardSpec>) -> Vec<String> {

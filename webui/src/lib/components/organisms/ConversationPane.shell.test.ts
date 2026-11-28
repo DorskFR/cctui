@@ -56,6 +56,19 @@ describe('ConversationPane chrome', () => {
 		expect(model).toContain('notify.holdOpen(this.id)');
 	});
 
+	it('remounts the composer when the view leaves the line, and carries the draft only along it', () => {
+		const markup = pane.slice(pane.indexOf('</script>'));
+		const at = markup.indexOf('<ConversationComposer');
+		const open = markup.lastIndexOf('{#key', at);
+		expect(open).toBeGreaterThan(-1);
+		expect(markup.slice(open, at).trim()).toBe('{#key p.viewKey}');
+		const end = markup.indexOf('{/key}', at);
+		expect(end).toBeGreaterThan(at);
+		expect(markup.slice(at, end)).toContain(
+			'carriesDraft={(from, to) => p.line.members.has(from) && p.line.members.has(to)}'
+		);
+	});
+
 	it('adds no :global override', () => {
 		expect(pane).not.toContain(':global(');
 		expect(drawer).not.toContain(':global(');

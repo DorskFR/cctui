@@ -225,13 +225,13 @@ dependencies = [
 
 [[package]]
 name = "argon2"
-version = "0.5.3"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3c3610892ee6e0cbce8ae2700349fcf8f98adb0dbfbee85aec3c9179d29cc072"
+checksum = "134c52ddac6d63c576bef8168db10c83c49c26444ecbc68060fef078925a901c"
 dependencies = [
  "base64ct",
  "blake2",
- "cpufeatures 0.2.17",
+ "cpufeatures 0.3.0",
  "password-hash",
 ]
 
@@ -546,11 +546,11 @@ dependencies = [
 
 [[package]]
 name = "blake2"
-version = "0.10.6"
+version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "46502ad458c9a52b69d4d4d32775c788b7a1b85e8bc9d482d92250fc0e3f8efe"
+checksum = "5b5d4d889834ee8ecfc0f8426ad30faf7cdcb10f741a8e6d7224d95325479f6f"
 dependencies = [
- "digest 0.10.7",
+ "digest 0.11.3",
 ]
 
 [[package]]
@@ -569,6 +569,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d2f6c7dbe95a6ed67ad9f18e57daf93a2f034c524b99fd2b76d18fdfeb6660aa"
 dependencies = [
  "hybrid-array",
+ "zeroize",
 ]
 
 [[package]]
@@ -724,7 +725,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-admin"
-version = "0.33.0-beta.8"
+version = "0.33.0-beta.9"
 dependencies = [
  "anyhow",
  "cctui-proto",
@@ -740,7 +741,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-aws"
-version = "0.33.0-beta.8"
+version = "0.33.0-beta.9"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -760,7 +761,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-client"
-version = "0.33.0-beta.8"
+version = "0.33.0-beta.9"
 dependencies = [
  "async-trait",
  "cctui-proto",
@@ -779,7 +780,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-clientcore"
-version = "0.33.0-beta.8"
+version = "0.33.0-beta.9"
 dependencies = [
  "cctui-proto",
  "serde",
@@ -789,7 +790,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-crypto"
-version = "0.33.0-beta.8"
+version = "0.33.0-beta.9"
 dependencies = [
  "anyhow",
  "cctui-secrets",
@@ -805,7 +806,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-daemon"
-version = "0.33.0-beta.8"
+version = "0.33.0-beta.9"
 dependencies = [
  "agent-client-protocol",
  "anyhow",
@@ -840,7 +841,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-dispatcher-apple"
-version = "0.33.0-beta.8"
+version = "0.33.0-beta.9"
 dependencies = [
  "anyhow",
  "cctui-dispatcher-core",
@@ -861,7 +862,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-dispatcher-core"
-version = "0.33.0-beta.8"
+version = "0.33.0-beta.9"
 dependencies = [
  "anyhow",
  "cctui-proto",
@@ -887,7 +888,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-dispatcher-docker"
-version = "0.33.0-beta.8"
+version = "0.33.0-beta.9"
 dependencies = [
  "anyhow",
  "bollard",
@@ -908,7 +909,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-dispatcher-kube"
-version = "0.33.0-beta.8"
+version = "0.33.0-beta.9"
 dependencies = [
  "anyhow",
  "cctui-dispatcher-core",
@@ -931,7 +932,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-guard"
-version = "0.33.0-beta.8"
+version = "0.33.0-beta.9"
 dependencies = [
  "anyhow",
  "axum",
@@ -953,7 +954,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-guard-proxy"
-version = "0.33.0-beta.8"
+version = "0.33.0-beta.9"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -982,7 +983,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-orchestrator"
-version = "0.33.0-beta.8"
+version = "0.33.0-beta.9"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1005,7 +1006,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-proto"
-version = "0.33.0-beta.8"
+version = "0.33.0-beta.9"
 dependencies = [
  "base64 0.23.1",
  "chrono",
@@ -1026,7 +1027,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-query"
-version = "0.33.0-beta.8"
+version = "0.33.0-beta.9"
 dependencies = [
  "cctui-proto",
  "serde",
@@ -1034,7 +1035,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-redteam"
-version = "0.33.0-beta.8"
+version = "0.33.0-beta.9"
 dependencies = [
  "anyhow",
  "base64 0.23.1",
@@ -1049,7 +1050,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-secrets"
-version = "0.33.0-beta.8"
+version = "0.33.0-beta.9"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1068,7 +1069,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-server"
-version = "0.33.0-beta.8"
+version = "0.33.0-beta.9"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1125,7 +1126,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-server-accounts"
-version = "0.33.0-beta.8"
+version = "0.33.0-beta.9"
 dependencies = [
  "axum",
  "base64 0.23.1",
@@ -1157,7 +1158,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-server-blobs"
-version = "0.33.0-beta.8"
+version = "0.33.0-beta.9"
 dependencies = [
  "anyhow",
  "axum",
@@ -1180,7 +1181,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-server-dispatch"
-version = "0.33.0-beta.8"
+version = "0.33.0-beta.9"
 dependencies = [
  "async-trait",
  "axum",
@@ -1211,7 +1212,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-server-extras"
-version = "0.33.0-beta.8"
+version = "0.33.0-beta.9"
 dependencies = [
  "anyhow",
  "axum",
@@ -1246,7 +1247,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-server-kernel"
-version = "0.33.0-beta.8"
+version = "0.33.0-beta.9"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1279,7 +1280,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-server-notify"
-version = "0.33.0-beta.8"
+version = "0.33.0-beta.9"
 dependencies = [
  "async-trait",
  "aws-lc-rs",
@@ -1305,7 +1306,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-server-search"
-version = "0.33.0-beta.8"
+version = "0.33.0-beta.9"
 dependencies = [
  "cctui-server-kernel",
  "serde_json",
@@ -1317,7 +1318,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-server-sessions"
-version = "0.33.0-beta.8"
+version = "0.33.0-beta.9"
 dependencies = [
  "anyhow",
  "axum",
@@ -1348,7 +1349,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-server-voice"
-version = "0.33.0-beta.8"
+version = "0.33.0-beta.9"
 dependencies = [
  "axum",
  "bytes",
@@ -1370,7 +1371,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-supervisor"
-version = "0.33.0-beta.8"
+version = "0.33.0-beta.9"
 dependencies = [
  "anyhow",
  "caps",
@@ -1386,7 +1387,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-telemetry"
-version = "0.33.0-beta.8"
+version = "0.33.0-beta.9"
 dependencies = [
  "axum",
  "http",
@@ -1403,7 +1404,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-tui"
-version = "0.33.0-beta.8"
+version = "0.33.0-beta.9"
 dependencies = [
  "anyhow",
  "arboard",
@@ -1790,9 +1791,9 @@ dependencies = [
 
 [[package]]
 name = "crypto-glue"
-version = "0.2.2"
+version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a2199036d1ea8b42f94ec872d69dc641ec8b603ef12f9da7874cf8bfef419cb7"
+checksum = "57d90fe73514cb72a4ad8568a184472dfb4c2ffa65409a8e85720b83202cec83"
 dependencies = [
  "aes",
  "aes-gcm",
@@ -1830,6 +1831,7 @@ dependencies = [
  "subtle",
  "tracing",
  "uuid",
+ "wasm-bindgen",
  "x509-cert",
  "zeroize",
 ]
@@ -2113,6 +2115,7 @@ dependencies = [
  "const-oid",
  "crypto-common 0.2.2",
  "ctutils",
+ "zeroize",
 ]
 
 [[package]]
@@ -4311,13 +4314,12 @@ dependencies = [
 
 [[package]]
 name = "password-hash"
-version = "0.5.0"
+version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "346f04948ba92c43e8469c1ee6736c7563d71012b17d40745260fe106aac2166"
+checksum = "aab41826031698d6ffcd9cff78ef56ef998e39dc7e5067cdfebe373842d4723b"
 dependencies = [
- "base64ct",
- "rand_core 0.6.4",
- "subtle",
+ "getrandom 0.4.3",
+ "phc",
 ]
 
 [[package]]
@@ -4405,6 +4407,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "85abd351c0de1e8384fc791a0737111a350394937e92b956b743dac12429f57c"
 dependencies = [
  "pest",
+]
+
+[[package]]
+name = "phc"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "44dc769b75f93afdddd8c7fa12d685292ddeff1e66f7f0f3a234cf1818afe892"
+dependencies = [
+ "base64ct",
+ "ctutils",
+ "getrandom 0.4.3",
 ]
 
 [[package]]
@@ -5153,14 +5166,16 @@ dependencies = [
 
 [[package]]
 name = "rsa"
-version = "0.10.0-rc.19"
+version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "33405e321e16ef941ca66e254f6904c3aafd3c7ff001fb88bf11c73eb75c2b85"
+checksum = "23e77fd77e0dea28b3011fd62d15445b7de7959333b0276d930e03be0f755699"
 dependencies = [
  "const-oid",
  "crypto-bigint",
+ "crypto-common 0.2.2",
  "crypto-primes",
  "digest 0.11.3",
+ "hmac 0.13.0",
  "pkcs1",
  "pkcs8",
  "rand_core 0.10.1",

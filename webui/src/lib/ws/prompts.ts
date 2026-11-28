@@ -100,6 +100,14 @@ export class LivePrompts {
 		}
 	}
 
+	/** Drop the session's held prompts ahead of a subscribe, whose replay
+	 * re-sends the ones still pending. */
+	resetForReplay(sid: string) {
+		if (this.perms.get(sid)?.length) this.setPerms(sid, []);
+		this.clearAsk(sid);
+		this.clearPlan(sid);
+	}
+
 	removePerm(sid: string, requestId: string) {
 		this.setPerms(
 			sid,

@@ -192,10 +192,20 @@ async fn fork_binds_a_fresh_child_token_before_dispatch() {
         else {
             panic!("expected a fork command")
         };
-        let cctui_proto::adapter::AdapterCommand::Fork { spec, session_id, .. } = *command else {
+        let cctui_proto::adapter::AdapterCommand::Fork { spec, session_id, command_id, .. } =
+            *command
+        else {
             panic!("expected a fork")
         };
         assert_eq!(session_id.as_deref(), Some(child.as_str()));
+        let command_id = command_id.expect("a fork carries its command id");
+        let tracked = cctui_server_kernel::context::KernelContext::pending_commands(&state)
+            .get(&command_id)
+            .map(|p| p.clone())
+            .expect("the fork command is tracked before dispatch");
+        assert_eq!(tracked.session_id.as_deref(), Some(parent.as_str()));
+        let failed = tracked.spawn.expect("a rejected fork writes a failed child row");
+        assert_eq!((failed.session_id.as_str(), failed.user_id), (child.as_str(), owner));
         let bindings: Vec<(Uuid, Option<Uuid>)> = sqlx::query_as(
             "SELECT account_id, user_id FROM session_tokens \
              WHERE session_id = $1 AND revoked_at IS NULL",

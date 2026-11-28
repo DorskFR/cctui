@@ -693,9 +693,148 @@ pub fn daemon_ws_request(
     Ok(request)
 }
 
+/// Head start each connection attempt gets before the next address is tried.
+const DIAL_STAGGER: std::time::Duration = std::time::Duration::from_millis(250);
+
+type WsStream =
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+type WsRequest = tokio_tungstenite::tungstenite::handshake::client::Request;
+
+/// Opens the WS of `request` over a TCP stream raced across every resolved
+/// address: an address family that resolves but blackholes must not hold the
+/// connect until the OS timeout.
+pub async fn connect_ws(request: WsRequest) -> anyhow::Result<WsStream> {
+    let uri = request.uri();
+    let host = uri.host().ok_or_else(|| anyhow::anyhow!("daemon WS url has no host"))?;
+    let host = host.trim_start_matches('[').trim_end_matches(']').to_owned();
+    let port = uri
+        .port_u16()
+        .or_else(|| match uri.scheme_str() {
+            Some("wss") => Some(443),
+            Some("ws") => Some(80),
+            _ => None,
+        })
+        .ok_or_else(|| anyhow::anyhow!("daemon WS url has no usable scheme"))?;
+    let addrs: Vec<std::net::SocketAddr> =
+        tokio::net::lookup_host((host.as_str(), port)).await?.collect();
+    let stream = race_connect(interleave_families(addrs), DIAL_STAGGER).await?;
+    let (ws, _) =
+        tokio_tungstenite::client_async_tls_with_config(request, stream, None, None).await?;
+    Ok(ws)
+}
+
+/// Alternates address families, starting with the resolver's first choice.
+fn interleave_families(addrs: Vec<std::net::SocketAddr>) -> Vec<std::net::SocketAddr> {
+    let first_v6 = addrs.first().is_some_and(std::net::SocketAddr::is_ipv6);
+    let (v6, v4): (Vec<_>, Vec<_>) = addrs.into_iter().partition(std::net::SocketAddr::is_ipv6);
+    let (mut first, mut second) =
+        if first_v6 { (v6.into_iter(), v4.into_iter()) } else { (v4.into_iter(), v6.into_iter()) };
+    let mut out = Vec::with_capacity(first.len() + second.len());
+    loop {
+        match (first.next(), second.next()) {
+            (None, None) => return out,
+            (a, b) => out.extend(a.into_iter().chain(b)),
+        }
+    }
+}
+
+/// Connects to the first of `addrs` that answers. A new attempt starts every
+/// `stagger`, or at once when one fails; earlier attempts keep running.
+async fn race_connect(
+    addrs: Vec<std::net::SocketAddr>,
+    stagger: std::time::Duration,
+) -> std::io::Result<tokio::net::TcpStream> {
+    use futures_util::StreamExt as _;
+    use futures_util::stream::FuturesUnordered;
+    let mut pending = addrs.into_iter();
+    let mut attempts = FuturesUnordered::new();
+    let mut last_err = None;
+    loop {
+        if attempts.is_empty() {
+            let Some(addr) = pending.next() else {
+                return Err(last_err.unwrap_or_else(|| {
+                    std::io::Error::new(std::io::ErrorKind::NotFound, "no address resolved")
+                }));
+            };
+            attempts.push(tokio::net::TcpStream::connect(addr));
+        }
+        tokio::select! {
+            Some(res) = attempts.next() => match res {
+                Ok(stream) => return Ok(stream),
+                Err(err) => {
+                    last_err = Some(err);
+                    if let Some(addr) = pending.next() {
+                        attempts.push(tokio::net::TcpStream::connect(addr));
+                    }
+                }
+            },
+            () = tokio::time::sleep(stagger), if !pending.as_slice().is_empty() => {
+                if let Some(addr) = pending.next() {
+                    attempts.push(tokio::net::TcpStream::connect(addr));
+                }
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn addr(s: &str) -> std::net::SocketAddr {
+        s.parse().unwrap()
+    }
+
+    #[test]
+    fn families_alternate_from_the_resolvers_first_choice() {
+        let got = interleave_families(vec![
+            addr("[2001:db8::1]:443"),
+            addr("[2001:db8::2]:443"),
+            addr("192.0.2.1:443"),
+        ]);
+        assert_eq!(
+            got,
+            [addr("[2001:db8::1]:443"), addr("192.0.2.1:443"), addr("[2001:db8::2]:443")]
+        );
+        let v4_first = interleave_families(vec![addr("192.0.2.1:443"), addr("[2001:db8::1]:443")]);
+        assert_eq!(v4_first, [addr("192.0.2.1:443"), addr("[2001:db8::1]:443")]);
+    }
+
+    #[tokio::test]
+    async fn a_blackholed_first_address_falls_back_to_the_next() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let live = listener.local_addr().unwrap();
+        let started = std::time::Instant::now();
+        let stream = race_connect(
+            vec![addr("[100::1]:9"), addr("192.0.2.1:9"), live],
+            std::time::Duration::from_millis(50),
+        )
+        .await
+        .unwrap();
+        assert_eq!(stream.peer_addr().unwrap(), live);
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+    }
+
+    #[tokio::test]
+    async fn a_refused_address_moves_on_without_waiting_for_the_stagger() {
+        let dead = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let refused = dead.local_addr().unwrap();
+        drop(dead);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let live = listener.local_addr().unwrap();
+        let stream =
+            race_connect(vec![refused, live], std::time::Duration::from_mins(1)).await.unwrap();
+        assert_eq!(stream.peer_addr().unwrap(), live);
+    }
+
+    #[tokio::test]
+    async fn every_address_failing_reports_the_last_error() {
+        let dead = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let refused = dead.local_addr().unwrap();
+        drop(dead);
+        assert!(race_connect(vec![refused], std::time::Duration::from_millis(10)).await.is_err());
+        assert!(race_connect(Vec::new(), std::time::Duration::from_millis(10)).await.is_err());
+    }
 
     async fn serve_put(status: &'static str) -> String {
         use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};

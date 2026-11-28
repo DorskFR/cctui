@@ -296,7 +296,10 @@ Two layers enforce a guarded dispatch, and neither depends on the harness:
   a capability of the active step grants that binary, subcommand and flags
   (`worker-contract.md`, "Exec interception"). Claude Code, Codex and OpenCode
   all reach `git`, `gh` and `curl` through `execve`, so the same step denies
-  the same command on every harness.
+  the same command on every harness. A process that shares its memory with
+  another task can still rewrite an allowed exec's argv before the kernel
+  re-reads it (see "Limits" there), so this layer backs the egress proxy
+  rather than replacing it.
 
 The per-harness pre-tool hooks of §6 are **steering**: they refuse a tool call
 before it runs, with the same capability-worded reason the exec layer writes to

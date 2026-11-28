@@ -64,6 +64,16 @@ impl PodIdentity {
         Self { pod, ip, owned: DashMap::new(), withdrawn: AtomicBool::new(false) }
     }
 
+    /// Pass `entity_id`'s row from connection `from` to `to`, if `from` still
+    /// owns it, so the row goes with whichever connection closes last.
+    pub fn hand_off(&self, kind: Kind, entity_id: Uuid, from: Uuid, to: Uuid) -> bool {
+        self.owned
+            .get_mut(&(kind, entity_id))
+            .filter(|owner| **owner == from)
+            .map(|mut owner| *owner = to)
+            .is_some()
+    }
+
     #[cfg(any(test, feature = "test-support"))]
     #[must_use]
     pub fn for_test(pod: &str, ip: &str) -> Self {
@@ -543,5 +553,18 @@ mod tests {
         assert!(!pod_exists(&pool, &a.pod).await, "a withdrawn pod stays gone");
         assert_eq!(ws_owner(&pool, Kind::Daemon, machine).await, None);
         wipe(&pool, &prefix).await;
+    }
+
+    #[test]
+    fn a_hand_off_moves_only_a_row_the_closing_connection_owns() {
+        let me = PodIdentity::for_test("pod", "10.0.5.1");
+        let (machine, closing, survivor, other) =
+            (Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4());
+        me.owned.insert((Kind::Daemon, machine), closing);
+        assert!(me.hand_off(Kind::Daemon, machine, closing, survivor));
+        assert_eq!(me.owned.get(&(Kind::Daemon, machine)).map(|r| *r), Some(survivor));
+        assert!(!me.hand_off(Kind::Daemon, machine, closing, other));
+        assert_eq!(me.owned.get(&(Kind::Daemon, machine)).map(|r| *r), Some(survivor));
+        assert!(!me.hand_off(Kind::Daemon, Uuid::new_v4(), closing, survivor));
     }
 }

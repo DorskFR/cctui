@@ -277,11 +277,14 @@ impl InjectionPolicy {
     }
 }
 
-/// Longest matching `path_prefix` wins; ties keep config order.
+/// Longest matching `path_prefix` wins; ties keep config order. A path the
+/// upstream could resolve differently (dot segments, `//`, encoded `/`, `.`,
+/// `\\` or `%`) matches no scoped rule, only an unscoped one.
 fn select_rule<'a>(rules: &'a [InjectionRule], path: &str) -> Option<&'a InjectionRule> {
+    let plain = is_plain_path(path);
     let mut best: Option<&InjectionRule> = None;
     for r in rules {
-        if r.path_prefix.as_deref().is_none_or(|p| path.starts_with(p)) {
+        if r.path_prefix.as_deref().is_none_or(|p| plain && path_in_scope(path, p)) {
             let len = r.path_prefix.as_deref().map_or(0, str::len);
             if best.is_none_or(|b| len > b.path_prefix.as_deref().map_or(0, str::len)) {
                 best = Some(r);
@@ -289,6 +292,21 @@ fn select_rule<'a>(rules: &'a [InjectionRule], path: &str) -> Option<&'a Injecti
         }
     }
     best
+}
+
+fn path_in_scope(path: &str, prefix: &str) -> bool {
+    let scope = prefix.trim_end_matches('/');
+    scope.is_empty()
+        || path.strip_prefix(scope).is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
+}
+
+fn is_plain_path(path: &str) -> bool {
+    let lower = path.to_ascii_lowercase();
+    path.starts_with('/')
+        && !path.contains("//")
+        && !path.contains('\\')
+        && !["%2f", "%2e", "%5c", "%25"].iter().any(|e| lower.contains(e))
+        && path.split('/').all(|seg| !matches!(seg.split(';').next(), Some("." | "..")))
 }
 
 /// A per-pod CA (minted once at boot). The private key stays in memory here and
@@ -521,6 +539,11 @@ impl Injector {
     where
         C: AsyncRead + AsyncWrite + Unpin,
     {
+        if !host_is_only(head, dialer.host) {
+            tracing::warn!("REFUSE {}: inner Host names another host", dialer.host);
+            refuse_request(client, "Host is not the intercepted host").await?;
+            return Ok(Step::Close);
+        }
         if let Some(reason) = self.gate_refusal(client, dialer.host, head, cbuf).await? {
             tracing::warn!(
                 "REFUSE {} {}: {reason}",
@@ -1464,6 +1487,21 @@ pub fn request_path(head: &[u8]) -> Option<String> {
     Some(target.split('?').next().unwrap_or_default().to_owned())
 }
 
+/// True when every `Host` header (at most one) names `host`.
+fn host_is_only(head: &[u8], host: &str) -> bool {
+    let mut values = head.split(|&b| b == b'\n').skip(1).filter_map(|line| {
+        let line = trim_ascii(line);
+        let colon = line.iter().position(|&b| b == b':')?;
+        line[..colon].eq_ignore_ascii_case(b"host").then(|| trim_ascii(&line[colon + 1..]))
+    });
+    let first = values.next();
+    values.next().is_none()
+        && first.is_none_or(|v| {
+            let v = String::from_utf8_lossy(v);
+            crate::forward::http1::same_host(crate::forward::http1::split_host_header(&v).0, host)
+        })
+}
+
 /// Case-insensitive header value lookup within a message head.
 pub fn header_value<'a>(head: &'a [u8], name: &str) -> Option<&'a [u8]> {
     for line in head.split(|&b| b == b'\n').skip(1) {
@@ -1714,6 +1752,66 @@ mod tests {
         let other = select_rule(&rules, "/Acme/work-repo/info/refs").unwrap();
         assert_eq!(other.secret, Some(SecretRef::parse("env:GITHUB_TOKEN_ZEPHYR").unwrap()));
         assert!(select_rule(&rules[..1], "/Other/repo").is_none());
+    }
+
+    #[test]
+    fn path_prefix_scopes_on_a_segment_boundary() {
+        let json = r#"[
+            {"host": "github.com", "shape": "git", "path_prefix": "/org/pack",
+             "secret": "env:PACK_TOKEN"},
+            {"host": "github.com", "shape": "git", "path_prefix": "/org/slash/",
+             "secret": "env:SLASH_TOKEN"}
+        ]"#;
+        let rules = load_inject_config(json, "zephyr").unwrap();
+        let pack = Some(SecretRef::parse("env:PACK_TOKEN").unwrap());
+        let slash = Some(SecretRef::parse("env:SLASH_TOKEN").unwrap());
+        for path in ["/org/pack", "/org/pack/", "/org/pack/info/refs", "/org/pack/a%20b"] {
+            assert_eq!(
+                select_rule(&rules, path).map(|r| r.secret.clone()),
+                Some(pack.clone()),
+                "{path}"
+            );
+        }
+        for path in ["/org/slash", "/org/slash/x"] {
+            assert_eq!(
+                select_rule(&rules, path).map(|r| r.secret.clone()),
+                Some(slash.clone()),
+                "{path}"
+            );
+        }
+        for path in [
+            "/org/pack-other/info/refs",
+            "/org/packx",
+            "/org/pack/../x/info/refs",
+            "/org/pack/..;/x",
+            "/org/pack/./info/refs",
+            "/org/pack/%2e%2e/x",
+            "/org/pack%2F..%2Fx",
+            "/org/pack//x",
+            "/org/pack/..\\x",
+            "/org/pack/%252e%252e/x",
+            "/org/slashy",
+        ] {
+            assert!(select_rule(&rules, path).is_none(), "{path} must not get a scoped token");
+        }
+    }
+
+    #[test]
+    fn ambiguous_path_falls_back_to_the_unscoped_rule() {
+        let json = r#"[
+            {"host": "github.com", "shape": "git", "path_prefix": "/org/pack",
+             "secret": "env:PACK_TOKEN"},
+            {"host": "github.com", "shape": "git", "secret": "env:GITHUB_TOKEN"}
+        ]"#;
+        let rules = load_inject_config(json, "zephyr").unwrap();
+        let generic = Some(SecretRef::parse("env:GITHUB_TOKEN").unwrap());
+        for path in ["/org/pack/../other", "/org/pack-other"] {
+            assert_eq!(
+                select_rule(&rules, path).map(|r| r.secret.clone()),
+                Some(generic.clone()),
+                "{path}"
+            );
+        }
     }
 
     #[test]
@@ -2326,6 +2424,42 @@ mod tests {
         let mut body = Vec::new();
         buf.relay_body(tls, &mut body, response_framing(&resp, Some(&method))).await.unwrap();
         (resp, String::from_utf8(body).unwrap())
+    }
+
+    #[test]
+    fn host_is_only_the_intercepted_host() {
+        assert!(host_is_only(b"GET / HTTP/1.1\r\nHost: api.github.com\r\n\r\n", "api.github.com"));
+        assert!(host_is_only(
+            b"GET / HTTP/1.1\r\nhost: API.github.com:443\r\n\r\n",
+            "api.github.com"
+        ));
+        assert!(host_is_only(b"GET / HTTP/1.1\r\nAccept: */*\r\n\r\n", "api.github.com"));
+        assert!(!host_is_only(b"GET / HTTP/1.1\r\nHost: evil.example\r\n\r\n", "api.github.com"));
+        assert!(!host_is_only(
+            b"GET / HTTP/1.1\r\nHost: api.github.com\r\nHost: evil.example\r\n\r\n",
+            "api.github.com"
+        ));
+        assert!(!host_is_only(
+            b"GET / HTTP/1.1\r\nHost: github.com.evil.example\r\n\r\n",
+            "github.com"
+        ));
+    }
+
+    #[tokio::test]
+    async fn inner_host_must_be_the_intercepted_host() {
+        let up = spawn_upstream().await;
+        let (inj, ca) = injector_for(&up, MockBackend(Ok("REAL-TOKEN")), AuthShape::Bearer);
+        let inj = Arc::new(inj);
+        let mut tls = connect_client(inj.clone(), &ca, up.addr.port()).await;
+        let fronted = "GET / HTTP/1.1\r\nHost: evil.example\r\nAuthorization: Bearer X\r\n\r\n";
+        let (resp, _) = exchange(&mut tls, &mut HttpBuf::default(), fronted).await;
+        assert!(resp.starts_with(b"HTTP/1.1 403"), "{}", String::from_utf8_lossy(&resp));
+        assert_eq!(up.requests.load(Ordering::SeqCst), 0, "fronted request never sent");
+
+        let ok = "GET / HTTP/1.1\r\nHost: LocalHost:443\r\nAuthorization: Bearer X\r\n\r\n";
+        let mut tls = connect_client(inj, &ca, up.addr.port()).await;
+        let (resp, _) = exchange(&mut tls, &mut HttpBuf::default(), ok).await;
+        assert!(resp.starts_with(b"HTTP/1.1 200"), "{}", String::from_utf8_lossy(&resp));
     }
 
     #[tokio::test]

@@ -63,6 +63,8 @@ export function mergeLiveEvent(
 	return at < 0 ? [...prev, ev] : [...prev.slice(0, at), ev, ...prev.slice(at)];
 }
 
+const askIdentity = (q: LiveAsk): string => JSON.stringify([q.question, q.questions]);
+
 export interface StreamOpts {
 	// The open session id (reactive getter).
 	id: () => string;
@@ -148,14 +150,25 @@ export class ConversationStream {
 
 	// (Re)subscribe + register listeners for a session. Call from a component
 	// $effect that reads `id` and `resubTick` so it re-runs on a session switch or
-	// forced resubscribe; the returned teardown unsubscribes. (We drive the effect
-	// from the component rather than the constructor so $effect always runs in a
-	// proven component-init context.)
+	// forced resubscribe; the returned teardown unsubscribes. Untracked: the
+	// listeners fire synchronously on registration, and any state they read
+	// would otherwise re-run the effect and drop the subscription.
 	subscribe(sid: string): () => void {
+		return untrack(() => this.#subscribe(sid));
+	}
+
+	#subscribe(sid: string): () => void {
 		const buffered = ws.bufferedEvents(sid);
 		this.live = buffered;
 		this.lastAgentAt = buffered.reduce<number | null>(agentActivityAt, null);
-		this.answering = false;
+		if (sid !== this.#subscribedSid) {
+			this.#subscribedSid = sid;
+			this.answering = false;
+			this.#answeredAsk = null;
+			this.#answeredPlan = null;
+			this.#heldAsk = null;
+			this.#heldPlan = null;
+		}
 		this.working = buffered.reduce(workingAfter, false);
 		this.todos = null;
 		this.#liveTodos = false;
@@ -182,7 +195,11 @@ export class ConversationStream {
 			if (ev.type !== 'heartbeat' && key === null) {
 				// No live ask/plan event is guaranteed to release the lock after an
 				// answer sent from a transcript card.
-				if (ev.type !== 'tool_result') this.answering = false;
+				if (ev.type !== 'tool_result') {
+					this.answering = false;
+					this.#heldAsk = null;
+					this.#heldPlan = null;
+				}
 				const backlog = this.ask !== null && !this.#askCallSeen;
 				if (backlog && this.#isLiveAskCall(ev)) this.#askCallSeen = true;
 				if (this.ask && !backlog) {
@@ -214,7 +231,15 @@ export class ConversationStream {
 			// A permission prompt means claude is blocked on the user, not working.
 			if (list.length) this.working = false;
 		});
+		// The listeners fire once on registration with the current value; that
+		// null is not a resolution and must not release an answer's lock.
+		let registered = false;
 		const offAsk = ws.onAsk(sid, (q) => {
+			if (q === null) this.#heldAsk = null;
+			else if (this.answering && askIdentity(q) === this.#answeredAsk) {
+				this.#heldAsk = q;
+				return;
+			}
 			// A pending ask resolving (answered here, from the TUI, or timed out)
 			// means its late transcript line must stay suppressed.
 			if (!q && this.ask) this.markAsksResolved(this.liveAskQuestions, this.ask.question);
@@ -223,17 +248,23 @@ export class ConversationStream {
 				[...(this.#opts.historyData() ?? []), ...this.live].some((e) => this.#isLiveAskCall(e))
 			);
 			// A fresh ask (or a resolution) supersedes any in-flight answer lock.
-			this.answering = false;
+			if (q || registered) this.answering = false;
 			// A pending question means claude is waiting on the user, not working.
 			if (q) this.working = false;
 		});
 		const offPlan = ws.onPlan(sid, (p) => {
+			if (p === null) this.#heldPlan = null;
+			else if (this.answering && p.plan === this.#answeredPlan) {
+				this.#heldPlan = p;
+				return;
+			}
 			this.plan = p;
 			// A fresh plan (or a resolution) supersedes any in-flight answer lock.
-			this.answering = false;
+			if (p || registered) this.answering = false;
 			// A pending plan means claude is waiting on the user, not working.
 			if (p) this.working = false;
 		});
+		registered = true;
 		const offSoftLimit = ws.onSoftLimit(sid, (sl) => {
 			this.softLimit = sl;
 		});
@@ -259,7 +290,10 @@ export class ConversationStream {
 			this.retryingReplies = snap.retrying;
 			// A failed answer must not leave the ask sites locked "Answering…"
 			// forever.
-			if (snap.failed.size) this.answering = false;
+			if (snap.failed.size) {
+				this.answering = false;
+				this.#restoreHeld();
+			}
 		});
 		return () => {
 			if (this.#taskRefresh) clearTimeout(this.#taskRefresh);
@@ -372,6 +406,21 @@ export class ConversationStream {
 
 	#askCallSeen = false;
 
+	// A subscribe replays the prompt an in-flight answer is for; it stays held
+	// until that answer settles, so the form cannot be answered twice.
+	#subscribedSid: string | null = null;
+	#answeredAsk: string | null = null;
+	#answeredPlan: string | null = null;
+	#heldAsk: LiveAsk | null = null;
+	#heldPlan: LivePlan | null = null;
+
+	#restoreHeld() {
+		if (this.#heldAsk) this.ask = this.#heldAsk;
+		if (this.#heldPlan) this.plan = this.#heldPlan;
+		this.#heldAsk = null;
+		this.#heldPlan = null;
+	}
+
 	#isLiveAskCall(ev: AgentEvent): boolean {
 		if (!this.ask || ev.type !== 'tool_call' || ev.tool !== 'AskUserQuestion') return false;
 		const q = parseAsk(ev.input)?.[0]?.question;
@@ -461,19 +510,20 @@ export class ConversationStream {
 		if (this.#opts.archived()) return;
 		const turnId = newTurnId();
 		const ts = this.#pushOptimisticReply(text, turnId);
+		// A false send is parked and goes out on reconnect, so the form locks
+		// either way.
 		const ok = ws.trackedSend(this.#opts.id(), text, ts, picks ?? undefined, turnId);
-		if (!ok) return;
-		// Lock both ask render sites to their answered state immediately,
-		// and remember the answered questions so the late transcript line never
+		// Remember the answered questions so the late transcript line never
 		// resurfaces as a fresh form.
 		this.markAsksResolved(qs ?? this.liveAskQuestions, this.ask?.question);
-		this.answering = true;
-		// Answering hands control back to claude — show the working indicator.
-		this.#began();
+		const answered = this.ask ? askIdentity(this.ask) : null;
 		// Dismiss the live prompt immediately — the daemon's AskResolved arrives a
-		// poll later.
+		// poll later. The dismissal resets the lock, so it goes first.
 		this.ask = null;
 		ws.clearAsk(this.#opts.id());
+		this.#answeredAsk = answered;
+		this.answering = true;
+		if (ok) this.#began();
 		this.#opts.invalidateSessions();
 	}
 
@@ -487,11 +537,12 @@ export class ConversationStream {
 		const turnId = newTurnId();
 		const ts = this.#pushOptimisticReply(text, turnId);
 		const ok = ws.trackedSend(this.#opts.id(), text, ts, picks ?? undefined, turnId);
-		if (!ok) return;
-		this.answering = true;
-		this.#began();
+		const answered = this.plan?.plan ?? null;
 		this.plan = null;
 		ws.clearPlan(this.#opts.id());
+		this.#answeredPlan = answered;
+		this.answering = true;
+		if (ok) this.#began();
 		this.#opts.invalidateSessions();
 	}
 

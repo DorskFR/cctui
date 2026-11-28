@@ -16,7 +16,8 @@ fn sanitize_upper(part: &str) -> String {
 
 /// Substitutes `${IDENTITY}` (sanitized-uppercase) and `${identity}` (verbatim)
 /// in a secret-ref template. A template that uses a placeholder while no
-/// identity is set is an error — never silently resolve to a wrong path.
+/// identity is set, or with one that is not a lowercase slug, is an error —
+/// never silently resolve to a wrong path.
 #[allow(clippy::literal_string_with_formatting_args)]
 pub fn render_identity(template: &str, identity: &str) -> anyhow::Result<String> {
     if !template.contains("${") {
@@ -25,6 +26,11 @@ pub fn render_identity(template: &str, identity: &str) -> anyhow::Result<String>
     anyhow::ensure!(
         !identity.is_empty(),
         "secret ref {template:?} uses an identity placeholder but no identity is set"
+    );
+    anyhow::ensure!(
+        identity.len() <= 32
+            && identity.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-'),
+        "identity {identity:?} must be 1-32 lowercase letters, digits or `-`"
     );
     let out =
         template.replace("${IDENTITY}", &sanitize_upper(identity)).replace("${identity}", identity);
@@ -56,6 +62,10 @@ mod tests {
         assert!(render_identity("env:CRED_${IDENTITY}_GH", "").is_err());
         // Unknown placeholder must error rather than pass through.
         assert!(render_identity("env:CRED_${TYPO}", "acme").is_err());
+        for bad in ["acme/../other", "acme#KEY", "Acme", "a_b"] {
+            assert!(render_identity("vault:c/data/w/${identity}#token", bad).is_err(), "{bad}");
+        }
+        assert_eq!(render_identity("env:STATIC", "Not/Checked").unwrap(), "env:STATIC");
     }
 
     use std::sync::{Arc, Mutex};

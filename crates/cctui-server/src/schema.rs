@@ -226,6 +226,21 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "webauthn_ceremonies",
         sql: include_str!("../schema/0034_webauthn_ceremonies.sql"),
     },
+    Migration {
+        version: 35,
+        name: "session_webhook_death_only",
+        sql: include_str!("../schema/0035_session_webhook_death_only.sql"),
+    },
+    Migration {
+        version: 36,
+        name: "account_usage_reads",
+        sql: include_str!("../schema/0036_account_usage_reads.sql"),
+    },
+    Migration {
+        version: 37,
+        name: "blob_uploaders",
+        sql: include_str!("../schema/0037_blob_uploaders.sql"),
+    },
 ];
 
 /// Expand a core installation, or adopt the already migrated full schema.
@@ -405,7 +420,10 @@ mod tests {
                     (31, "bootstrap".to_owned()),
                     (32, "bootstrap".to_owned()),
                     (33, "bootstrap".to_owned()),
-                    (34, "bootstrap".to_owned())
+                    (34, "bootstrap".to_owned()),
+                    (35, "bootstrap".to_owned()),
+                    (36, "bootstrap".to_owned()),
+                    (37, "bootstrap".to_owned())
                 ]
             );
 
@@ -519,7 +537,7 @@ mod tests {
             drop(conn);
             let versions: Vec<i64> =
                 installations(&pool, "workspace").await.into_iter().map(|(v, _)| v).collect();
-            assert_eq!(versions.last(), Some(&34));
+            assert_eq!(versions.last(), Some(&37));
             assert!(installations(&pool, super::SEARCH_PACKAGE).await.is_empty());
             assert_eq!(search_text_objects(&pool).await, (false, false, 0, false));
             assert_eq!(insert_and_read_plain_event(&pool).await, "t");
@@ -1091,7 +1109,10 @@ mod tests {
                     (31, "bootstrap".to_owned()),
                     (32, "bootstrap".to_owned()),
                     (33, "bootstrap".to_owned()),
-                    (34, "bootstrap".to_owned())
+                    (34, "bootstrap".to_owned()),
+                    (35, "bootstrap".to_owned()),
+                    (36, "bootstrap".to_owned()),
+                    (37, "bootstrap".to_owned())
                 ]
             );
             let rows: i64 =

@@ -408,27 +408,9 @@ async fn decide(
     let mut outcome = json!(null);
     match (decision, direction.as_str(), status.as_str()) {
         (Decision::Drop, _, "held" | "review") => {
-            set(state, msg, &status, "dropped").await?;
+            set(state.pool(), msg, &status, "dropped").await?;
         }
-        (Decision::Release, "in", "held") => {
-            if link.state == LinkState::Closed {
-                return Err(conflict("the link is closed"));
-            }
-            let sid = link.session_id.as_deref().ok_or_else(not_found)?;
-            let turn = cctuiverse::wire::inbound_turn(&link, &kind, &body).ok_or_else(not_found)?;
-            match cctuiverse::deliver_local(state, sid, turn).await {
-                Delivery::Delivered => set(state, msg, "held", "released").await?,
-                Delivery::Offline => {
-                    return Err(AppError::new(
-                        StatusCode::SERVICE_UNAVAILABLE,
-                        "the session is offline",
-                    ));
-                }
-                Delivery::Archived | Delivery::Ended => {
-                    return Err(conflict("the session has ended"));
-                }
-            }
-        }
+        (Decision::Release, "in", "held") => release_held(state, &link, msg, &kind, &body).await?,
         (Decision::Approve, "out", "review") => {
             if !link.usable() {
                 return Err(conflict("the link is closed or expired"));
@@ -456,7 +438,56 @@ async fn decide(
     Ok(Json(json!({ "link": cctuiverse::view(state.pool(), &link).await?, "outcome": outcome })))
 }
 
-async fn set(state: &impl ExtrasContext, msg: i64, from: &str, to: &str) -> Result<(), AppError> {
+/// Delivers a held inbound message while holding its row, so a concurrent
+/// release or drop waits for the outcome and then finds it handled.
+async fn release_held(
+    state: &impl ExtrasContext,
+    link: &Link,
+    msg: i64,
+    kind: &str,
+    body: &Value,
+) -> Result<(), AppError> {
+    let conflict = |m: &str| AppError::new(StatusCode::CONFLICT, m.to_owned());
+    if link.state == LinkState::Closed {
+        return Err(conflict("the link is closed"));
+    }
+    let sid = link.session_id.as_deref().ok_or_else(not_found)?;
+    let turn = cctuiverse::wire::inbound_turn(link, kind, body).ok_or_else(not_found)?;
+    let mut tx = state.pool().begin().await?;
+    if !claim_held(&mut tx, msg).await? {
+        return Err(conflict(ALREADY_HANDLED));
+    }
+    match cctuiverse::deliver_local(state, sid, turn).await {
+        Delivery::Delivered => {
+            set(&mut *tx, msg, "held", "released").await?;
+            tx.commit().await?;
+            Ok(())
+        }
+        Delivery::Offline => {
+            Err(AppError::new(StatusCode::SERVICE_UNAVAILABLE, "the session is offline"))
+        }
+        Delivery::Archived | Delivery::Ended => Err(conflict("the session has ended")),
+    }
+}
+
+/// Locks the message row for the transaction; `true` iff it is still held.
+async fn claim_held(conn: &mut sqlx::PgConnection, msg: i64) -> Result<bool, sqlx::Error> {
+    let status: Option<String> =
+        sqlx::query_scalar("SELECT status FROM cctuiverse_messages WHERE id = $1 FOR UPDATE")
+            .bind(msg)
+            .fetch_optional(conn)
+            .await?;
+    Ok(status.as_deref() == Some("held"))
+}
+
+const ALREADY_HANDLED: &str = "the message was already handled";
+
+async fn set<'e>(
+    db: impl sqlx::PgExecutor<'e>,
+    msg: i64,
+    from: &str,
+    to: &str,
+) -> Result<(), AppError> {
     let r = sqlx::query(
         "UPDATE cctuiverse_messages SET status = $3, \
              delivered_at = CASE WHEN $3 = 'released' THEN now() ELSE delivered_at END \
@@ -465,10 +496,10 @@ async fn set(state: &impl ExtrasContext, msg: i64, from: &str, to: &str) -> Resu
     .bind(msg)
     .bind(from)
     .bind(to)
-    .execute(state.pool())
+    .execute(db)
     .await?;
     if r.rows_affected() == 0 {
-        return Err(AppError::new(StatusCode::CONFLICT, "the message was already handled"));
+        return Err(AppError::new(StatusCode::CONFLICT, ALREADY_HANDLED));
     }
     Ok(())
 }
@@ -560,5 +591,103 @@ mod tests {
         assert!(refuse_machine(&ctx(None)).is_ok());
         let err = refuse_machine(&ctx(Some(Uuid::nil()))).unwrap_err();
         assert_eq!(err.status(), StatusCode::FORBIDDEN);
+    }
+
+    async fn held_message(pool: &sqlx::PgPool, name: &str) -> (Uuid, String, i64) {
+        let (uid, sid) = cctui_server_kernel::test_support::seed_session(pool, name).await;
+        let link = Uuid::new_v4();
+        sqlx::query(
+            "INSERT INTO cctuiverse_links (id, user_id, session_id, kind, role, state, label, \
+             public_key, envelope_nonce) \
+             VALUES ($1, $2, $3, 'session', 'inviter', 'active', 'l', '\\x00', 'n')",
+        )
+        .bind(link)
+        .bind(uid)
+        .bind(&sid)
+        .execute(pool)
+        .await
+        .unwrap();
+        let msg: i64 = sqlx::query_scalar(
+            "INSERT INTO cctuiverse_messages (link_id, message_id, direction, kind, body, status) \
+             VALUES ($1, $2, 'in', 'direct', '{}', 'held') RETURNING id",
+        )
+        .bind(link)
+        .bind(Uuid::new_v4())
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        (uid, sid, msg)
+    }
+
+    async fn drop_seed(pool: &sqlx::PgPool, uid: Uuid) {
+        for sql in [
+            "DELETE FROM cctuiverse_links WHERE user_id = $1",
+            "DELETE FROM sessions WHERE user_id = $1",
+            "DELETE FROM machines WHERE user_id = $1",
+            "DELETE FROM users WHERE id = $1",
+        ] {
+            sqlx::query(sql).bind(uid).execute(pool).await.unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn a_released_message_is_claimed_before_delivery() {
+        let name = "cctuiverse_release_claims_first";
+        let Some(url) = cctui_server_kernel::test_support::db_url(name) else {
+            return;
+        };
+        let pool =
+            sqlx::postgres::PgPoolOptions::new().max_connections(3).connect(&url).await.unwrap();
+        let (uid, _, msg) = held_message(&pool, name).await;
+
+        let mut first = pool.begin().await.unwrap();
+        assert!(claim_held(&mut first, msg).await.unwrap());
+        let second = tokio::spawn({
+            let pool = pool.clone();
+            async move {
+                let mut tx = pool.begin().await.unwrap();
+                claim_held(&mut tx, msg).await.unwrap()
+            }
+        });
+        let dropper = tokio::spawn({
+            let pool = pool.clone();
+            async move { set(&pool, msg, "held", "dropped").await.map_err(|e| e.status()) }
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        assert!(!second.is_finished(), "a second release must wait for the first");
+        assert!(!dropper.is_finished(), "a drop must wait for the release");
+        set(&mut *first, msg, "held", "released").await.unwrap();
+        first.commit().await.unwrap();
+
+        assert!(!second.await.unwrap(), "the second release finds it handled");
+        assert_eq!(dropper.await.unwrap(), Err(StatusCode::CONFLICT));
+        let status: String =
+            sqlx::query_scalar("SELECT status FROM cctuiverse_messages WHERE id = $1")
+                .bind(msg)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(status, "released");
+        drop_seed(&pool, uid).await;
+    }
+
+    #[tokio::test]
+    async fn a_failed_release_leaves_the_message_held() {
+        let name = "cctuiverse_failed_release_rolls_back";
+        let Some(url) = cctui_server_kernel::test_support::db_url(name) else {
+            return;
+        };
+        let pool =
+            sqlx::postgres::PgPoolOptions::new().max_connections(2).connect(&url).await.unwrap();
+        let (uid, _, msg) = held_message(&pool, name).await;
+        {
+            let mut tx = pool.begin().await.unwrap();
+            assert!(claim_held(&mut tx, msg).await.unwrap());
+        }
+        let mut tx = pool.begin().await.unwrap();
+        assert!(claim_held(&mut tx, msg).await.unwrap(), "a dropped claim releases the row");
+        tx.rollback().await.unwrap();
+        set(&pool, msg, "held", "dropped").await.unwrap();
+        drop_seed(&pool, uid).await;
     }
 }

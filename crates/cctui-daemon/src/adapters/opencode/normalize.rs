@@ -12,7 +12,7 @@ use cctui_proto::adapter::AdapterEvent;
 use serde_json::{Value, json};
 
 use super::backend::Signal;
-use super::client::{MessageInfo, Part, ToolState};
+use super::client::{MessageInfo, MessageWithParts, Part, ToolState};
 use super::events::{OcEvent, StatusKind, status_kind};
 
 const TOOL_OUTPUT_CAP: usize = 4000;
@@ -168,6 +168,19 @@ pub fn error_text(error: &Value) -> String {
     if message.is_empty() { name.to_owned() } else { format!("{name}: {message}") }
 }
 
+/// Whether a snapshot ends on a finished turn: a completed assistant message
+/// that is not about to run tools, or one that failed.
+#[must_use]
+pub fn turn_settled(messages: &[MessageWithParts]) -> bool {
+    let Some(last) = messages.last().map(|m| &m.info) else { return false };
+    if last.role != "assistant" {
+        return false;
+    }
+    last.error.is_some()
+        || (last.time.completed.is_some()
+            && last.finish.as_deref().is_some_and(|f| f != "tool-calls" && f != "unknown"))
+}
+
 /// v1 re-sends whole snapshots: a part needs its message's role, and what was
 /// already emitted must not be emitted again.
 #[derive(Debug, Default)]
@@ -175,6 +188,7 @@ pub struct Tracker {
     roles: HashMap<String, String>,
     emitted_parts: HashSet<String>,
     emitted_usage: HashSet<String>,
+    emitted_failures: HashSet<String>,
     /// Bytes of each streaming text part already forwarded as deltas.
     streamed: HashMap<String, usize>,
 }
@@ -219,8 +233,23 @@ impl Tracker {
         {
             out.push(Signal::Usage(Box::new(usage)));
         }
-        if let Some(error) = info.error.as_ref() {
+        if let Some(error) = info.error.as_ref()
+            && self.emitted_failures.insert(info.id.clone())
+        {
             out.push(Signal::Failed(error_text(error)));
+        }
+        out
+    }
+
+    /// Replay a `GET /session/{id}/message` snapshot as if its messages and
+    /// parts had streamed in: only what was not already emitted comes out.
+    pub fn catch_up(&mut self, session_id: &str, messages: &[MessageWithParts]) -> Vec<Signal> {
+        let mut out = Vec::new();
+        for message in messages {
+            out.extend(self.message(session_id, &message.info));
+            for part in &message.parts {
+                out.extend(self.part(session_id, part));
+            }
         }
         out
     }
@@ -275,6 +304,97 @@ fn status_signal(kind: StatusKind) -> Signal {
 mod tests {
     use super::*;
     use crate::adapters::opencode::client::{MessageTime, PartTime, TokenCache, Tokens};
+
+    fn snapshot_message(
+        id: &str,
+        role: &str,
+        finish: Option<&str>,
+        parts: Vec<Part>,
+    ) -> MessageWithParts {
+        MessageWithParts {
+            info: MessageInfo {
+                id: id.to_owned(),
+                role: role.to_owned(),
+                time: MessageTime { created: 1, completed: finish.map(|_| 2) },
+                finish: finish.map(str::to_owned),
+                ..MessageInfo::default()
+            },
+            parts,
+        }
+    }
+
+    fn final_text(id: &str, message_id: &str, text: &str) -> Part {
+        Part::Text {
+            id: id.to_owned(),
+            message_id: Some(message_id.to_owned()),
+            text: text.to_owned(),
+            time: Some(PartTime { start: 1, end: Some(2) }),
+            synthetic: None,
+        }
+    }
+
+    fn row_texts(signals: &[Signal]) -> Vec<String> {
+        signals
+            .iter()
+            .filter_map(|s| match s {
+                Signal::Rows(rows) => Some(rows),
+                _ => None,
+            })
+            .flatten()
+            .map(|(_, payload)| payload["text"].as_str().unwrap_or_default().to_owned())
+            .collect()
+    }
+
+    #[test]
+    fn catch_up_emits_only_what_the_stream_missed() {
+        let mut tracker = Tracker::default();
+        let seen = OcEvent::PartUpdated {
+            properties: super::super::events::PartUpdated {
+                session_id: "ses_1".to_owned(),
+                part: final_text("prt_a", "msg_a", "before the gap"),
+            },
+        };
+        assert_eq!(row_texts(&tracker.signals("ses_1", seen)), vec!["before the gap"]);
+        let snapshot = vec![
+            snapshot_message("msg_u", "user", None, vec![final_text("prt_u", "msg_u", "go")]),
+            snapshot_message(
+                "msg_a",
+                "assistant",
+                Some("stop"),
+                vec![
+                    final_text("prt_a", "msg_a", "before the gap"),
+                    final_text("prt_b", "msg_a", "during the gap"),
+                ],
+            ),
+        ];
+        assert_eq!(row_texts(&tracker.catch_up("ses_1", &snapshot)), vec!["go", "during the gap"]);
+        assert!(row_texts(&tracker.catch_up("ses_1", &snapshot)).is_empty(), "a replay is a no-op");
+    }
+
+    #[test]
+    fn a_failed_message_is_reported_once_across_replays() {
+        let mut tracker = Tracker::default();
+        let mut failed = snapshot_message("msg_f", "assistant", None, Vec::new());
+        failed.info.error = Some(json!({"name": "ProviderError", "data": {"message": "down"}}));
+        let failures = |signals: Vec<Signal>| {
+            signals.into_iter().filter(|s| matches!(s, Signal::Failed(_))).count()
+        };
+        assert_eq!(failures(tracker.catch_up("ses_1", std::slice::from_ref(&failed))), 1);
+        assert_eq!(failures(tracker.catch_up("ses_1", std::slice::from_ref(&failed))), 0);
+    }
+
+    #[test]
+    fn a_snapshot_is_settled_only_on_a_finished_assistant_message() {
+        let user = snapshot_message("m1", "user", None, Vec::new());
+        let done = snapshot_message("m2", "assistant", Some("stop"), Vec::new());
+        let tools = snapshot_message("m2", "assistant", Some("tool-calls"), Vec::new());
+        let streaming = snapshot_message("m2", "assistant", None, Vec::new());
+        assert!(!turn_settled(&[]));
+        assert!(!turn_settled(std::slice::from_ref(&user)));
+        assert!(turn_settled(&[user.clone(), done]));
+        assert!(!turn_settled(&[user.clone(), tools]));
+        assert!(!turn_settled(&[user, streaming]));
+    }
 
     fn text_part(text: &str, end: Option<i64>) -> Part {
         Part::Text {

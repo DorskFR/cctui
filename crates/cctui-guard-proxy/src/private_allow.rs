@@ -23,7 +23,7 @@ const CONTROL_PLANE_URLS: &[&str] = &[
 ];
 
 const LEGACY_WARNING: &str = "GUARD_PROXY_ALLOW_PRIVATE_IPS is set: every private destination is \
-     reachable (only link-local stays denied); list the hosts in GUARD_PROXY_PRIVATE_ALLOW instead";
+     reachable (only the cloud metadata surface stays denied); list the hosts in GUARD_PROXY_PRIVATE_ALLOW instead";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Entry {
@@ -448,6 +448,18 @@ mod tests {
         let pa = allow(false, &[("GUARD_PROXY_PRIVATE_ALLOW", "169.254.169.254,metadata.lan")]);
         let d = pa.decide("metadata.lan", 80, &addrs(&["10.0.0.2", "169.254.169.254"], 80), None);
         assert!(matches!(d, Decision::Denied(_)), "{d:?}");
+    }
+
+    #[test]
+    fn translated_and_ipv6_metadata_never_allowed() {
+        let pa = allow(true, &[("GUARD_PROXY_PRIVATE_ALLOW", "imds6.lan,nat64.lan")]);
+        for a in ["fd00:ec2::254", "fd00:ec2::23", "64:ff9b::a9fe:a9fe", "2002:a9fe:a9fe::"] {
+            let d = pa.decide("imds6.lan", 80, &addrs(&[a], 80), None);
+            assert!(matches!(d, Decision::Denied(_)), "{a}: {d:?}");
+        }
+        let strict = allow(false, &[]);
+        let d = strict.decide("svc.example", 443, &addrs(&["64:ff9b::a00:5"], 443), None);
+        assert!(matches!(d, Decision::Denied(_)), "NAT64 of 10.0.0.5 is private: {d:?}");
     }
 
     #[test]

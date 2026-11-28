@@ -177,6 +177,28 @@ fn is_1m(model: &str) -> bool {
     model.to_ascii_lowercase().contains("[1m]")
 }
 
+/// The model a follow-up launches with.
+///
+/// `reported`, carrying the launch's `[1m]` suffix again when it is still the
+/// model the session launched with, by id or by alias (`opus[1m]` reported as
+/// `claude-opus-…`).
+#[must_use]
+pub fn followup_model(reported: Option<&str>, launched: Option<&str>) -> Option<String> {
+    let reported = reported.filter(|m| !m.trim().is_empty());
+    let Some(launched) = launched.filter(|m| is_1m(m)) else {
+        return reported.map(str::to_owned);
+    };
+    let Some(reported) = reported else { return Some(launched.to_owned()) };
+    if is_1m(reported) {
+        return Some(reported.to_owned());
+    }
+    let bare = launched.to_ascii_lowercase().replace("[1m]", "");
+    let bare = bare.trim();
+    let now = reported.to_ascii_lowercase();
+    let same = now == bare || (!bare.is_empty() && !bare.contains('-') && now.contains(bare));
+    Some(if same { format!("{reported}[1m]") } else { reported.to_owned() })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -266,6 +288,25 @@ mod tests {
         assert_eq!(default_codex.map(|w| w.0), Some(CODEX_WINDOW));
         assert_eq!(window("opencode", reported("x")), None);
         assert_eq!(context_window(None, &reported("opus[1m]")), None);
+    }
+
+    #[test]
+    fn a_followup_keeps_the_1m_suffix_its_source_launched_with() {
+        let m = |reported, launched| followup_model(reported, launched);
+        let opus = Some("claude-opus-5-5");
+        let opus_1m = Some("claude-opus-5-5[1m]");
+        assert_eq!(m(opus, opus_1m).as_deref(), opus_1m);
+        assert_eq!(m(opus, Some("opus[1m]")).as_deref(), opus_1m);
+        assert_eq!(m(opus, opus).as_deref(), opus);
+        assert_eq!(m(opus, None).as_deref(), opus);
+        assert_eq!(m(Some("claude-sonnet-5-5"), opus_1m).as_deref(), Some("claude-sonnet-5-5"));
+        assert_eq!(
+            m(Some("claude-sonnet-5-5"), Some("opus[1m]")).as_deref(),
+            Some("claude-sonnet-5-5")
+        );
+        assert_eq!(m(None, opus_1m).as_deref(), opus_1m);
+        assert_eq!(m(Some(""), opus_1m).as_deref(), opus_1m);
+        assert_eq!(m(None, None), None);
     }
 
     #[test]

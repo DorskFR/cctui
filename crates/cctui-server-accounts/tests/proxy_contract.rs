@@ -359,6 +359,13 @@ async fn headless_proxy_preserves_bytes_credentials_status_and_rate_limit() {
     assert_eq!(headers["x-api-key"], "upstream-fixture");
     assert!(!headers.contains_key("authorization"));
     assert_eq!(body, "{\"model\": \"fixture\",  \"messages\":[]}");
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while f.host.0.notices.load(Ordering::SeqCst) == 0 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("usage notice delivered");
     assert_eq!(f.host.0.notices.load(Ordering::SeqCst), 1);
     assert_eq!(
         f.request("/gateway/anthropic/v1/messages", &f.token).await.status(),

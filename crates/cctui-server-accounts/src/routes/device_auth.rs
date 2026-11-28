@@ -330,7 +330,8 @@ async fn set_decision(
 }
 
 /// The same credential shape `POST /users/{id}/tokens` mints, with the
-/// approving user's own ceiling: a device login grants nothing extra.
+/// approving user's own ceiling. [`may_approve`] holds the approver to that
+/// ceiling, so a device login grants nothing extra.
 async fn mint_device_token(
     conn: &mut sqlx::PgConnection,
     user_id: Uuid,
@@ -403,18 +404,33 @@ pub async fn decide<S: KernelContext>(
     Path(user_code): Path<String>,
     Json(req): Json<DeviceAuthDecision>,
 ) -> Result<StatusCode, AppError> {
-    if !auth::is_human_credential(state.pool(), &ctx).await? {
-        return Err(AppError::new(
-            StatusCode::FORBIDDEN,
-            "only a user credential can approve a device login",
-        ));
-    }
+    may_approve(state.pool(), &ctx).await?;
     let code = normalize_user_code(&user_code);
     if set_decision(state.pool(), &code, ctx.user_id, req.approve).await? == 0 {
         return Err(AppError::new(StatusCode::CONFLICT, "code is unknown, expired or decided"));
     }
     tracing::info!(user_id = %ctx.user_id, %code, approve = req.approve, "device auth decided");
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// The device receives the user's full ceiling, so only a person's key that
+/// already holds all of it may approve: no machine, dispatcher, worker or
+/// plugin key, and no key narrower than its owner.
+async fn may_approve(pool: &PgPool, ctx: &AuthContext) -> Result<(), AppError> {
+    if !auth::is_human_credential(pool, ctx).await? {
+        return Err(AppError::new(
+            StatusCode::FORBIDDEN,
+            "only a user credential can approve a device login",
+        ));
+    }
+    let ceiling = cctui_server_kernel::store::acls::user_ceiling(pool, ctx.user_id).await?;
+    if !ceiling.is_subset(&ctx.scopes) {
+        return Err(AppError::new(
+            StatusCode::FORBIDDEN,
+            "this key holds fewer scopes than your account: sign in again to approve a device",
+        ));
+    }
+    Ok(())
 }
 
 /// An expired request is already unusable, so it is dropped as soon as the
@@ -430,7 +446,8 @@ async fn reap_expired(pool: &PgPool) {
 #[cfg(test)]
 mod tests {
     use super::{
-        CODE_ALPHABET, DeviceAuthStatus, RequestRow, Utc, generate_user_code, normalize_user_code,
+        AuthContext, CODE_ALPHABET, DeviceAuthStatus, RequestRow, Utc, generate_user_code,
+        normalize_user_code,
     };
     use axum::http::StatusCode;
     use chrono::Duration;
@@ -609,6 +626,48 @@ mod tests {
                 .await
                 .expect("connect test db"),
         )
+    }
+
+    async fn key(pool: &sqlx::PgPool, user_id: Uuid, kind: &str, scopes: &[&str]) -> AuthContext {
+        use cctui_server_kernel::auth::{NewKey, Scope, register_key, sha256_hex};
+        let token = format!("{kind}-{}", Uuid::new_v4());
+        let label = (kind == "plugin").then_some("plugin:ghreview");
+        let new = NewKey {
+            user_id,
+            key_hash: &sha256_hex(&token),
+            key_preview: None,
+            label,
+            kind,
+            machine_id: None,
+            dispatcher_id: None,
+            expires_at: None,
+            passkey_id: None,
+        };
+        let grant: Vec<Scope> = scopes.iter().filter_map(|s| Scope::parse(s)).collect();
+        register_key(pool, new, grant).await.unwrap();
+        cctui_server_kernel::auth::AuthConfig::new(Vec::new(), pool.clone())
+            .validate(&token)
+            .await
+            .expect("the key resolves")
+    }
+
+    #[tokio::test]
+    async fn only_a_full_user_key_may_approve_a_device_login() {
+        let name = "only_a_full_user_key_may_approve_a_device_login";
+        let Some(pool) = test_pool(name).await else { return };
+        let (_, user_id) = seed(&pool, &super::generate_user_code(), Duration::minutes(10)).await;
+
+        let full = key(&pool, user_id, "user", &["read", "dispatch"]).await;
+        assert!(super::may_approve(&pool, &full).await.is_ok());
+
+        let narrowed = key(&pool, user_id, "user", &["read"]).await;
+        let plugin = key(&pool, user_id, "plugin", &["read", "dispatch"]).await;
+        let dispatcher = key(&pool, user_id, "dispatcher", &["read", "dispatch"]).await;
+        for (what, ctx) in [("narrowed", narrowed), ("plugin", plugin), ("dispatcher", dispatcher)]
+        {
+            let err = super::may_approve(&pool, &ctx).await.expect_err(what);
+            assert_eq!(err.status(), StatusCode::FORBIDDEN, "{what}");
+        }
     }
 
     #[tokio::test]

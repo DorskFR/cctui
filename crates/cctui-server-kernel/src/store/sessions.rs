@@ -103,8 +103,9 @@ pub async fn set_inactive(
 /// Insert a freshly registered session, or reset an existing row to `new`.
 ///
 /// An existing row is only touched when it belongs to `user_id` on
-/// `machine_uuid`; `None` when nothing was written, otherwise whether the row
-/// was inserted rather than reset.
+/// `machine_uuid`, and a parent of another user is dropped; `None` when
+/// nothing was written, otherwise whether the row was inserted rather than
+/// reset.
 pub async fn upsert_registered(
     exec: impl PgExecutor<'_>,
     session: &cctui_proto::models::Session,
@@ -113,7 +114,7 @@ pub async fn upsert_registered(
 ) -> Result<Option<bool>, sqlx::Error> {
     let written: Option<bool> = sqlx::query_scalar(
         r"INSERT INTO sessions (id, parent_id, account_id, machine_id, machine_uuid, user_id, working_dir, status, registered_at, last_heartbeat, metadata, model)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, 'new', $8, $9, $10, NULLIF($10->>'model', ''))
+           VALUES ($1, (SELECT p.id FROM sessions p WHERE p.id = $2 AND p.user_id = $6), $3, $4, $5, $6, $7, 'new', $8, $9, $10, NULLIF($10->>'model', ''))
            ON CONFLICT (id) DO UPDATE SET status = 'new', last_heartbeat = $9, metadata = $10, model = COALESCE(sessions.model, EXCLUDED.model)
            WHERE sessions.user_id = EXCLUDED.user_id AND sessions.machine_uuid = EXCLUDED.machine_uuid
            RETURNING (xmax = 0)",

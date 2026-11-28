@@ -31,7 +31,7 @@ use tracing::Instrument;
 
 use crate::context::VoiceContext;
 use crate::speech::{SpeechClient, SpeechError, SttStream};
-use cctui_server_kernel::auth::{AuthContext, Scope};
+use cctui_server_kernel::auth::{AuthContext, KeyKind};
 use cctui_server_kernel::bus::{VOICE_WATCH_REFRESH, VoiceEvent};
 pub use engine::{
     AudioStream, Block, Inbound, Outbound, Prefs, Signal, VoiceBackend, picked_language,
@@ -61,11 +61,12 @@ pub struct VoiceQuery {
 /// The principal gate shared with the main socket: a human key with `read`.
 /// Session ownership is checked separately, with the write gate the
 /// interrupt route uses.
-pub fn principal_permitted(ctx: &AuthContext) -> Result<(), StatusCode> {
-    if ctx.machine_id.is_some() || !ctx.has(Scope::Read) {
-        return Err(StatusCode::FORBIDDEN);
+pub fn principal_permitted(ctx: &AuthContext, kind: &KeyKind) -> Result<(), StatusCode> {
+    if cctui_server_kernel::auth::human_reader(ctx, kind) {
+        Ok(())
+    } else {
+        Err(StatusCode::FORBIDDEN)
     }
-    Ok(())
 }
 
 pub async fn voice_ws<S: VoiceContext>(
@@ -79,8 +80,10 @@ pub async fn voice_ws<S: VoiceContext>(
     }
     let token =
         cctui_server_kernel::auth::bearer_or_cookie(&headers).ok_or(StatusCode::UNAUTHORIZED)?;
-    let ctx = state.auth_config().validate(&token).await.ok_or(StatusCode::UNAUTHORIZED)?;
-    principal_permitted(&ctx)?;
+    let principal =
+        state.auth_config().validate_principal(&token).await.ok_or(StatusCode::UNAUTHORIZED)?;
+    principal_permitted(&principal.ctx, &principal.kind)?;
+    let ctx = principal.ctx;
     let session_id = query.session.trim().to_owned();
     if session_id.is_empty() {
         return Err(StatusCode::BAD_REQUEST);
@@ -361,6 +364,7 @@ async fn handle_voice_ws<S: VoiceContext>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use cctui_server_kernel::auth::Scope;
     use std::collections::BTreeSet;
 
     fn ctx(scopes: &[Scope], machine: bool) -> AuthContext {
@@ -374,13 +378,24 @@ mod tests {
 
     #[test]
     fn only_human_keys_with_read_may_open_the_socket() {
-        assert_eq!(principal_permitted(&ctx(&[Scope::Read], false)), Ok(()));
-        assert_eq!(principal_permitted(&ctx(&[Scope::Admin, Scope::Read], false)), Ok(()));
+        let human = KeyKind::Human;
+        assert_eq!(principal_permitted(&ctx(&[Scope::Read], false), &human), Ok(()));
+        assert_eq!(principal_permitted(&ctx(&[Scope::Admin, Scope::Read], false), &human), Ok(()));
         assert_eq!(
-            principal_permitted(&ctx(&[Scope::Dispatch], false)),
+            principal_permitted(&ctx(&[Scope::Dispatch], false), &human),
             Err(StatusCode::FORBIDDEN)
         );
-        assert_eq!(principal_permitted(&ctx(&[Scope::Read], true)), Err(StatusCode::FORBIDDEN));
+        assert_eq!(
+            principal_permitted(&ctx(&[Scope::Read], true), &KeyKind::Machine),
+            Err(StatusCode::FORBIDDEN)
+        );
+        for kind in [KeyKind::Dispatcher, KeyKind::Worker, KeyKind::Plugin("ghreview".into())] {
+            assert_eq!(
+                principal_permitted(&ctx(&[Scope::Read, Scope::Dispatch], false), &kind),
+                Err(StatusCode::FORBIDDEN),
+                "{kind:?}"
+            );
+        }
     }
 
     #[test]

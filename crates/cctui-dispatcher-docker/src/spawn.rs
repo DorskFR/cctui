@@ -15,9 +15,11 @@ use std::sync::Arc;
 
 use bollard::Docker;
 use bollard::container::{
-    Config as ContainerConfig, CreateContainerOptions, StartContainerOptions,
+    Config as ContainerConfig, CreateContainerOptions, RemoveContainerOptions,
+    StartContainerOptions,
 };
-use bollard::models::HostConfig;
+use bollard::errors::Error as DockerError;
+use bollard::models::{ContainerStateStatusEnum, HostConfig};
 use cctui_dispatcher_core::{
     Dispatcher, HandleState, SpawnOutcome, build_env, dedup_source, label_safe, worker_name,
 };
@@ -135,8 +137,9 @@ impl Dispatcher for Spawner {
     }
 
     /// Spawn a worker container for the session. Idempotent: a repeat dispatch
-    /// of the same key reuses the deterministic name; a 409 (name in use) is
-    /// reported as `deduplicated` rather than clobbering the running worker.
+    /// of the same key reuses the deterministic name; a name held by a live
+    /// worker is reported as `deduplicated` rather than clobbered, and one held
+    /// by a container that never started or already ended is replaced.
     async fn dispatch(&self, spec: &WireDispatchSpec) -> anyhow::Result<SpawnOutcome> {
         let (name, env) = self.admit(spec)?;
 
@@ -152,19 +155,28 @@ impl Dispatcher for Spawner {
             ..Default::default()
         };
 
-        let opts = CreateContainerOptions { name: name.clone(), platform: None };
-        match self.docker.create_container(Some(opts), config).await {
-            Ok(_) => {}
-            Err(bollard::errors::Error::DockerResponseServerError { status_code: 409, .. }) => {
-                return Ok(deduplicated(&name));
+        match self.create(&name, config.clone()).await {
+            Ok(()) => {}
+            Err(DockerError::DockerResponseServerError { status_code: 409, .. }) => {
+                if self.holder_is_live(&name).await? {
+                    return Ok(deduplicated(&name));
+                }
+                self.remove(&name).await?;
+                self.create(&name, config)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("recreating stale container {name}: {e}"))?;
             }
             Err(e) => anyhow::bail!("creating container: {e}"),
         }
 
-        self.docker
-            .start_container(&name, None::<StartContainerOptions<String>>)
-            .await
-            .map_err(|e| anyhow::anyhow!("starting container: {e}"))?;
+        if let Err(e) =
+            self.docker.start_container(&name, None::<StartContainerOptions<String>>).await
+        {
+            if let Err(cleanup) = self.remove(&name).await {
+                tracing::warn!(container = %name, error = %cleanup, "removing the unstarted container failed");
+            }
+            anyhow::bail!("starting container: {e}");
+        }
 
         Ok(SpawnOutcome {
             handle: format!("container/{name}"),
@@ -192,6 +204,9 @@ impl Dispatcher for Spawner {
                 if running {
                     return Ok((HandleState::Running, None));
                 }
+                if state.and_then(|s| s.status) == Some(ContainerStateStatusEnum::CREATED) {
+                    return Ok((HandleState::Failed, Some("container never started".to_owned())));
+                }
                 let oom = state.and_then(|s| s.oom_killed).unwrap_or(false);
                 let exit = state.and_then(|s| s.exit_code).unwrap_or(0);
                 let memory = c.host_config.as_ref().and_then(|h| h.memory);
@@ -205,34 +220,56 @@ impl Dispatcher for Spawner {
     }
 
     async fn cancel(&self, handle: &str) -> anyhow::Result<()> {
-        let name = handle.strip_prefix("container/").unwrap_or(handle);
-        let opts = bollard::container::RemoveContainerOptions { force: true, ..Default::default() };
-        match self.docker.remove_container(name, Some(opts)).await {
-            // 404 = already gone (auto-remove); treat as a successful cancel.
-            Ok(())
-            | Err(bollard::errors::Error::DockerResponseServerError { status_code: 404, .. }) => {
-                Ok(())
-            }
-            Err(e) => anyhow::bail!("removing container {name}: {e}"),
-        }
+        self.remove(handle.strip_prefix("container/").unwrap_or(handle)).await
     }
 
     fn supports_dedup_check(&self) -> bool {
         true
     }
 
-    /// A create 409s whenever any container holds the name, so the check is
-    /// whether one does.
     async fn dedup_check(&self, spec: &WireDispatchSpec) -> anyhow::Result<Option<SpawnOutcome>> {
         let (name, _) = self.admit(spec)?;
-        match self.docker.inspect_container(&name, None).await {
-            Ok(_) => Ok(Some(deduplicated(&name))),
-            Err(bollard::errors::Error::DockerResponseServerError { status_code: 404, .. }) => {
-                Ok(None)
-            }
+        Ok(self.holder_is_live(&name).await?.then(|| deduplicated(&name)))
+    }
+}
+
+impl Spawner {
+    async fn create(&self, name: &str, config: ContainerConfig<String>) -> Result<(), DockerError> {
+        let opts = CreateContainerOptions { name: name.to_owned(), platform: None };
+        self.docker.create_container(Some(opts), config).await.map(drop)
+    }
+
+    /// Force-remove `name`; one already gone counts as removed.
+    async fn remove(&self, name: &str) -> anyhow::Result<()> {
+        let opts = RemoveContainerOptions { force: true, ..Default::default() };
+        match self.docker.remove_container(name, Some(opts)).await {
+            Ok(()) | Err(DockerError::DockerResponseServerError { status_code: 404, .. }) => Ok(()),
+            Err(e) => anyhow::bail!("removing container {name}: {e}"),
+        }
+    }
+
+    /// Whether a container holding `name` is a run a repeat dispatch must not
+    /// replace.
+    async fn holder_is_live(&self, name: &str) -> anyhow::Result<bool> {
+        match self.docker.inspect_container(name, None).await {
+            Ok(c) => Ok(holds_a_live_run(c.state.and_then(|s| s.status))),
+            Err(DockerError::DockerResponseServerError { status_code: 404, .. }) => Ok(false),
             Err(e) => anyhow::bail!("inspecting container {name}: {e}"),
         }
     }
+}
+
+/// A container that never started, or whose process already ended, holds the
+/// name without a run behind it.
+const fn holds_a_live_run(status: Option<ContainerStateStatusEnum>) -> bool {
+    !matches!(
+        status,
+        Some(
+            ContainerStateStatusEnum::CREATED
+                | ContainerStateStatusEnum::EXITED
+                | ContainerStateStatusEnum::DEAD
+        )
+    )
 }
 
 fn deduplicated(name: &str) -> SpawnOutcome {
@@ -458,6 +495,141 @@ mod tests {
             docker: Docker::connect_with_http(&url, 5, bollard::API_DEFAULT_VERSION).unwrap(),
             exits: Arc::new(Exits::default()),
         }
+    }
+
+    #[derive(Default)]
+    struct Daemon {
+        status: Option<&'static str>,
+        start_fails: bool,
+        removals: usize,
+    }
+
+    /// A stand-in docker API holding one container through its lifecycle.
+    async fn stateful_docker(daemon: Daemon) -> (Spawner, Arc<std::sync::Mutex<Daemon>>) {
+        use tokio::io::AsyncWriteExt;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let shared = Arc::new(std::sync::Mutex::new(daemon));
+        let state = Arc::clone(&shared);
+        tokio::spawn(async move {
+            while let Ok((mut tcp, _)) = listener.accept().await {
+                let Some(request) = read_request(&mut tcp).await else { continue };
+                let mut words = request.split_whitespace();
+                let method = words.next().unwrap_or_default().to_owned();
+                let path = words.next().unwrap_or_default().to_owned();
+                let (status, body) = {
+                    let mut d = state.lock().unwrap();
+                    let reply = match (method.as_str(), d.status) {
+                        ("GET", Some(st)) => (
+                            "200 OK",
+                            format!(
+                                r#"{{"Id":"c0","State":{{"Status":"{st}","Running":{}}}}}"#,
+                                st == "running"
+                            ),
+                        ),
+                        ("POST", Some(_)) if path.contains("/containers/create") => {
+                            ("409 Conflict", r#"{"message":"name in use"}"#.to_owned())
+                        }
+                        ("POST", None) if path.contains("/containers/create") => {
+                            d.status = Some("created");
+                            ("201 Created", r#"{"Id":"c1","Warnings":[]}"#.to_owned())
+                        }
+                        ("POST", Some(_)) if path.ends_with("/start") && d.start_fails => (
+                            "500 Internal Server Error",
+                            r#"{"message":"bind source path does not exist"}"#.to_owned(),
+                        ),
+                        ("POST", Some(_)) if path.ends_with("/start") => {
+                            d.status = Some("running");
+                            ("204 No Content", String::new())
+                        }
+                        ("DELETE", Some(_)) => {
+                            d.status = None;
+                            d.removals += 1;
+                            ("204 No Content", String::new())
+                        }
+                        _ => ("404 Not Found", r#"{"message":"No such container"}"#.to_owned()),
+                    };
+                    drop(d);
+                    reply
+                };
+                let response = format!(
+                    "HTTP/1.1 {status}\r\ncontent-type: application/json\r\n\
+                     content-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = tcp.write_all(response.as_bytes()).await;
+                let _ = tcp.shutdown().await;
+            }
+        });
+        let spawner = Spawner {
+            image: "example.com/worker:latest".into(),
+            network: None,
+            cctui_url: "https://cctui.example.test".into(),
+            mounts: Vec::new(),
+            confinement: Confinement::default(),
+            docker: Docker::connect_with_http(&url, 5, bollard::API_DEFAULT_VERSION).unwrap(),
+            exits: Arc::new(Exits::default()),
+        };
+        (spawner, shared)
+    }
+
+    fn keyed(key: &str) -> WireDispatchSpec {
+        let mut s = spec("fresh-session", json!({}));
+        s.dedup_key = Some(key.into());
+        s
+    }
+
+    #[tokio::test]
+    async fn a_failed_start_removes_the_container_so_a_retry_runs() {
+        let s = keyed("triage-PROJ-2");
+        let (spawner, daemon) =
+            stateful_docker(Daemon { start_fails: true, ..Daemon::default() }).await;
+
+        let err = spawner.dispatch(&s).await.unwrap_err();
+        assert!(err.to_string().contains("starting container"), "{err}");
+        assert_eq!(daemon.lock().unwrap().status, None, "the created container was left behind");
+        assert!(spawner.dedup_check(&s).await.unwrap().is_none());
+
+        daemon.lock().unwrap().start_fails = false;
+        assert_eq!(spawner.dispatch(&s).await.unwrap().status, "dispatched");
+        assert_eq!(daemon.lock().unwrap().status, Some("running"));
+    }
+
+    #[tokio::test]
+    async fn a_name_held_by_a_container_with_no_run_is_replaced_not_deduplicated() {
+        for stale in ["created", "exited", "dead"] {
+            let s = keyed("triage-PROJ-3");
+            let (spawner, daemon) =
+                stateful_docker(Daemon { status: Some(stale), ..Daemon::default() }).await;
+            assert!(spawner.dedup_check(&s).await.unwrap().is_none(), "{stale}");
+            assert_eq!(spawner.dispatch(&s).await.unwrap().status, "dispatched", "{stale}");
+            let held = {
+                let d = daemon.lock().unwrap();
+                (d.status, d.removals)
+            };
+            assert_eq!(held, (Some("running"), 1), "{stale}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_name_held_by_a_live_run_still_deduplicates() {
+        for live in ["running", "restarting", "paused"] {
+            let s = keyed("triage-PROJ-4");
+            let (spawner, daemon) =
+                stateful_docker(Daemon { status: Some(live), ..Daemon::default() }).await;
+            assert!(spawner.dedup_check(&s).await.unwrap().is_some(), "{live}");
+            assert_eq!(spawner.dispatch(&s).await.unwrap().status, "deduplicated", "{live}");
+            assert_eq!(daemon.lock().unwrap().removals, 0, "{live}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_container_that_never_started_reads_failed_not_complete() {
+        let (spawner, _daemon) =
+            stateful_docker(Daemon { status: Some("created"), ..Daemon::default() }).await;
+        let (state, reason) = spawner.status("container/x").await.unwrap();
+        assert_eq!(state, HandleState::Failed);
+        assert_eq!(reason.as_deref(), Some("container never started"));
     }
 
     /// The check and the create path share one admission step and the same

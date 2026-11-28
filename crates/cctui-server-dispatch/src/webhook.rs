@@ -80,6 +80,10 @@ fn delivery_client() -> &'static reqwest::Client {
 /// Best-effort: a failure here is logged and swallowed — it must never block an
 /// otherwise-valid dispatch (the `REPLY_URL` trap still covers completion during
 /// migration).
+///
+/// A `death_only` target is the dispatch's `reply_url`: it never receives a
+/// declared outcome, and a 4xx from it ends the row, since the worker's own
+/// callback may already have consumed it.
 #[allow(clippy::cognitive_complexity)]
 pub async fn register(
     state: &impl DispatchContext,
@@ -88,19 +92,22 @@ pub async fn register(
     notify_url: &str,
     notify_secret: Option<&str>,
     task_id: &str,
+    death_only: bool,
 ) {
     if let Err(reason) = validate_notify_url(notify_url).await {
         tracing::warn!(%session_id, "refusing completion webhook with unsafe notify_url: {reason}");
         return;
     }
     let res = sqlx::query(
-        "INSERT INTO session_webhooks (session_id, user_id, notify_url, secret, task_id) \
-         VALUES ($1, $2, $3, $4, $5) \
+        "INSERT INTO session_webhooks \
+           (session_id, user_id, notify_url, secret, task_id, death_only) \
+         VALUES ($1, $2, $3, $4, $5, $6) \
          ON CONFLICT (session_id) DO UPDATE SET \
            notify_url = EXCLUDED.notify_url, \
            secret = EXCLUDED.secret, \
            task_id = EXCLUDED.task_id, \
-           user_id = EXCLUDED.user_id \
+           user_id = EXCLUDED.user_id, \
+           death_only = EXCLUDED.death_only \
          WHERE session_webhooks.state = 'pending'",
     )
     .bind(session_id)
@@ -108,6 +115,7 @@ pub async fn register(
     .bind(notify_url)
     .bind(notify_secret)
     .bind(task_id)
+    .bind(death_only)
     .execute(state.dispatch_pool())
     .await;
     match res {
@@ -131,10 +139,10 @@ const CLAIM_SQL: &str = "\
             LIMIT $2 \
             FOR UPDATE SKIP LOCKED) \
         RETURNING q.id, q.session_id, q.user_id, q.notify_url, q.secret, q.task_id, \
-                  q.attempts, q.payload) \
+                  q.attempts, q.payload, q.death_only) \
     SELECT c.id, c.session_id, c.user_id, c.notify_url, c.secret, c.task_id, c.attempts, \
            s.status AS session_status, s.end_reason, s.end_detail, \
-           dh.dispatcher_name, dh.handle, c.payload \
+           dh.dispatcher_name, dh.handle, c.payload, c.death_only \
     FROM claimed c \
     LEFT JOIN sessions s ON s.id = c.session_id \
     LEFT JOIN dispatch_handles dh ON dh.session_id = c.session_id";
@@ -169,6 +177,7 @@ struct PendingRow {
     handle: Option<String>,
     /// The frozen payload once we've decided to fire; `None` until then.
     payload: Option<serde_json::Value>,
+    death_only: bool,
 }
 
 /// Build the lifecycle-only death payload. The server webhook is a
@@ -219,7 +228,8 @@ pub fn outcome_payload(
 ///
 /// The first declaration wins, and a death verdict already frozen stands. A
 /// row the sweep superseded is revived: an outcome is always delivered.
-/// `false` when the session has no webhook or its callback is already taken.
+/// `false` when the session has no webhook, only a death-only one, or its
+/// callback is already taken.
 ///
 /// # Errors
 /// The update failed.
@@ -233,7 +243,8 @@ pub async fn queue_outcome(
         "UPDATE session_webhooks \
          SET payload = jsonb_set($2::jsonb, '{task_id}', to_jsonb(task_id)), \
              state = 'pending', attempts = 0, last_error = NULL, next_attempt_at = now() \
-         WHERE session_id = $1 AND payload IS NULL AND state IN ('pending', 'superseded')",
+         WHERE session_id = $1 AND payload IS NULL AND NOT death_only \
+           AND state IN ('pending', 'superseded')",
     )
     .bind(session_id)
     .bind(&payload)
@@ -358,8 +369,7 @@ where
 async fn process(state: &impl DispatchContext, row: PendingRow) {
     // A frozen payload means we already decided to fire — this is a retry.
     if let Some(payload) = row.payload.clone() {
-        deliver(state, row.id, &row.notify_url, row.secret.as_deref(), &payload, row.attempts)
-            .await;
+        deliver(state, &row, &payload).await;
         return;
     }
 
@@ -379,8 +389,7 @@ async fn process(state: &impl DispatchContext, row: PendingRow) {
             if !frozen {
                 return;
             }
-            deliver(state, row.id, &row.notify_url, row.secret.as_deref(), &payload, row.attempts)
-                .await;
+            deliver(state, &row, &payload).await;
         }
         Outcome::Supersede => {
             let _ = sqlx::query(
@@ -408,15 +417,11 @@ async fn process(state: &impl DispatchContext, row: PendingRow) {
 }
 
 /// POST one webhook body, updating the row on the outcome. Treats any 2xx as
-/// delivered; everything else (non-2xx, transport error) bumps the retry.
-async fn deliver(
-    state: &impl DispatchContext,
-    id: uuid::Uuid,
-    url: &str,
-    secret: Option<&str>,
-    payload: &serde_json::Value,
-    attempts: i32,
-) {
+/// delivered; a death-only target refusing it ends the row; everything else
+/// (non-2xx, transport error) bumps the retry.
+async fn deliver(state: &impl DispatchContext, row: &PendingRow, payload: &serde_json::Value) {
+    let (id, url, secret, attempts) =
+        (row.id, row.notify_url.as_str(), row.secret.as_deref(), row.attempts);
     let body = serde_json::to_vec(payload).unwrap_or_default();
     let mut req =
         delivery_client().post(url).header("content-type", "application/json").body(body.clone());
@@ -437,6 +442,18 @@ async fn deliver(
             .await;
             tracing::info!(webhook_id = %id, "completion webhook delivered");
         }
+        Ok(resp) if row.death_only && refused_for_good(resp.status()) => {
+            let err = format!("reply_url refused the death verdict: {}", resp.status());
+            let _ = sqlx::query(
+                "UPDATE session_webhooks SET state = 'dead', attempts = attempts + 1, \
+                 last_error = $2 WHERE id = $1",
+            )
+            .bind(id)
+            .bind(&err)
+            .execute(state.dispatch_pool())
+            .await;
+            tracing::info!(webhook_id = %id, "{err}; not retrying");
+        }
         other => {
             let err = match other {
                 Ok(resp) => format!("non-success status {}", resp.status()),
@@ -445,6 +462,14 @@ async fn deliver(
             schedule_retry(state, id, attempts, &err).await;
         }
     }
+}
+
+/// A client error a retry cannot change: a resume URL already consumed or
+/// never valid. A timeout or rate limit is still worth retrying.
+fn refused_for_good(status: reqwest::StatusCode) -> bool {
+    status.is_client_error()
+        && status != reqwest::StatusCode::REQUEST_TIMEOUT
+        && status != reqwest::StatusCode::TOO_MANY_REQUESTS
 }
 
 /// Bump the attempt count and either schedule the next backoff attempt or
@@ -488,7 +513,8 @@ async fn schedule_retry(state: &impl DispatchContext, id: uuid::Uuid, attempts: 
 mod tests {
     use super::{
         DELIVERY_CONCURRENCY, DELIVERY_TIMEOUT, MAX_ATTEMPTS, NotifyUrlError, SWEEP_LIMIT,
-        build_payload, claim_due, for_each_bounded, retry_schedule, sign, validate_notify_url,
+        build_payload, claim_due, for_each_bounded, queue_outcome, refused_for_good,
+        retry_schedule, sign, validate_notify_url,
     };
 
     /// Sum of the superseded fixed table (10/30/120/300/900/1800/3600). The
@@ -636,6 +662,63 @@ mod tests {
 
         sqlx::query("DELETE FROM session_webhooks WHERE session_id = ANY($1)")
             .bind(vec![due, later])
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+
+    #[test]
+    fn a_resume_url_that_refuses_the_verdict_is_not_retried() {
+        use reqwest::StatusCode;
+        for gone in [StatusCode::NOT_FOUND, StatusCode::GONE, StatusCode::CONFLICT] {
+            assert!(refused_for_good(gone), "{gone}");
+        }
+        for retry in [
+            StatusCode::REQUEST_TIMEOUT,
+            StatusCode::TOO_MANY_REQUESTS,
+            StatusCode::BAD_GATEWAY,
+            StatusCode::SERVICE_UNAVAILABLE,
+        ] {
+            assert!(!refused_for_good(retry), "{retry}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_reply_url_webhook_carries_only_death_verdicts() {
+        let name = "webhook_death_only";
+        let Some(url) = cctui_server_kernel::test_support::db_url(name) else { return };
+        let pool = sqlx::PgPool::connect(&url).await.expect("connect test db");
+        let reply = format!("{name}-{}", uuid::Uuid::new_v4());
+        let notify = format!("{name}-{}", uuid::Uuid::new_v4());
+        sqlx::query(
+            "INSERT INTO session_webhooks \
+               (session_id, notify_url, task_id, death_only, next_attempt_at) \
+             VALUES ($1, 'https://n8n.example.test/resume/1', $1, true, now() + interval '1 hour'), \
+                    ($2, 'https://n8n.example.test/hook', $2, false, now() + interval '1 hour')",
+        )
+        .bind(&reply)
+        .bind(&notify)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let outcome = cctui_proto::api::outcome::DeclareOutcomeRequest::from_result_file(
+            &serde_json::json!({ "status": "success", "message": "ok" }),
+        );
+        assert!(!queue_outcome(&pool, &reply, &outcome).await.unwrap(), "never on a reply_url");
+        assert!(queue_outcome(&pool, &notify, &outcome).await.unwrap());
+
+        let (death_only, payload): (bool, Option<serde_json::Value>) = sqlx::query_as(
+            "SELECT death_only, payload FROM session_webhooks WHERE session_id = $1",
+        )
+        .bind(&reply)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert!(death_only && payload.is_none());
+
+        sqlx::query("DELETE FROM session_webhooks WHERE session_id = ANY($1)")
+            .bind(vec![reply, notify])
             .execute(&pool)
             .await
             .unwrap();

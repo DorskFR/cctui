@@ -594,6 +594,31 @@ impl WorkflowEngine {
         Verdict::Allow
     }
 
+    /// Whether the active step has an exec rule some argv could break: a
+    /// disallowed phrase or a capability exec table.
+    #[must_use]
+    pub fn exec_is_restricted(&self) -> bool {
+        let step_num = self.read_state();
+        let Some((step_u, step)) = u32::try_from(step_num)
+            .ok()
+            .filter(|&n| n != 0)
+            .and_then(|n| self.steps.get(&n).map(|s| (n, s)))
+        else {
+            return false;
+        };
+        self.grants.contains_key(&step_u)
+            || step.disallowed.expand(&self.tool_sets).iter().any(|kw| kw != "*")
+    }
+
+    /// Deny an exec for `reason` without judging its argv, logged like any
+    /// exec verdict.
+    pub fn refuse_exec(&self, path: &str, argv: &[String], reason: &str) -> Verdict {
+        let step_num = self.read_state();
+        tracing::info!("DENY exec [Step {step_num}] {path} reason={reason}");
+        self.decision_log.exec(Some(step_num), path, argv, false, reason);
+        Verdict::deny(format!("[Step {step_num}] {reason}"))
+    }
+
     /// Evaluate an exec seen by the seccomp notifier against the active step.
     ///
     /// Explicit `[disallowed]` phrases apply to every step: phrase allow-lists
@@ -999,19 +1024,32 @@ enum BoundedOutput {
     TimedOut,
 }
 
-fn drain_pipe<R: std::io::Read + Send + 'static>(mut pipe: R) -> std::thread::JoinHandle<Vec<u8>> {
+fn drain_pipe<R: std::io::Read + Send + 'static>(
+    mut pipe: R,
+    which: Pipe,
+    tx: std::sync::mpsc::Sender<(Pipe, Vec<u8>)>,
+) {
     std::thread::spawn(move || {
         let mut buf = Vec::new();
         let _ = pipe.read_to_end(&mut buf);
-        buf
-    })
+        let _ = tx.send((which, buf));
+    });
 }
 
+#[derive(Clone, Copy)]
+enum Pipe {
+    Stdout,
+    Stderr,
+}
+
+/// How long the pipes may stay open once `sh` has exited, before the process
+/// group is killed and the unfinished output dropped.
+const PIPE_GRACE: Duration = Duration::from_millis(500);
+
 /// Run `sh -c cmd` in `dir` with optional stdin, killing it once it exceeds
-/// `timeout`. stdout/stderr drain on background threads so a chatty child can
-/// never deadlock on a full pipe; on a timeout the drain threads are abandoned
-/// rather than joined (a surviving grandchild could hold a pipe open forever)
-/// since the fail-closed caller does not need the partial output.
+/// `timeout`. The child leads its own process group so a timeout, or a
+/// background grandchild still holding stdout/stderr after `sh` exits, is
+/// killed with the whole group instead of wedging the caller on the pipes.
 fn run_sh_bounded(
     cmd: &str,
     input: Option<&str>,
@@ -1021,14 +1059,17 @@ fn run_sh_bounded(
     use std::io::Write;
     use std::process::{Command, Stdio};
 
-    let mut child = Command::new("sh")
+    let mut command = Command::new("sh");
+    command
         .arg("-c")
         .arg(cmd)
         .current_dir(dir)
         .stdin(if input.is_some() { Stdio::piped() } else { Stdio::null() })
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()?;
+        .stderr(Stdio::piped());
+    #[cfg(unix)]
+    std::os::unix::process::CommandExt::process_group(&mut command, 0);
+    let mut child = command.spawn()?;
 
     if let (Some(input), Some(mut stdin)) = (input, child.stdin.take()) {
         let payload = input.as_bytes().to_vec();
@@ -1037,23 +1078,61 @@ fn run_sh_bounded(
         });
     }
 
-    let stdout_thread = child.stdout.take().map(drain_pipe);
-    let stderr_thread = child.stderr.take().map(drain_pipe);
+    let (tx, rx) = std::sync::mpsc::channel();
+    let mut pending = 0usize;
+    if let Some(out) = child.stdout.take() {
+        drain_pipe(out, Pipe::Stdout, tx.clone());
+        pending += 1;
+    }
+    if let Some(err) = child.stderr.take() {
+        drain_pipe(err, Pipe::Stderr, tx);
+        pending += 1;
+    }
 
     let deadline = Instant::now() + timeout;
     loop {
         if let Some(status) = child.try_wait()? {
-            let stdout = stdout_thread.map(|h| h.join().unwrap_or_default()).unwrap_or_default();
-            let stderr = stderr_thread.map(|h| h.join().unwrap_or_default()).unwrap_or_default();
+            let (mut stdout, mut stderr) = (Vec::new(), Vec::new());
+            let grace = Instant::now() + PIPE_GRACE;
+            while pending > 0 {
+                let Ok((which, buf)) =
+                    rx.recv_timeout(grace.saturating_duration_since(Instant::now()))
+                else {
+                    kill_group(&mut child);
+                    break;
+                };
+                pending -= 1;
+                match which {
+                    Pipe::Stdout => stdout = buf,
+                    Pipe::Stderr => stderr = buf,
+                }
+            }
             return Ok(BoundedOutput::Exited(std::process::Output { status, stdout, stderr }));
         }
         if Instant::now() >= deadline {
-            let _ = child.kill();
+            kill_group(&mut child);
             let _ = child.wait();
             return Ok(BoundedOutput::TimedOut);
         }
         std::thread::sleep(CMD_POLL_INTERVAL);
     }
+}
+
+#[cfg(target_os = "linux")]
+fn kill_group(child: &mut std::process::Child) {
+    if let Ok(pgid) = libc::pid_t::try_from(child.id()) {
+        #[allow(unsafe_code)]
+        // SAFETY: killpg only sends a signal; `pgid` is the group this child leads.
+        unsafe {
+            libc::killpg(pgid, libc::SIGKILL);
+        }
+    }
+    let _ = child.kill();
+}
+
+#[cfg(not(target_os = "linux"))]
+fn kill_group(child: &mut std::process::Child) {
+    let _ = child.kill();
 }
 
 /// Parse the judge command's stdout into exactly `expected` `(answer, reason)`
@@ -1296,5 +1375,35 @@ mod tests {
             run_sh_bounded("sleep 30", None, Path::new("."), Duration::from_millis(150)).unwrap();
         assert!(matches!(out, BoundedOutput::TimedOut));
         assert!(start.elapsed() < Duration::from_secs(5), "must return promptly after the timeout");
+    }
+
+    #[test]
+    fn bounded_command_does_not_wait_on_a_backgrounded_pipe_holder() {
+        let start = Instant::now();
+        let out = run_sh_bounded(
+            "(sleep 30 &); printf done; exit 0",
+            None,
+            Path::new("."),
+            Duration::from_secs(10),
+        )
+        .unwrap();
+        match out {
+            BoundedOutput::Exited(o) => assert!(o.status.success()),
+            BoundedOutput::TimedOut => panic!("sh exited; this is not a timeout"),
+        }
+        assert!(
+            start.elapsed() < Duration::from_secs(5),
+            "must not join a pipe a grandchild holds"
+        );
+    }
+
+    #[test]
+    fn bounded_command_timeout_kills_background_grandchildren() {
+        let start = Instant::now();
+        let out =
+            run_sh_bounded("sleep 30 & sleep 30", None, Path::new("."), Duration::from_millis(150))
+                .unwrap();
+        assert!(matches!(out, BoundedOutput::TimedOut));
+        assert!(start.elapsed() < Duration::from_secs(5));
     }
 }

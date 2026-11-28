@@ -350,6 +350,7 @@ export type * from './SettingKey';
 export type * from './SettingSource';
 export type * from './SettingsCatalogResponse';
 export type * from './SettingsPayload';
+export type * from './SettlePendingRequest';
 export type * from './SilenceReason';
 export type * from './SkippedComment';
 export type * from './SocketStatus';

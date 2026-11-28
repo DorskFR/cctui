@@ -3,8 +3,11 @@
 //! gVisor). The worker exports `HTTP_PROXY`/`HTTPS_PROXY` pointing here instead
 //! of installing iptables rules.
 //!
-//! - `CONNECT host:port` → policy check → `200`, then blind TCP tunnel (TLS).
-//! - absolute-URI request (`GET http://host/…`) → policy check → relay.
+//! - `CONNECT host:port` → policy check → `200`, then a tunnel whose first
+//!   client flight must name the same host: TLS SNI, or the `Host` of a single
+//!   plain HTTP request.
+//! - absolute-URI request (`GET http://host/…`) → policy check → relay of that
+//!   one request.
 //!
 //! Same policy evaluation as transparent mode, on the requested host:port.
 
@@ -18,8 +21,11 @@ use crate::auth::{GuardAuth, strip_proxy_authorization};
 use crate::denylist::host_is_denied;
 use crate::gate::GatePolicy;
 use crate::inject::Injector;
+use crate::peek::extract_sni;
 use crate::policy::PolicyManager;
 use crate::private_allow::PrivateAllow;
+
+pub mod http1;
 
 pub struct ForwardListener {
     listener: TcpListener,
@@ -240,8 +246,145 @@ async fn handle_connect(
     };
 
     conn.write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n").await?;
-    tokio::io::copy_bidirectional(&mut conn, &mut upstream).await?;
+    let first = match first_flight(&mut conn, &mut upstream, FLIGHT_WAIT).await? {
+        FirstFlight::Bytes(first) => first,
+        FirstFlight::Stalled => {
+            refuse_tunnel(policy, &host_port, "first request line never completed");
+            return Ok(());
+        }
+        FirstFlight::ServerClosed => return Ok(()),
+    };
+    match check_flight(&first, &host) {
+        Flight::Splice => {
+            upstream.write_all(&first).await?;
+            tokio::io::copy_bidirectional(&mut conn, &mut upstream).await?;
+        }
+        Flight::Http => {
+            let raw = http1::read_head(&mut conn, first).await?;
+            match http1::prepare(&raw, &host, Some(port)) {
+                Ok(req) => http1::relay_one(&mut conn, &mut upstream, &req, &raw).await?,
+                Err(reason) => refuse_tunnel(policy, &host_port, &reason.to_string()),
+            }
+        }
+        Flight::Refuse(reason) => refuse_tunnel(policy, &host_port, &reason),
+    }
     Ok(())
+}
+
+fn refuse_tunnel(policy: &PolicyManager, host_port: &str, reason: &str) {
+    tracing::warn!("DENY CONNECT {host_port} tunnel: {reason}");
+    policy.record(host_port, false, reason);
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum Flight {
+    Splice,
+    Http,
+    Refuse(String),
+}
+
+const MAX_FLIGHT: usize = 5 + 16 * 1024 + 256;
+
+enum FirstFlight {
+    Bytes(Vec<u8>),
+    Stalled,
+    ServerClosed,
+}
+
+const FLIGHT_WAIT: Duration = Duration::from_secs(10);
+
+/// Reads the client's first bytes through the tunnel while relaying anything
+/// the server sends first. A silent client is waited on indefinitely, but once
+/// it has started, a flight left incomplete for `wait` is `Stalled`: splicing
+/// it would let the rest of the request through unchecked.
+async fn first_flight(
+    conn: &mut TcpStream,
+    upstream: &mut TcpStream,
+    wait: Duration,
+) -> anyhow::Result<FirstFlight> {
+    let (mut cr, mut cw) = conn.split();
+    let (mut ur, _) = upstream.split();
+    let peek = async {
+        let mut buf = Vec::with_capacity(2048);
+        let mut chunk = [0u8; 4096];
+        let mut deadline = None;
+        while !flight_complete(&buf) {
+            let read = cr.read(&mut chunk);
+            let n = match deadline {
+                None => read.await?,
+                Some(at) => match tokio::time::timeout_at(at, read).await {
+                    Ok(r) => r?,
+                    Err(_) => return Ok(FirstFlight::Stalled),
+                },
+            };
+            if n == 0 {
+                break;
+            }
+            buf.extend_from_slice(&chunk[..n]);
+            if deadline.is_none() && !skip_blank_lines(&buf).is_empty() {
+                deadline = Some(tokio::time::Instant::now() + wait);
+            }
+        }
+        std::io::Result::Ok(FirstFlight::Bytes(buf))
+    };
+    tokio::pin!(peek);
+    let mut server = [0u8; 4096];
+    loop {
+        tokio::select! {
+            r = &mut peek => return Ok(r?),
+            r = ur.read(&mut server) => {
+                let n = r?;
+                if n == 0 {
+                    return Ok(FirstFlight::ServerClosed);
+                }
+                cw.write_all(&server[..n]).await?;
+            }
+        }
+    }
+}
+
+fn skip_blank_lines(buf: &[u8]) -> &[u8] {
+    let start = buf.iter().position(|b| !matches!(b, b'\r' | b'\n')).unwrap_or(buf.len());
+    &buf[start..]
+}
+
+fn flight_complete(buf: &[u8]) -> bool {
+    let s = skip_blank_lines(buf);
+    if buf.len() >= MAX_FLIGHT {
+        return true;
+    }
+    match s.first() {
+        None => false,
+        Some(0x16) => s.len() >= 5 && s.len() >= 5 + usize::from(u16::from_be_bytes([s[3], s[4]])),
+        Some(&b) if http1::is_tchar(b) => s.iter().any(|&b| b == b'\n' || is_control(b)),
+        Some(_) => true,
+    }
+}
+
+/// A byte no HTTP request line can hold.
+const fn is_control(b: u8) -> bool {
+    (b < 0x20 && b != b'\t' && b != b'\r') || b == 0x7f
+}
+
+/// A TLS `ClientHello` must carry the CONNECT host as SNI (an IP-literal CONNECT
+/// may omit it); a plain HTTP request is relayed alone and bound to the host.
+fn check_flight(first: &[u8], host: &str) -> Flight {
+    let s = skip_blank_lines(first);
+    if s.first() == Some(&0x16) {
+        return match extract_sni(s) {
+            Some(sni) if http1::same_host(&sni, host) => Flight::Splice,
+            Some(sni) => Flight::Refuse(format!("TLS SNI {sni:?} is not the CONNECT host")),
+            None if host.parse::<std::net::IpAddr>().is_ok() => Flight::Splice,
+            None => Flight::Refuse("TLS ClientHello without a matching SNI".to_owned()),
+        };
+    }
+    let line_end = s.iter().position(|&b| b == b'\n').unwrap_or(s.len());
+    let line = String::from_utf8_lossy(&s[..line_end]);
+    let looks_http = line
+        .split_whitespace()
+        .last()
+        .is_some_and(|v| v.get(..5).is_some_and(|p| p.eq_ignore_ascii_case("http/")));
+    if looks_http { Flight::Http } else { Flight::Splice }
 }
 
 /// Splits a `host:port` authority into host and port, defaulting the port and
@@ -296,6 +439,20 @@ async fn handle_http(
         return Ok(());
     }
 
+    let prepared = match http1::prepare(&req.raw, &host, Some(port)) {
+        Ok(p) => p,
+        Err(reason) => {
+            tracing::warn!("DENY HTTP {} {}: {reason}", req.method, req.target);
+            policy.record(&host_port, false, &reason.to_string());
+            conn.write_all(
+                b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+            )
+            .await?;
+            return Ok(());
+        }
+    };
+    let prepared = &prepared;
+
     if !policy.is_allowed(&host_port) {
         tracing::info!("DENY HTTP {} {}", req.method, req.target);
         policy.record(&host_port, false, "not in allow-list");
@@ -326,11 +483,7 @@ async fn handle_http(
         return Ok(());
     };
 
-    // Relay the request as received (origin servers tolerate absolute-form
-    // request targets), then splice the response and any further bytes.
-    upstream.write_all(&req.raw).await?;
-    tokio::io::copy_bidirectional(&mut conn, &mut upstream).await?;
-    Ok(())
+    http1::relay_one(&mut conn, &mut upstream, prepared, &req.raw).await
 }
 
 /// Ensures an authority carries a port, defaulting when absent. Leaves bracketed
@@ -521,10 +674,10 @@ mod tests {
         assert!(resp.starts_with("HTTP/1.1 200"), "got: {resp}");
 
         // Tunnel is live: echo round-trips.
-        conn.write_all(b"ping").await.unwrap();
-        let mut echo_buf = [0u8; 4];
+        conn.write_all(b"ping\n").await.unwrap();
+        let mut echo_buf = [0u8; 5];
         conn.read_exact(&mut echo_buf).await.unwrap();
-        assert_eq!(&echo_buf, b"ping");
+        assert_eq!(&echo_buf, b"ping\n");
     }
 
     async fn first_response(proxy: std::net::SocketAddr, request: &str) -> String {
@@ -619,10 +772,10 @@ mod tests {
         let resp = String::from_utf8_lossy(&buf[..n]);
         assert!(resp.starts_with("HTTP/1.1 200"), "got: {resp}");
 
-        conn.write_all(b"ping").await.unwrap();
-        let mut echo_buf = [0u8; 4];
+        conn.write_all(b"ping\n").await.unwrap();
+        let mut echo_buf = [0u8; 5];
         conn.read_exact(&mut echo_buf).await.unwrap();
-        assert_eq!(&echo_buf, b"ping");
+        assert_eq!(&echo_buf, b"ping\n");
     }
 
     #[tokio::test]
@@ -732,5 +885,200 @@ mod tests {
         let n = conn.read(&mut buf).await.unwrap();
         let echoed = String::from_utf8_lossy(&buf[..n]);
         assert!(echoed.starts_with("GET http://"), "got: {echoed}");
+    }
+
+    fn client_hello(server_name: Option<&str>) -> Vec<u8> {
+        let mut ext = Vec::new();
+        if let Some(name) = server_name {
+            let name = name.as_bytes();
+            let name_len = u16::try_from(name.len()).unwrap();
+            ext.extend_from_slice(&0u16.to_be_bytes());
+            ext.extend_from_slice(&(name_len + 5).to_be_bytes());
+            ext.extend_from_slice(&(name_len + 3).to_be_bytes());
+            ext.push(0);
+            ext.extend_from_slice(&name_len.to_be_bytes());
+            ext.extend_from_slice(name);
+        }
+        let mut ch = vec![0x03, 0x03];
+        ch.extend_from_slice(&[0u8; 32]);
+        ch.extend_from_slice(&[0, 0, 2, 0x00, 0x2f, 1, 0]);
+        ch.extend_from_slice(&u16::try_from(ext.len()).unwrap().to_be_bytes());
+        ch.extend_from_slice(&ext);
+        let mut hs = vec![0x01];
+        hs.extend_from_slice(&u32::try_from(ch.len()).unwrap().to_be_bytes()[1..]);
+        hs.extend_from_slice(&ch);
+        let mut rec = vec![0x16, 0x03, 0x01];
+        rec.extend_from_slice(&u16::try_from(hs.len()).unwrap().to_be_bytes());
+        rec.extend_from_slice(&hs);
+        rec
+    }
+
+    async fn connect_tunnel(proxy: std::net::SocketAddr, target: &str) -> TcpStream {
+        let mut conn = TcpStream::connect(proxy).await.unwrap();
+        conn.write_all(format!("CONNECT {target} HTTP/1.1\r\nHost: {target}\r\n\r\n").as_bytes())
+            .await
+            .unwrap();
+        let mut buf = [0u8; 39];
+        conn.read_exact(&mut buf).await.unwrap();
+        assert!(buf.starts_with(b"HTTP/1.1 200"), "got: {}", String::from_utf8_lossy(&buf));
+        conn
+    }
+
+    async fn read_to_close(conn: &mut TcpStream) -> Vec<u8> {
+        let mut out = Vec::new();
+        let read = tokio::time::timeout(Duration::from_secs(5), conn.read_to_end(&mut out)).await;
+        assert!(read.is_ok(), "proxy left the connection open");
+        out
+    }
+
+    #[tokio::test]
+    async fn connect_tls_sni_must_be_the_connect_host() {
+        let echo = start_echo().await;
+        let target = format!("localhost:{}", echo.port());
+        let policy_json = format!(r#"{{"allowed_hosts": ["{target}"], "default": "deny"}}"#);
+        let proxy = start_forward(&policy_json).await;
+
+        let mut conn = connect_tunnel(proxy, &target).await;
+        let hello = client_hello(Some("LocalHost."));
+        conn.write_all(&hello).await.unwrap();
+        let mut back = vec![0u8; hello.len()];
+        conn.read_exact(&mut back).await.unwrap();
+        assert_eq!(back, hello, "matching SNI is tunnelled");
+
+        for sni in [Some("evil.example"), None] {
+            let mut conn = connect_tunnel(proxy, &target).await;
+            conn.write_all(&client_hello(sni)).await.unwrap();
+            assert!(read_to_close(&mut conn).await.is_empty(), "{sni:?} must not be tunnelled");
+        }
+    }
+
+    #[tokio::test]
+    async fn connect_to_an_ip_literal_may_omit_sni() {
+        let echo = start_echo().await;
+        let policy_json = format!(r#"{{"allowed_hosts": ["{echo}"], "default": "deny"}}"#);
+        let proxy = start_forward(&policy_json).await;
+        let mut conn = connect_tunnel(proxy, &echo.to_string()).await;
+        let hello = client_hello(None);
+        conn.write_all(&hello).await.unwrap();
+        let mut back = vec![0u8; hello.len()];
+        conn.read_exact(&mut back).await.unwrap();
+        assert_eq!(back, hello);
+
+        let mut conn = connect_tunnel(proxy, &echo.to_string()).await;
+        conn.write_all(&client_hello(Some("evil.example"))).await.unwrap();
+        assert!(read_to_close(&mut conn).await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn plain_http_inside_connect_is_bound_to_the_host() {
+        let echo = start_echo().await;
+        let policy_json = format!(r#"{{"allowed_hosts": ["{echo}"], "default": "deny"}}"#);
+        let proxy = start_forward(&policy_json).await;
+
+        let mut conn = connect_tunnel(proxy, &echo.to_string()).await;
+        conn.write_all(b"\r\nGET / HTTP/1.1\r\nHost: evil.example\r\n\r\n").await.unwrap();
+        assert!(read_to_close(&mut conn).await.is_empty(), "fronted Host refused");
+
+        let mut conn = connect_tunnel(proxy, &echo.to_string()).await;
+        conn.write_all(format!("GET / HTTP/1.1\r\nHost: {echo}\r\n\r\n").as_bytes()).await.unwrap();
+        let mut buf = [0u8; 512];
+        let n = conn.read(&mut buf).await.unwrap();
+        let echoed = String::from_utf8_lossy(&buf[..n]);
+        assert!(echoed.contains("\r\nConnection: close\r\n"), "got: {echoed}");
+        conn.write_all(b"GET / HTTP/1.1\r\nHost: evil.example\r\n\r\n").await.unwrap();
+        let rest = read_to_close(&mut conn).await;
+        assert!(!String::from_utf8_lossy(&rest).contains("evil"), "second request relayed");
+    }
+
+    #[tokio::test]
+    async fn plain_http_relays_one_request_per_connection() {
+        let echo = start_echo().await;
+        let policy_json = format!(r#"{{"allowed_hosts": ["{echo}"], "default": "deny"}}"#);
+        let proxy = start_forward(&policy_json).await;
+
+        let mut conn = TcpStream::connect(proxy).await.unwrap();
+        let first = format!(
+            "POST http://{echo}/ HTTP/1.1\r\nHost: {echo}\r\nConnection: keep-alive\r\n\
+             Content-Length: 2\r\n\r\nhi"
+        );
+        conn.write_all(first.as_bytes()).await.unwrap();
+        let mut buf = [0u8; 512];
+        let n = conn.read(&mut buf).await.unwrap();
+        let echoed = String::from_utf8_lossy(&buf[..n]);
+        assert!(echoed.contains("\r\nConnection: close\r\n"), "got: {echoed}");
+        assert!(!echoed.contains("keep-alive"), "got: {echoed}");
+
+        let second = "GET http://evil.example/ HTTP/1.1\r\nHost: evil.example\r\n\r\n";
+        conn.write_all(second.as_bytes()).await.unwrap();
+        let rest = read_to_close(&mut conn).await;
+        assert!(!String::from_utf8_lossy(&rest).contains("evil"), "second request relayed");
+    }
+
+    #[tokio::test]
+    async fn plain_http_host_header_must_match_the_uri() {
+        let echo = start_echo().await;
+        let policy_json = format!(r#"{{"allowed_hosts": ["{echo}"], "default": "deny"}}"#);
+        let proxy = start_forward(&policy_json).await;
+        let request = format!("GET http://{echo}/ HTTP/1.1\r\nHost: evil.example\r\n\r\n");
+        let resp = first_response(proxy, &request).await;
+        assert!(resp.starts_with("HTTP/1.1 400"), "got: {resp}");
+    }
+
+    #[test]
+    fn first_flight_classification() {
+        assert_eq!(check_flight(&client_hello(Some("a.example")), "a.example"), Flight::Splice);
+        assert!(matches!(
+            check_flight(&client_hello(Some("b.example")), "a.example"),
+            Flight::Refuse(_)
+        ));
+        assert!(matches!(check_flight(&client_hello(None), "a.example"), Flight::Refuse(_)));
+        assert_eq!(check_flight(&client_hello(None), "10.0.0.1"), Flight::Splice);
+        assert_eq!(check_flight(b"get / http/1.1\r\n", "a.example"), Flight::Http);
+        assert_eq!(check_flight(b"\r\n\r\nGET / HTTP/1.1\r\n", "a.example"), Flight::Http);
+        assert_eq!(check_flight(b"SSH-2.0-OpenSSH_9.6\r\n", "a.example"), Flight::Splice);
+        assert_eq!(check_flight("X / ht\u{e9}p\r\n".as_bytes(), "a.example"), Flight::Splice);
+        assert!(!flight_complete(b"GE"));
+        assert!(!flight_complete(b"ping"));
+        assert!(flight_complete(b"ping\0"), "a control byte rules out HTTP");
+        assert!(flight_complete(b"AMQP\x00\x00\x09\x01"));
+        assert!(!flight_complete(b"\r\n"));
+        assert!(flight_complete(b"GET / HTTP/1.1\r\n"));
+        assert!(!flight_complete(&client_hello(Some("a"))[..20]));
+        assert!(flight_complete(&client_hello(Some("a"))));
+    }
+
+    async fn socket_pair() -> (TcpStream, TcpStream) {
+        let ln = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let near = TcpStream::connect(ln.local_addr().unwrap()).await.unwrap();
+        let (far, _) = ln.accept().await.unwrap();
+        (near, far)
+    }
+
+    #[tokio::test]
+    async fn a_stalled_first_flight_is_refused_not_spliced() {
+        let (mut client, mut conn) = socket_pair().await;
+        let (mut upstream, _server) = socket_pair().await;
+        client.write_all(b"GE").await.unwrap();
+        let got = first_flight(&mut conn, &mut upstream, Duration::from_millis(50)).await.unwrap();
+        assert!(matches!(got, FirstFlight::Stalled));
+    }
+
+    #[tokio::test]
+    async fn a_silent_client_is_waited_on_while_the_server_speaks_first() {
+        let (mut client, mut conn) = socket_pair().await;
+        let (mut upstream, mut server) = socket_pair().await;
+        server.write_all(b"220 ready\r\n").await.unwrap();
+        let wait = Duration::from_millis(50);
+        let peek = tokio::spawn(async move {
+            let got = first_flight(&mut conn, &mut upstream, wait).await.unwrap();
+            matches!(got, FirstFlight::Bytes(b) if b == b"EHLO x\r\n")
+        });
+        let mut greeting = [0u8; 11];
+        client.read_exact(&mut greeting).await.unwrap();
+        assert_eq!(&greeting, b"220 ready\r\n");
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert!(!peek.is_finished(), "no deadline before the client's first byte");
+        client.write_all(b"EHLO x\r\n").await.unwrap();
+        assert!(peek.await.unwrap());
     }
 }

@@ -1564,6 +1564,8 @@ mod tests {
             "GET /admin/users/{id}/dispatch-policy Bearer Scope(Admin)",
             "PUT /admin/users/{id}/dispatch-policy Bearer Scope(Admin)",
             "GET /admin/users/{id}/machines Bearer Scope(Admin)",
+            "GET /admin/users/{id}/passkeys Bearer Scope(Admin)",
+            "DELETE /admin/users/{id}/passkeys/{passkey} Bearer Scope(Admin)",
             "DELETE /admin/users/{id}/purge Bearer Scope(Admin)",
             "POST /admin/users/{id}/rotate Bearer Scope(Admin)",
             "GET /admin/users/{id}/tokens Bearer Scope(Admin)",

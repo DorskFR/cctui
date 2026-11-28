@@ -24,7 +24,8 @@
 		useTokens,
 		useUserAcls,
 		useUserActions,
-		useUserKeys
+		useUserKeys,
+		useUserPasskeys
 	} from '#lib/queries/index.ts';
 	import { isHiddenOwner } from '#lib/hiddenOwners.ts';
 	import { hasFeature } from '#lib/features.svelte.ts';
@@ -34,6 +35,7 @@
 	import AccessAccountsTab from './AccessAccountsTab.svelte';
 	import AccessKeysTab from './AccessKeysTab.svelte';
 	import AccessMachinesTab from './AccessMachinesTab.svelte';
+	import AccessPasskeysTab from './AccessPasskeysTab.svelte';
 	import AccessPolicyTab from './AccessPolicyTab.svelte';
 	import AccessTokensTab from './AccessTokensTab.svelte';
 	import KeyScopesModal from './KeyScopesModal.svelte';
@@ -67,6 +69,10 @@
 		() => user.id,
 		() => isAdmin
 	);
+	const passkeys = useUserPasskeys(
+		() => user.id,
+		() => isAdmin
+	);
 	const actions = useUserActions();
 	const hiddenOwners = useHiddenOwners(() => isAdmin);
 	const hiddenActions = useHiddenOwnerActions();
@@ -79,6 +85,7 @@
 	const machineCount = $derived((machines.data ?? []).filter((mc) => mc.kind !== 'ephemeral').length);
 	const keyCount = $derived((keys.data ?? []).filter((k) => !k.revoked_at).length);
 	const tokenCount = $derived((tokens.data ?? []).filter((t) => !t.revoked_at).length);
+	const passkeyCount = $derived(passkeys.data?.passkeys.length ?? 0);
 
 	const statusText = $derived(
 		user.revoked_at ? m.users_badge_revoked() : user.disabled_at ? m.users_badge_disabled() : m.users_badge_active()
@@ -90,8 +97,7 @@
 	let ceilingOpen = $state(false);
 	let confirmKind = $state<'revoke' | 'purge' | null>(null);
 
-	// Machines and tokens are admin-only endpoints, so a non-admin is not shown
-	// tabs it could never open.
+	// A non-admin gets no tab for an admin-only endpoint.
 	const tabs = $derived([
 		{ id: 'keys', label: m.access_tab_keys() },
 		...(isAdmin
@@ -100,6 +106,9 @@
 						? [{ id: 'machines', label: m.access_tab_machines({ count: machineCount }) }]
 						: []),
 					{ id: 'tokens', label: m.access_tab_tokens({ count: tokenCount }) },
+					...(hasFeature('passkeys')
+						? [{ id: 'passkeys', label: m.access_tab_passkeys({ count: passkeyCount }) }]
+						: []),
 					{ id: 'policy', label: m.access_tab_policy() }
 				]
 			: []),
@@ -249,6 +258,8 @@
 					canManage={isAdmin && !user.revoked_at}
 					{onsecret}
 				/>
+			{:else if id === 'passkeys'}
+				<AccessPasskeysTab userId={user.id} userName={user.name} canManage={isAdmin} />
 			{:else if id === 'policy'}
 				<AccessPolicyTab userId={user.id} userName={user.name} canManage={isAdmin && !user.revoked_at} />
 			{:else}

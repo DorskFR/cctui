@@ -5,7 +5,7 @@ import type { VoiceClientMsg } from '@bindings/VoiceClientMsg';
 import type { VoiceServerMsg } from '@bindings/VoiceServerMsg';
 import { wsBase } from '#lib/config.ts';
 import type { VoiceSettings } from '#lib/settings.svelte.ts';
-import { type ChunkerOptions, UtteranceChunker } from './chunker';
+import { CHUNKER_DEFAULTS, type ChunkerOptions, UtteranceChunker } from './chunker';
 import { floatToPcm16, frameLevel } from './pcm';
 import type { SpeechPlayer } from './player';
 import { ReplyGate } from './replyGate';
@@ -15,9 +15,14 @@ import type { VadFactory, VadHandle } from './vad';
  *  its first sentence before the loop gives up on a reply. */
 export const REPLY_GRACE_MS = 4000;
 
-/** Without barge-in, speech this soon after playback stops is the speakers'
- *  echo tail, not the user. */
+/** Speech this soon after playback stops may be the speakers' echo tail. */
 export const ECHO_TAIL_MS = 600;
+
+/** Over a reply, speech barges in only once this much of it is sustained at
+ *  `BARGE_IN_PROB`: the reply's own echo rarely holds that long. */
+export const BARGE_IN_MS = 600;
+export const BARGE_IN_PROB = 0.8;
+const BARGE_IN_RESET_PROB = 0.3;
 
 export type LiveStatus =
 	| 'off'
@@ -80,6 +85,9 @@ export class LiveVoice {
 	private quietAt = 0;
 	/** The speech in progress started over a reply and is being ignored. */
 	private echo = false;
+	/** Speech over a reply, in samples, that may still turn out to be its echo. */
+	private barging: number | null = null;
+	private readonly sampleRate: number;
 	private replyTimer: ReturnType<typeof setTimeout> | null = null;
 	private readonly deps: LiveVoiceDeps;
 	private readonly chunker: UtteranceChunker;
@@ -87,6 +95,7 @@ export class LiveVoice {
 
 	constructor(deps: LiveVoiceDeps) {
 		this.deps = deps;
+		this.sampleRate = deps.chunker?.sampleRate ?? CHUNKER_DEFAULTS.sampleRate;
 		this.chunker = new UtteranceChunker((s, last) => this.sendPart(s, last), deps.chunker);
 		this.gate = new ReplyGate({
 			delayMs: () => deps.prefs().replyDelayMs,
@@ -193,6 +202,7 @@ export class LiveVoice {
 				onSpeechEnd: () => this.onSpeechEnd(),
 				onMisfire: () => {
 					this.echo = false;
+					this.barging = null;
 					this.chunker.cancel();
 					this.gate.speechEnd();
 				},
@@ -210,18 +220,26 @@ export class LiveVoice {
 		}
 	}
 
-	/** Without barge-in the loop is half duplex: what the microphone hears
-	 *  over a reply is its own echo, never recorded nor allowed to cut it.
-	 *  A reply the gate holds does not show as speaking, so it is neither. */
+	/** What the microphone hears over a reply may be its own echo. Without
+	 *  barge-in it is never recorded nor allowed to cut the reply; with it,
+	 *  only sustained speech does. A reply the gate holds is neither. */
 	private onSpeechStart() {
-		const replying = this.status === 'speaking' || this.deps.player.playing;
-		if (!this.deps.prefs().bargeIn) {
-			if (replying || Date.now() - this.quietAt < ECHO_TAIL_MS) {
-				this.echo = true;
-				return;
-			}
-		} else if (replying) this.interrupt();
 		if (this.muted) return;
+		const overReply =
+			this.status === 'speaking' ||
+			this.deps.player.playing ||
+			Date.now() - this.quietAt < ECHO_TAIL_MS;
+		if (overReply) {
+			if (this.deps.prefs().bargeIn) {
+				this.barging = 0;
+				this.chunker.hold();
+			} else this.echo = true;
+			return;
+		}
+		this.listen();
+	}
+
+	private listen() {
 		this.chunker.start();
 		this.gate.speechStart();
 	}
@@ -230,11 +248,20 @@ export class LiveVoice {
 		if (this.muted) return;
 		this.level = frameLevel(frame);
 		this.chunker.frame(frame, speechProb);
+		if (this.barging === null) return;
+		if (speechProb >= BARGE_IN_PROB) this.barging += frame.length;
+		else if (speechProb < BARGE_IN_RESET_PROB) this.barging = 0;
+		if (this.barging * 1000 < BARGE_IN_MS * this.sampleRate) return;
+		this.barging = null;
+		if (this.status === 'speaking' || this.deps.player.playing) this.interrupt();
+		this.listen();
 	}
 
 	private onSpeechEnd() {
-		if (this.echo) {
+		if (this.echo || this.barging !== null) {
 			this.echo = false;
+			this.barging = null;
+			this.chunker.cancel();
 			return;
 		}
 		if (this.muted) this.chunker.cancel();
@@ -365,6 +392,8 @@ export class LiveVoice {
 		this.vad?.destroy();
 		this.vad = null;
 		this.chunker.cancel();
+		this.echo = false;
+		this.barging = null;
 		this.chunker.setLivePartMs(null);
 		this.chunker.setMinPartMs(null);
 		this.endAwait();

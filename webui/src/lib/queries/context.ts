@@ -7,6 +7,7 @@ import type { SessionContextResponse } from "@bindings/SessionContextResponse";
 import type { BulkContextUpdate } from "@bindings/BulkContextUpdate";
 import type { BulkContextOutcome } from "@bindings/BulkContextOutcome";
 import type { AttachedContextRef } from "@bindings/AttachedContextRef";
+import type { SettlePendingRequest } from "@bindings/SettlePendingRequest";
 import { endpoints } from "./endpoints";
 import { qk } from "./keys";
 import { hasFeature } from "#lib/features.svelte.ts";
@@ -14,6 +15,12 @@ import { hasFeature } from "#lib/features.svelte.ts";
 const list = <T>(v: unknown): T[] => (Array.isArray(v) ? v : []);
 const field = (v: unknown, key: string): unknown =>
   v && typeof v === "object" ? (v as Record<string, unknown>)[key] : undefined;
+
+/** The item as the user saw it, so the server refuses to settle a proposal
+ * that changed since. */
+export const renderedAs = (
+  item: Pick<ContextItem, "version" | "updated_at">,
+): SettlePendingRequest => ({ version: item.version, updated_at: item.updated_at });
 
 /** A server that predates these endpoints answers 404 or another shape; the
  * drawer and spawn modal must still render, so every body is coerced. */
@@ -127,15 +134,19 @@ export function useContextActions() {
       await invalidate();
       return list<BulkContextOutcome>(field(res, "outcomes"));
     },
-    approvePending: async (id: string): Promise<ContextItem> => {
-      const item = await endpoints.approveContextPending(id);
-      await invalidate();
-      return item;
+    approvePending: async (seen: ContextItem): Promise<ContextItem> => {
+      try {
+        return await endpoints.approveContextPending(seen.id, renderedAs(seen));
+      } finally {
+        await invalidate();
+      }
     },
-    rejectPending: async (id: string): Promise<ContextItem> => {
-      const item = await endpoints.rejectContextPending(id);
-      await invalidate();
-      return item;
+    rejectPending: async (seen: ContextItem): Promise<ContextItem> => {
+      try {
+        return await endpoints.rejectContextPending(seen.id, renderedAs(seen));
+      } finally {
+        await invalidate();
+      }
     },
   };
 }

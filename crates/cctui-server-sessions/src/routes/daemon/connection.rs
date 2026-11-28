@@ -38,7 +38,9 @@ pub async fn ws<S: SessionsContext>(
     headers: axum::http::HeaderMap,
 ) -> Result<response::Response, StatusCode> {
     let token = bearer_token(&headers).ok_or(StatusCode::UNAUTHORIZED)?;
-    let ctx = state.auth_config().validate(&token).await.ok_or(StatusCode::UNAUTHORIZED)?;
+    let principal =
+        state.auth_config().validate_principal(&token).await.ok_or(StatusCode::UNAUTHORIZED)?;
+    let (ctx, bound) = (principal.ctx, principal.bound);
     let Some(machine_id) = ctx.machine_id else {
         return Err(StatusCode::FORBIDDEN);
     };
@@ -59,7 +61,9 @@ pub async fn ws<S: SessionsContext>(
         return Err(StatusCode::TOO_MANY_REQUESTS);
     };
     Ok(ws
-        .on_upgrade(move |socket| handle(socket, state, machine_id, user_id, shared, guard))
+        .on_upgrade(move |socket| {
+            handle(socket, state, Identity { machine_id, user_id, bound }, shared, guard)
+        })
         .into_response())
 }
 
@@ -77,18 +81,26 @@ async fn dispatch_machine<S: SessionsContext>(state: &S, machine_id: Uuid) -> bo
         .is_some_and(|kind| kind == "dispatch")
 }
 
+/// Who a daemon connection authenticated as. `bound` is the session a
+/// dispatched worker's key is confined to.
+struct Identity {
+    machine_id: Uuid,
+    user_id: Uuid,
+    bound: Option<String>,
+}
+
 async fn handle<S: SessionsContext>(
     socket: WebSocket,
     state: S,
-    machine_id: Uuid,
-    user_id: Uuid,
+    identity: Identity,
     shared: bool,
     guard: ConnGuard,
 ) {
+    let machine_id = identity.machine_id;
     let (sink, mut stream) = socket.split();
     let (tx, rx) = mpsc::channel::<DaemonFrameDown>(64);
     let (priority_tx, priority_rx) = mpsc::channel::<DaemonFrameDown>(PRIORITY_CAPACITY);
-    let mut conn = Conn::new(state, machine_id, user_id, shared);
+    let mut conn = Conn::new(state, identity, shared);
     conn.register(&tx, priority_tx).await;
     send_initial_frames(&conn.state, machine_id, &tx).await;
     if !shared {
@@ -132,7 +144,7 @@ struct Conn<S: SessionsContext> {
 }
 
 impl<S: SessionsContext> Conn<S> {
-    fn new(state: S, machine_id: Uuid, user_id: Uuid, shared: bool) -> Self {
+    fn new(state: S, Identity { machine_id, user_id, bound }: Identity, shared: bool) -> Self {
         Self {
             state,
             machine_id,
@@ -140,7 +152,7 @@ impl<S: SessionsContext> Conn<S> {
             id: Uuid::new_v4(),
             shared,
             announced: Arc::default(),
-            owners: SessionOwners::new(machine_id, user_id),
+            owners: SessionOwners::new(machine_id, user_id).bound_to(bound),
             bumps: Arc::new(Bumps::default()),
         }
     }
@@ -217,6 +229,11 @@ impl<S: SessionsContext> Conn<S> {
         for frame in leaves {
             if let Some(local_id) = session_scope(&frame)
                 && !admit(&mut self.owners, state.pool(), local_id).await
+            {
+                continue;
+            }
+            if let Some(local_id) = preview_session(&frame)
+                && !self.owners.reaches(state.pool(), local_id).await
             {
                 continue;
             }
@@ -299,12 +316,24 @@ impl<S: SessionsContext> Conn<S> {
                     "announced_sessions": sessions.len(),
                 })),
             );
+        } else if let Some(survivor) = state.bus().machine_conn(machine_id) {
+            let kind = cctui_server_kernel::extras_types::Kind::Daemon;
+            state.hand_off_conn(kind, machine_id, self.id, survivor);
         }
         // A shared machine's other connections are siblings, not this daemon's
         // replacement, so its sessions are still owed a mark.
         if newest || self.shared {
             schedule_daemon_lost(state, machine_id, self.id, self.shared, sessions);
         }
+    }
+}
+
+/// The session a preview frame opens or closes a port for.
+fn preview_session(frame: &DaemonFrameUp) -> Option<&str> {
+    match frame {
+        DaemonFrameUp::PreviewOpen { session_id, .. }
+        | DaemonFrameUp::PreviewClose { session_id, .. } => Some(session_id),
+        _ => None,
     }
 }
 
