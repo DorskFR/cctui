@@ -102,7 +102,8 @@ pub async fn sync_or_warn(pool: &PgPool, registry: &PluginRegistry, blobs: &impl
 }
 
 /// Validate `bytes`, store them, upsert the row and register the plugin. An
-/// existing id is upgraded in place and keeps its instance toggle.
+/// existing id is upgraded in place and keeps its instance toggle; its
+/// previous archive is collected once nothing else references it.
 pub async fn install(
     pool: &PgPool,
     registry: &PluginRegistry,
@@ -111,26 +112,60 @@ pub async fn install(
     blobs: &impl BlobsHooks,
 ) -> Result<Plugin, InstallError> {
     let mut plugin = load_archive(bytes, false)?;
-    let blob = blobs.store_blob(pool, bytes, Some(ARCHIVE_MEDIA_TYPE)).await?;
     let manifest = serde_json::to_value(&plugin.manifest).unwrap_or_default();
-    let (enabled,): (bool,) = sqlx::query_as(
-        "INSERT INTO plugins (id, version, manifest, archive_hash, enabled, installed_by) \
-         VALUES ($1, $2, $3, $4, false, $5) \
-         ON CONFLICT (id) DO UPDATE SET version = EXCLUDED.version, \
-           manifest = EXCLUDED.manifest, archive_hash = EXCLUDED.archive_hash, \
-           installed_by = EXCLUDED.installed_by, updated_at = now() \
-         RETURNING enabled",
-    )
-    .bind(&plugin.manifest.id)
-    .bind(&plugin.manifest.version)
-    .bind(&manifest)
-    .bind(&blob.hash)
-    .bind(installed_by)
-    .fetch_one(pool)
-    .await?;
-    plugin.instance_enabled = enabled;
-    registry.upsert_installed(plugin.clone());
-    Ok(plugin)
+    for _ in 0..STORE_ATTEMPTS {
+        let blob = blobs.store_blob(pool, bytes, Some(ARCHIVE_MEDIA_TYPE)).await?;
+        let mut tx = pool.begin().await?;
+        if !hold_blob(&mut tx, &blob.hash).await? {
+            continue;
+        }
+        let previous: Option<String> =
+            sqlx::query_scalar("SELECT archive_hash FROM plugins WHERE id = $1 FOR UPDATE")
+                .bind(&plugin.manifest.id)
+                .fetch_optional(&mut *tx)
+                .await?;
+        let (enabled,): (bool,) = sqlx::query_as(
+            "INSERT INTO plugins (id, version, manifest, archive_hash, enabled, installed_by) \
+             VALUES ($1, $2, $3, $4, false, $5) \
+             ON CONFLICT (id) DO UPDATE SET version = EXCLUDED.version, \
+               manifest = EXCLUDED.manifest, archive_hash = EXCLUDED.archive_hash, \
+               installed_by = EXCLUDED.installed_by, updated_at = now() \
+             RETURNING enabled",
+        )
+        .bind(&plugin.manifest.id)
+        .bind(&plugin.manifest.version)
+        .bind(&manifest)
+        .bind(&blob.hash)
+        .bind(installed_by)
+        .fetch_one(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        plugin.instance_enabled = enabled;
+        registry.upsert_installed(plugin.clone());
+        if let Some(old) = previous.filter(|old| *old != blob.hash) {
+            blobs.delete_unreferenced(pool, &old).await;
+        }
+        return Ok(plugin);
+    }
+    Err(InstallError::Db(sqlx::Error::Protocol(
+        "the plugin archive was removed while it was being installed".to_owned(),
+    )))
+}
+
+/// A stored archive can be collected before the plugin row references it;
+/// the store is then retried.
+const STORE_ATTEMPTS: usize = 3;
+
+/// Share-locks the archive's blob row until the transaction ends, so the blob
+/// collector, which locks the row before checking references, sees the
+/// plugin row this transaction writes; `false` when the row is already gone.
+async fn hold_blob(conn: &mut sqlx::PgConnection, hash: &str) -> sqlx::Result<bool> {
+    let held: Option<i32> =
+        sqlx::query_scalar("SELECT 1 FROM daemon_blobs WHERE hash = $1 FOR KEY SHARE")
+            .bind(hash)
+            .fetch_optional(conn)
+            .await?;
+    Ok(held.is_some())
 }
 
 /// Flip the instance toggle; `Ok(false)` when `id` is not an installed plugin.
@@ -149,34 +184,29 @@ pub async fn set_enabled(
     Ok(n == 1 && registry.set_installed_enabled(id, enabled))
 }
 
-/// Remove the row, the archive blob when nothing else references it, and the
-/// registry entry; `Ok(false)` when `id` is not an installed plugin.
+/// Remove the row, its settings and the registry entry, then the archive blob
+/// when nothing else references it; `Ok(false)` when `id` is not an installed
+/// plugin.
 pub async fn uninstall(
     pool: &PgPool,
     registry: &PluginRegistry,
     id: &str,
     blobs: &impl BlobsHooks,
 ) -> sqlx::Result<bool> {
+    let mut tx = pool.begin().await?;
     let hash: Option<String> =
         sqlx::query_scalar("DELETE FROM plugins WHERE id = $1 RETURNING archive_hash")
             .bind(id)
-            .fetch_optional(pool)
+            .fetch_optional(&mut *tx)
             .await?;
     let Some(hash) = hash else { return Ok(false) };
-    let external: Option<bool> = sqlx::query_scalar(
-        "DELETE FROM daemon_blobs WHERE hash = $1 \
-         AND NOT EXISTS (SELECT 1 FROM plugins WHERE archive_hash = $1) \
-         AND NOT EXISTS (SELECT 1 FROM session_attachments WHERE hash = $1) \
-         RETURNING file_stored",
-    )
-    .bind(&hash)
-    .fetch_optional(pool)
-    .await?;
-    crate::plugin_settings::delete(pool, id).await?;
+    sqlx::query("DELETE FROM plugin_settings WHERE plugin_id = $1")
+        .bind(id)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
     registry.remove_installed(id);
-    if external == Some(true) {
-        blobs.delete_unreferenced(pool, &hash).await;
-    }
+    blobs.delete_unreferenced(pool, &hash).await;
     Ok(true)
 }
 
@@ -246,6 +276,8 @@ fn redirect_target(
 #[cfg(test)]
 mod tests {
     use super::fetch_archive;
+    use crate::plugin_archive::test_support::plugin_tgz;
+    use crate::plugins::PluginRegistry;
 
     #[tokio::test]
     async fn fetch_refuses_plain_http_and_internal_hosts() {
@@ -281,5 +313,138 @@ mod tests {
         .await
         .unwrap();
         crate::plugin_archive::load_archive(&bytes, true).unwrap();
+    }
+
+    /// Stores archives as plain rows and records what it is asked to collect;
+    /// with `steal` set, the first stored row is deleted before install holds it.
+    #[derive(Default)]
+    struct Recording {
+        collected: std::sync::Mutex<Vec<String>>,
+        steal: std::sync::atomic::AtomicBool,
+    }
+
+    impl crate::hooks::BlobsHooks for Recording {
+        async fn store_blob(
+            &self,
+            pool: &sqlx::PgPool,
+            bytes: &[u8],
+            media_type: Option<&str>,
+        ) -> Result<cctui_server_kernel::blobs_types::StoredBlob, sqlx::Error> {
+            use sha2::Digest;
+            let hash = hex::encode(sha2::Sha256::digest(bytes));
+            sqlx::query(
+                "INSERT INTO daemon_blobs (hash, media_type, byte_len, bytes) \
+                 VALUES ($1, $2, $3, $4) ON CONFLICT (hash) DO NOTHING",
+            )
+            .bind(&hash)
+            .bind(media_type)
+            .bind(i64::try_from(bytes.len()).unwrap())
+            .bind(bytes)
+            .execute(pool)
+            .await?;
+            if self.steal.swap(false, std::sync::atomic::Ordering::Relaxed) {
+                sqlx::query("DELETE FROM daemon_blobs WHERE hash = $1")
+                    .bind(&hash)
+                    .execute(pool)
+                    .await?;
+            }
+            Ok(cctui_server_kernel::blobs_types::StoredBlob { hash, created: true })
+        }
+
+        async fn read_blob_in(
+            &self,
+            _conn: &mut sqlx::PgConnection,
+            _hash: &str,
+        ) -> sqlx::Result<Option<Vec<u8>>> {
+            Ok(None)
+        }
+
+        async fn delete_unreferenced(&self, _pool: &sqlx::PgPool, hash: &str) {
+            self.collected.lock().unwrap().push(hash.to_owned());
+        }
+    }
+
+    async fn store_pool(name: &str) -> Option<sqlx::PgPool> {
+        let url = cctui_server_kernel::test_support::db_url(name)?;
+        Some(sqlx::postgres::PgPoolOptions::new().max_connections(2).connect(&url).await.unwrap())
+    }
+
+    async fn archive_hash(pool: &sqlx::PgPool, id: &str) -> Option<String> {
+        sqlx::query_scalar("SELECT archive_hash FROM plugins WHERE id = $1")
+            .bind(id)
+            .fetch_optional(pool)
+            .await
+            .unwrap()
+    }
+
+    async fn forget(pool: &sqlx::PgPool, id: &str, hashes: &[String]) {
+        sqlx::query("DELETE FROM plugins WHERE id = $1").bind(id).execute(pool).await.unwrap();
+        sqlx::query("DELETE FROM daemon_blobs WHERE hash = ANY($1)")
+            .bind(hashes)
+            .execute(pool)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn an_upgrade_collects_the_previous_archive_and_uninstall_the_last() {
+        const ID: &str = "plugin-store-collects-archives";
+        let Some(pool) = store_pool("plugin_store_collects_archives").await else { return };
+        forget(&pool, ID, &[]).await;
+        let (registry, blobs) = (PluginRegistry::disabled(), Recording::default());
+        let v1 = plugin_tgz(ID, None, "1.0.0");
+
+        super::install(&pool, &registry, &v1, None, &blobs).await.unwrap();
+        let first = archive_hash(&pool, ID).await.unwrap();
+        super::install(&pool, &registry, &v1, None, &blobs).await.unwrap();
+        assert!(blobs.collected.lock().unwrap().is_empty(), "the same archive stays");
+
+        super::install(&pool, &registry, &plugin_tgz(ID, None, "1.1.0"), None, &blobs)
+            .await
+            .unwrap();
+        let second = archive_hash(&pool, ID).await.unwrap();
+        assert_ne!(first, second);
+        assert_eq!(*blobs.collected.lock().unwrap(), vec![first.clone()]);
+
+        sqlx::query("INSERT INTO plugin_settings (plugin_id) VALUES ($1)")
+            .bind(ID)
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert!(super::uninstall(&pool, &registry, ID, &blobs).await.unwrap());
+        assert_eq!(*blobs.collected.lock().unwrap(), vec![first.clone(), second.clone()]);
+        assert_eq!(archive_hash(&pool, ID).await, None);
+        let settings: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM plugin_settings WHERE plugin_id = $1")
+                .bind(ID)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(settings, 0);
+        assert!(!registry.all_admin().iter().any(|p| p.manifest.id == ID));
+        assert!(!super::uninstall(&pool, &registry, ID, &blobs).await.unwrap());
+        forget(&pool, ID, &[first, second]).await;
+    }
+
+    #[tokio::test]
+    async fn install_stores_again_when_its_archive_is_collected_first() {
+        const ID: &str = "plugin-store-archive-collected";
+        let Some(pool) = store_pool("plugin_store_archive_collected").await else { return };
+        forget(&pool, ID, &[]).await;
+        let (registry, blobs) = (PluginRegistry::disabled(), Recording::default());
+        blobs.steal.store(true, std::sync::atomic::Ordering::Relaxed);
+
+        super::install(&pool, &registry, &plugin_tgz(ID, None, "1.0.0"), None, &blobs)
+            .await
+            .unwrap();
+        let hash = archive_hash(&pool, ID).await.unwrap();
+        let stored: bool =
+            sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM daemon_blobs WHERE hash = $1)")
+                .bind(&hash)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert!(stored, "the plugin row never points at a missing archive");
+        forget(&pool, ID, &[hash]).await;
     }
 }

@@ -110,23 +110,30 @@ pub async fn store_blob_with(
     let hash = hex::encode(Sha256::digest(bytes));
     let byte_len = i64::try_from(bytes.len()).unwrap_or(i64::MAX);
     let external = store.is_external();
+    let mut tx = sqlx::Connection::begin(conn).await?;
+    let created = sqlx::query(STORE_SQL)
+        .bind(&hash)
+        .bind(media_type)
+        .bind(byte_len)
+        .bind(if external { &[][..] } else { bytes })
+        .bind(external)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected()
+        == 1;
     if external {
         store.write_external(&hash, bytes).await?;
     }
-    let rows = sqlx::query(
-        "INSERT INTO daemon_blobs (hash, media_type, byte_len, bytes, file_stored) VALUES ($1, $2, $3, $4, $5) \
-         ON CONFLICT (hash) DO NOTHING",
-    )
-    .bind(&hash)
-    .bind(media_type)
-    .bind(byte_len)
-    .bind(if external { &[][..] } else { bytes })
-    .bind(external)
-    .execute(conn)
-    .await?
-    .rows_affected();
-    Ok(StoredBlob { hash, created: rows == 1 })
+    tx.commit().await?;
+    Ok(StoredBlob { hash, created })
 }
+
+/// Inserts the row or, when it exists, locks it without rewriting it, so the
+/// external bytes are written under the same row lock that
+/// [`blob_store::delete_unreferenced_with`] takes before removing them.
+const STORE_SQL: &str = "INSERT INTO daemon_blobs (hash, media_type, byte_len, bytes, file_stored) \
+     VALUES ($1, $2, $3, $4, $5) \
+     ON CONFLICT (hash) DO UPDATE SET media_type = daemon_blobs.media_type WHERE FALSE";
 
 /// Uploads authorize through `session_attachments` rather than a link row:
 /// spawn uploads are recorded before the `sessions` row exists, so they cannot
