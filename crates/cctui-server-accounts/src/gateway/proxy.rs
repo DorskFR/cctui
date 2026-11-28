@@ -1276,10 +1276,12 @@ async fn send_upstream(
             None => clear_soft_limit_block_for_token(state, session_token).await,
         }
     }
-    // Usage ticker. Out of band on purpose: it reaches the agent as its own
-    // turn, so nothing here can reshape the request that was just forwarded.
+    // Usage ticker: spawned so a usage read never delays the relay, and
+    // delivered as its own turn so it cannot reshape the forwarded request.
     if status.is_success() {
-        state.deliver_usage_notice(acct, session_token).await;
+        let (state, acct, token) =
+            (state.clone(), without_credentials(acct), session_token.clone());
+        tokio::spawn(async move { state.deliver_usage_notice(&acct, &token).await });
     }
     // A successful upstream call means the account's credentials are good again —
     // clear any reauth flag. Gated in-memory, so this is free unless the
@@ -1288,6 +1290,23 @@ async fn send_upstream(
         clear_account_reauth(state, acct.id);
     }
     Ok((upstream, status))
+}
+
+fn without_credentials(acct: &Account) -> Account {
+    Account {
+        id: acct.id,
+        provider: acct.provider.clone(),
+        access_token: None,
+        refresh_token: None,
+        expires_at: acct.expires_at,
+        provider_account_id: acct.provider_account_id.clone(),
+        base_url: acct.base_url.clone(),
+        auth_scheme: acct.auth_scheme.clone(),
+        soft_limits: acct.soft_limits.clone(),
+        usage_notices: acct.usage_notices,
+        provider_settings: acct.provider_settings.clone(),
+        rate_limits: acct.rate_limits,
+    }
 }
 
 /// Mirror status + headers back to the client untouched (retry-after, 429,
@@ -1550,7 +1569,7 @@ mod tests {
     use super::{
         Account, Family, MAX_BUFFERED_BODY, RateLimits, SESSION_AFFINITY_HEADER, buffered_payload,
         declared_body_len, forward_headers, session_token_from, skip_request_header,
-        wants_affinity,
+        wants_affinity, without_credentials,
     };
     use axum::body::Bytes;
     use axum::http::HeaderMap;
@@ -1590,6 +1609,17 @@ mod tests {
             provider_settings: None,
             rate_limits: RateLimits::default(),
         }
+    }
+
+    #[test]
+    fn the_spawned_usage_notice_carries_no_credentials() {
+        let mut acct = static_account("oauth");
+        acct.refresh_token = Some("rt".into());
+        acct.usage_notices.enabled = true;
+        let copy = without_credentials(&acct);
+        assert_eq!((copy.access_token, copy.refresh_token), (None, None));
+        assert_eq!((copy.id, copy.usage_notices), (acct.id, acct.usage_notices));
+        assert_eq!(copy.soft_limits, acct.soft_limits);
     }
 
     /// An `api_key` account authenticates upstream with `x-api-key` and no
