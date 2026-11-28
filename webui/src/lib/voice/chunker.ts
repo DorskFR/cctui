@@ -33,6 +33,7 @@ export class UtteranceChunker {
 	private buffered = 0;
 	private quiet = 0;
 	private speaking = false;
+	private holding = false;
 	private sent = 0;
 	/** Set while the server transcribes live: a part goes out every this
 	 *  much speech, with no pause needed. */
@@ -59,9 +60,16 @@ export class UtteranceChunker {
 		this.minPartMs = ms && ms > 0 ? Math.min(ms, this.opts.maxPartMs) : this.opts.minPartMs;
 	}
 
+	/** Speech that may be echo: the pre-roll stops trimming, up to a part,
+	 *  so a later `start` keeps its beginning. `cancel` lets it go. */
+	hold() {
+		if (!this.speaking) this.holding = true;
+	}
+
 	start() {
 		if (this.speaking) return;
 		this.speaking = true;
+		this.holding = false;
 		this.frames = this.preRoll;
 		this.buffered = this.preRollSamples;
 		this.preRoll = [];
@@ -75,7 +83,7 @@ export class UtteranceChunker {
 		if (!this.speaking) {
 			this.preRoll.push(samples);
 			this.preRollSamples += samples.length;
-			const max = this.samples(this.opts.preRollMs);
+			const max = this.samples(this.holding ? this.opts.maxPartMs : this.opts.preRollMs);
 			while (this.preRoll.length > 1 && this.preRollSamples > max) {
 				this.preRollSamples -= this.preRoll.shift()?.length ?? 0;
 			}
@@ -100,6 +108,7 @@ export class UtteranceChunker {
 	}
 
 	cancel() {
+		this.holding = false;
 		if (!this.speaking) return;
 		this.speaking = false;
 		this.frames = [];

@@ -39,6 +39,24 @@ describe('UtteranceChunker', () => {
 		expect(emitted[0].samples.at(-1)).toBe(Math.fround(199 / 1e6));
 	});
 
+	it('holds the whole pre-roll while speech may be echo, until cancelled', () => {
+		const { emitted, c } = fed();
+		c.frame(ramp(0, 20), 0.1);
+		c.hold();
+		for (let i = 1; i < 10; i++) c.frame(ramp(i * 20, 20), 0.9);
+		c.start();
+		c.end();
+		expect(joined([emitted[0].samples])).toEqual(Array.from(ramp(0, 200)));
+
+		c.hold();
+		for (let i = 0; i < 10; i++) c.frame(ramp(i * 20, 20), 0.9);
+		c.cancel();
+		c.frame(ramp(200, 20), 0.1);
+		c.start();
+		c.end();
+		expect(emitted[1].samples.length).toBeLessThanOrEqual(60);
+	});
+
 	it('flushes a part at a pause once enough is buffered', () => {
 		const { emitted, c } = fed();
 		c.start();
