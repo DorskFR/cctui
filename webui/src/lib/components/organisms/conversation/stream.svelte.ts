@@ -231,6 +231,9 @@ export class ConversationStream {
 			// A permission prompt means claude is blocked on the user, not working.
 			if (list.length) this.working = false;
 		});
+		// The listeners fire once on registration with the current value; that
+		// null is not a resolution and must not release an answer's lock.
+		let registered = false;
 		const offAsk = ws.onAsk(sid, (q) => {
 			if (q === null) this.#heldAsk = null;
 			else if (this.answering && askIdentity(q) === this.#answeredAsk) {
@@ -245,7 +248,7 @@ export class ConversationStream {
 				[...(this.#opts.historyData() ?? []), ...this.live].some((e) => this.#isLiveAskCall(e))
 			);
 			// A fresh ask (or a resolution) supersedes any in-flight answer lock.
-			this.answering = false;
+			if (q || registered) this.answering = false;
 			// A pending question means claude is waiting on the user, not working.
 			if (q) this.working = false;
 		});
@@ -257,10 +260,11 @@ export class ConversationStream {
 			}
 			this.plan = p;
 			// A fresh plan (or a resolution) supersedes any in-flight answer lock.
-			this.answering = false;
+			if (p || registered) this.answering = false;
 			// A pending plan means claude is waiting on the user, not working.
 			if (p) this.working = false;
 		});
+		registered = true;
 		const offSoftLimit = ws.onSoftLimit(sid, (sl) => {
 			this.softLimit = sl;
 		});
