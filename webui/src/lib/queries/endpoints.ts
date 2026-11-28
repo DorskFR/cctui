@@ -637,6 +637,8 @@ export const endpoints = {
     api.get<MachineRow[]>(`/admin/users/${userId}/machines`),
   tokens: (userId: string) =>
     api.get<UserTokenRow[]>(`/admin/users/${userId}/tokens`),
+  userPasskeys: (userId: string) =>
+    api.get<PasskeyListResponse>(`/admin/users/${userId}/passkeys`),
   /** A user's scope ceiling. Self or admin. */
   userAcls: (userId: string) =>
     api.get<UserAclsResponse>(`/users/${userId}/acls`),

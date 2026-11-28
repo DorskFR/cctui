@@ -44,6 +44,7 @@ export const qk = {
   users: ["users"] as const,
   machines: (userId: string) => ["users", userId, "machines"] as const,
   tokens: (userId: string) => ["users", userId, "tokens"] as const,
+  userPasskeys: (userId: string) => ["users", userId, "passkeys"] as const,
   userAcls: (userId: string) => ["users", userId, "acls"] as const,
   userKeys: (userId: string) => ["users", userId, "keys"] as const,
   userDispatchPolicy: (userId: string) =>

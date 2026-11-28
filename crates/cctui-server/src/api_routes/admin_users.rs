@@ -70,6 +70,22 @@ pub(super) fn register(r: Routes) -> Routes {
         ScopeAz(auth::Scope::Admin),
     )
     .add(
+        &[GET],
+        "/admin/users/{id}/passkeys",
+        "List a user's passkeys (admin).",
+        get(cctui_server_accounts::routes::passkeys::admin_list::<crate::state::AppState>),
+        Authn::Bearer,
+        ScopeAz(auth::Scope::Admin),
+    )
+    .add(
+        &[Method::DELETE],
+        "/admin/users/{id}/passkeys/{passkey}",
+        "Revoke a user's passkey and end the sessions it opened (admin).",
+        delete(cctui_server_accounts::routes::passkeys::admin_revoke::<crate::state::AppState>),
+        Authn::Bearer,
+        ScopeAz(auth::Scope::Admin),
+    )
+    .add(
         &[GET, Method::PUT, Method::DELETE],
         "/admin/users/{id}/dispatch-policy",
         "Get, replace or remove a user's dispatch policy (admin).",
