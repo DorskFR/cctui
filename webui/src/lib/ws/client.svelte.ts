@@ -42,6 +42,9 @@ import {
 import { SessionStreams, type StreamCb } from './stream';
 import { LiveSocket, type Status } from './socket.svelte';
 import { DeliveryTracker, type DeliverySnapshot } from './delivery';
+import { StreamCatchUp } from './catchup';
+import { endpoints } from '../queries/endpoints';
+import { conversationCursor, rewindConversation } from '../queries/sessions';
 
 export interface CctuiverseChangedEvent {
 	session_id: string | null;
@@ -71,10 +74,18 @@ type GithubCb = (ev: GithubEvent) => void;
  * from events that arrived before it registered.
  */
 export class WsClient {
+	private opened = false;
 	private link = new LiveSocket({
 		onOpen: () => {
-			// re-subscribe everything after a reconnect
-			for (const id of this.subscribed.keys()) this.send({ type: 'subscribe', session_id: id });
+			const reconnect = this.opened;
+			this.opened = true;
+			for (const id of this.subscribed.keys()) {
+				// The subscribe replays every prompt still pending; anything else
+				// held was settled while the socket was down.
+				this.prompts.resetForReplay(id);
+				if (reconnect) this.catchUp.begin(id);
+				this.send({ type: 'subscribe', session_id: id });
+			}
 			// re-arm live-terminal watches so the daemon PTY stream resumes
 			for (const id of this.ptyWatched)
 				this.send({ type: 'watch_terminal', session_id: id, watch: true });
@@ -120,6 +131,17 @@ export class WsClient {
 	});
 	private commands = new CommandWaiters();
 	private delivery = new DeliveryTracker(this);
+	private catchUp = new StreamCatchUp({
+		cursor: (sid) => {
+			const cached = this.queryClient?.getQueryData<AgentEvent[]>(qk.conversation(sid));
+			return cached ? conversationCursor(cached) : null;
+		},
+		fetchAfter: (sid, after) => endpoints.conversation(sid, { after }),
+		deliver: (sid, ev) => this.ingestStream(sid, ev),
+		recover: (sid, after) => {
+			if (this.queryClient) rewindConversation(this.queryClient, sid, after);
+		}
+	});
 
 	/** Subscribers per session, not a flat set: the drawer and any number of
 	 *  tiles can hold the same session open, and the last one out is the only
@@ -168,9 +190,7 @@ export class WsClient {
 			case 'stream': {
 				const { session_id: sid, data } = msg;
 				this.commands.settleSpawn(sid, { ok: true });
-				this.streams.appendEvent(sid, data);
-				const patch = streamListPatch(sid, data);
-				if (patch) this.emitListPatch(patch);
+				if (!this.catchUp.hold(sid, data)) this.ingestStream(sid, data);
 				break;
 			}
 			case 'pty_chunk': {
@@ -298,6 +318,12 @@ export class WsClient {
 		}
 	}
 
+	private ingestStream(sid: string, ev: AgentEvent) {
+		this.streams.appendEvent(sid, ev);
+		const patch = streamListPatch(sid, ev);
+		if (patch) this.emitListPatch(patch);
+	}
+
 	/** Live host resource snapshots, one per daemon heartbeat, for the header
 	 *  gauge to patch its query cache without a refetch. */
 	private machineResourcesCbs = new Set<(ev: MachineResourcesEvent) => void>();
@@ -401,6 +427,7 @@ export class WsClient {
 			return;
 		}
 		this.subscribed.delete(id);
+		this.catchUp.cancel(id);
 		this.send({ type: 'unsubscribe', session_id: id });
 	}
 

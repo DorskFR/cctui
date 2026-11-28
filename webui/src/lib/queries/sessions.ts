@@ -76,6 +76,20 @@ export const CONVERSATION_FETCH_LIMIT = 60;
 /** Must outlive the persister's maxAge or restored entries get GC'd. */
 export const CONVERSATION_GC_MS = 24 * 60 * 60 * 1000;
 
+export const conversationCursor = (events: readonly AgentEvent[] | undefined): number =>
+  (events ?? []).reduce((m, e) => Math.max(m, Number(e.seq ?? 0)), 0);
+
+/** Drops the cached events past `after` and refetches, so the delta cursor
+ *  restarts below a hole instead of past it. */
+export function rewindConversation(qc: QueryClient, id: string, after: number) {
+  qc.setQueryData<AgentEvent[]>(qk.conversation(id), (prev) => {
+    if (!prev) return prev;
+    const kept = prev.filter((e) => e.seq == null || Number(e.seq) <= after);
+    return kept.length === prev.length ? prev : kept;
+  });
+  void qc.invalidateQueries({ queryKey: qk.conversation(id) });
+}
+
 export const useConversation = (
   id: () => string,
   enabled: () => boolean = () => true,
@@ -87,7 +101,7 @@ export const useConversation = (
     // re-render the whole drawer for nothing.
     queryFn: async () => {
       const prev = qc.getQueryData<AgentEvent[]>(qk.conversation(id()));
-      const lastSeq = (prev ?? []).reduce((m, e) => Math.max(m, e.seq ?? 0), 0);
+      const lastSeq = conversationCursor(prev);
       if (prev?.length && lastSeq > 0) {
         const delta = await endpoints.conversation(id(), { after: lastSeq });
         return delta.length ? [...prev, ...delta] : prev;
