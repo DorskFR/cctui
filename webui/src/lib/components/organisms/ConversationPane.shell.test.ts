@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import drawer from './ConversationDrawer.svelte?raw';
 import pane from './ConversationPane.svelte?raw';
+import composer from './conversation/ConversationComposer.svelte?raw';
 import header from './conversation/DrawerHeader.svelte?raw';
 import forkbar from './conversation/ForkSelectBar.svelte?raw';
 import overlays from './conversation/PaneOverlays.svelte?raw';
@@ -54,6 +55,16 @@ describe('ConversationPane chrome', () => {
 
 	it('holds the session open for the notifier while it is mounted', () => {
 		expect(model).toContain('notify.holdOpen(this.id)');
+	});
+
+	it('remounts the composer per session so a switch never writes one draft over another', () => {
+		const markup = pane.slice(pane.indexOf('</script>'));
+		const at = markup.indexOf('<ConversationComposer');
+		const open = markup.lastIndexOf('{#key', at);
+		expect(open).toBeGreaterThan(-1);
+		expect(markup.slice(open, at).trim()).toBe('{#key session.id}');
+		expect(markup.indexOf('{/key}', at)).toBeGreaterThan(at);
+		expect(composer).toContain('let input = $state(drafts.get(composerKey(session.id)));');
 	});
 
 	it('adds no :global override', () => {

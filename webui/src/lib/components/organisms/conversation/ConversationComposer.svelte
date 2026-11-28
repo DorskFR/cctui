@@ -99,9 +99,7 @@
 	// Folded: a tile's composer before it takes focus — the input line alone.
 	const folded = $derived(compact && !focused);
 
-	// Composer draft, persisted per session in localStorage. Initialized once (the
-	// drawer instance persists across session switches; matching the original we do
-	// NOT reload input on switch — only the history-nav cursor resets, below).
+	// The pane remounts the composer per session, so the draft is seeded once.
 	// svelte-ignore state_referenced_locally
 	let input = $state(drafts.get(composerKey(session.id)));
 	let revealed = $state<ReadonlySet<string>>(new Set());
