@@ -43,6 +43,18 @@ function codeBlockHtml(body: string, langAttr: string): string {
 const AUTO_L = "\x0E";
 const AUTO_R = "\x0F";
 
+// A URL stops at a placeholder: swallowing one would restore a whole tag
+// inside an href and let the text inject attributes.
+const SENTINELS = `${BLOCK_L}${BLOCK_R}${AUTO_L}${AUTO_R}`;
+const BARE_URL = new RegExp(
+  `\\bhttps?:\\/\\/(?:&amp;|[^\\s&<>"${SENTINELS}])+`,
+  "g",
+);
+const MD_LINK = new RegExp(
+  `\\[([^\\]]+)\\]\\((https?:\\/\\/[^\\s)<>"${SENTINELS}]+)\\)`,
+  "g",
+);
+
 // Turn bare http(s) URLs into clickable links. Runs LAST in inlineMd, after the
 // `[text](url)` and inline-code passes, so it can protect already-linked URLs
 // and code spans from being re-linked. Operates on already-escaped text, where a
@@ -57,7 +69,7 @@ function autolinkUrls(s: string): string {
     /<a\b[^>]*>[\s\S]*?<\/a>|<code\b[^>]*>[\s\S]*?<\/code>/g,
     stash,
   );
-  s = s.replace(/\bhttps?:\/\/(?:&amp;|[^\s&<>"])+/g, (raw) => {
+  s = s.replace(BARE_URL, (raw) => {
     let url = raw;
     let trail = "";
     // Trailing sentence punctuation usually isn't part of the URL.
@@ -143,7 +155,7 @@ function inlineMd(s: string, links?: LocalFileLinks): string {
   s = s.replace(/(^|[^*])\*([^*\n]+)\*/g, "$1<em>$2</em>");
   // links [text](url)
   s = s.replace(
-    /\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g,
+    MD_LINK,
     '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>',
   );
   // bare URLs -> links (after the markdown-link pass so they aren't double-linked)
