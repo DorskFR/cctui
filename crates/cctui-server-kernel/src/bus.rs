@@ -468,10 +468,11 @@ impl Bus {
     /// unconditionally (nothing else can own them), but `machine`'s entry only
     /// if it is STILL `tx` — during a reconnect race the daemon's new
     /// connection may already have overwritten the map with its own channel,
-    /// and an unconditional remove would delete that live channel. When the
-    /// entry was ours and a sibling connection survives, the entry passes to
-    /// that sibling. Returns whether the machine lost its last daemon here, so
-    /// the caller can mirror it into presence.
+    /// and an unconditional remove would delete that live channel. On a shared
+    /// machine, when the entry was ours and a sibling connection survives, the
+    /// entry passes to that sibling; an exclusive machine's older connections
+    /// are superseded, never handed the entry back. Returns whether the entry
+    /// was removed, so the caller can mirror it into presence.
     pub fn unregister_daemon(
         &self,
         machine: Uuid,
@@ -480,6 +481,7 @@ impl Bus {
     ) -> bool {
         self.inner.conns.remove(&conn_id);
         self.inner.priority.remove(&conn_id);
+        let shared = !self.inner.exclusive.contains_key(&machine);
         let last = self.inner.machine_conns.remove_if_mut(&machine, |_, conns| {
             conns.remove(&conn_id);
             conns.is_empty()
@@ -490,6 +492,9 @@ impl Bus {
         self.inner.session_conn.retain(|_, owner| *owner != conn_id);
         if self.inner.daemons.remove_if(&machine, |_, current| current.same_channel(tx)).is_none() {
             return false;
+        }
+        if !shared {
+            return true;
         }
         let survivor = self.inner.machine_conns.get(&machine).and_then(|conns| {
             conns.iter().find_map(|id| self.inner.conns.get(id).map(|entry| entry.1.clone()))
@@ -1855,6 +1860,24 @@ mod tests {
 
         assert!(bus.unregister_daemon(machine, conn_a, &tx_a));
         assert!(!bus.daemon_connected(machine));
+    }
+
+    #[tokio::test]
+    async fn an_exclusive_machine_never_falls_back_to_its_superseded_connection() {
+        let bus = bus();
+        let machine = Uuid::new_v4();
+        let (old_tx, mut old_rx) = mpsc::channel::<DaemonFrameDown>(8);
+        let (new_tx, _new_rx) = mpsc::channel::<DaemonFrameDown>(8);
+        let old_conn = Uuid::new_v4();
+        let new_conn = Uuid::new_v4();
+        bus.register_exclusive_daemon(machine, old_conn, old_tx.clone());
+        bus.register_exclusive_daemon(machine, new_conn, new_tx.clone());
+
+        assert!(bus.unregister_daemon(machine, new_conn, &new_tx));
+        assert!(!bus.daemon_connected(machine));
+        assert_eq!(bus.machine_conn(machine), None);
+        assert!(old_rx.try_recv().is_err());
+        assert!(!bus.unregister_daemon(machine, old_conn, &old_tx));
     }
 
     /// A session that migrates to a new pod follows its newest announcement.
