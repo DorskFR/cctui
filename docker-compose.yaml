@@ -7,7 +7,7 @@ services:
       POSTGRES_PASSWORD: postgres
       POSTGRES_DB: cctui
     ports:
-      - "5480:5432"
+      - "127.0.0.1:5480:5432"
     volumes:
       - cctui-data:/var/lib/postgresql/data
     healthcheck:
@@ -24,7 +24,7 @@ services:
       POSTGRES_PASSWORD: postgres
       POSTGRES_DB: cctui_test
     ports:
-      - "5481:5432"
+      - "127.0.0.1:5481:5432"
     volumes:
       - cctui-test-data:/var/lib/postgresql/data
     healthcheck:
