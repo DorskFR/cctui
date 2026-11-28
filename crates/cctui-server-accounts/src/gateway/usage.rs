@@ -481,7 +481,8 @@ pub async fn fetch_usage_with_provider(
         return Ok((String::new(), None));
     };
     let provider = acct.provider.clone();
-    usage_for_account(state, acct).await.map(|usage| (provider, usage))
+    // Boxed: inlined, this future nests too deep for the gateway's `admit` layout.
+    Box::pin(usage_for_account(state, acct)).await.map(|usage| (provider, usage))
 }
 
 enum UsageSource {

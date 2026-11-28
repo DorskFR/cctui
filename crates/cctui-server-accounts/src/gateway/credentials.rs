@@ -158,7 +158,7 @@ pub async fn refresh_account(
         return Err(StatusCode::BAD_GATEWAY);
     }
     let tx = lock_refresh(state, acct.id).await?;
-    refresh_locked(state, tx, acct).await
+    Box::pin(refresh_locked(state, tx, acct)).await
 }
 
 fn sha256(token: &str) -> String {
@@ -480,7 +480,7 @@ pub async fn current_access_token(
     if REFRESH_REJECTIONS.recently_rejected(acct.id, &sha256(refresh_token), Instant::now()) {
         return Err(StatusCode::BAD_GATEWAY);
     }
-    refresh_locked(state, tx, current).await
+    Box::pin(refresh_locked(state, tx, current)).await
 }
 
 pub async fn reload_account(state: &impl CredentialContext, id: Uuid) -> Option<Account> {
