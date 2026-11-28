@@ -179,6 +179,30 @@ mod tests {
     }
 
     #[test]
+    fn only_steps_with_exec_rules_are_restricted() {
+        let dir = tempfile::tempdir().unwrap();
+        let e = engine(&dir);
+        assert!(e.exec_is_restricted(), "a disallowed phrase restricts execs");
+        assert_eq!(e.transition(&serde_json::json!(2))["ok"], true);
+        assert!(!e.exec_is_restricted(), "a bare `*` disallow has no exec rule");
+    }
+
+    #[test]
+    fn a_refused_exec_is_denied_and_logged() {
+        let dir = tempfile::tempdir().unwrap();
+        let e = engine(&dir);
+        let argv = vec!["true".to_string()];
+        let v = e.refuse_exec("/usr/bin/true", &argv, "multi-threaded");
+        assert!(denied(&v), "{v:?}");
+        let log = std::fs::read_to_string(dir.path().join("decisions.jsonl")).unwrap();
+        let execs: Vec<_> = parse_log(&log).into_iter().filter(|r| r.kind == Kind::Exec).collect();
+        assert_eq!(execs.len(), 1);
+        assert_eq!(execs[0].verdict, "deny");
+        assert_eq!(execs[0].rule, "multi-threaded");
+        assert_eq!(execs[0].step, Some(1));
+    }
+
+    #[test]
     fn no_active_step_allows() {
         let dir = tempfile::tempdir().unwrap();
         let e = WorkflowEngine::new(

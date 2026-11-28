@@ -351,6 +351,17 @@ intercepted. Workspace binaries are withheld by Landlock, which grants no
 user namespace is needed. The guard needs the same pid namespace as the agent
 tree, because it reads `/proc/<pid>/mem` and duplicates the target's fd 2.
 
+Limits: an allowed exec continues with `SECCOMP_USER_NOTIF_FLAG_CONTINUE`, so
+the kernel reads the path and argv from the target's memory a second time,
+after the guard judged its own copy. Another task sharing that memory can
+rewrite them in between. In a step with exec rules (a `[disallowed]` phrase or
+a capability exec table), the guard denies an exec from a process with more
+than one thread, which closes the sibling-thread rewrite. A `vfork` child of a
+multi-threaded parent (`posix_spawn`, Go, Python `subprocess`), `CLONE_VM`
+tasks and shared mappings stay open: refusing them would refuse the harness's
+own spawns. Treat exec interception as a strong speed bump layered under
+Landlock and the egress proxy, not as a boundary on its own.
+
 Fail-closed by construction: a check that errors, cannot read the target, or
 takes longer than `--exec-timeout-ms` (default 5000) denies; once the guard
 dies every exec fails with `ENOSYS`. Start-up refuses (the worker exits) when
