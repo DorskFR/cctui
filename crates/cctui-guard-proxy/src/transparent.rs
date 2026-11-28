@@ -1,7 +1,8 @@
 //! Transparent proxy mode: the iptables REDIRECT target. Connections arrive as
 //! raw bytes (a TLS `ClientHello` or a plaintext HTTP request), not as an HTTP
 //! CONNECT. We recover the original destination via `SO_ORIGINAL_DST`, enforce
-//! policy on the recovered SNI / Host name, then tunnel.
+//! policy on the recovered SNI / Host name, then tunnel TLS or relay a single
+//! plain HTTP request.
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddrV4};
 use std::sync::Arc;
@@ -224,7 +225,18 @@ async fn handle_connection(mut conn: TcpStream, shared: Shared) -> anyhow::Resul
             }
         };
 
-    // Replay the peeked bytes, then splice bidirectionally.
+    if sni.is_none() && http_host.is_some() {
+        let raw = crate::forward::http1::read_head(&mut conn, buf).await?;
+        return match crate::forward::http1::prepare(&raw, &host, None) {
+            Ok(req) => crate::forward::http1::relay_one(&mut conn, &mut upstream, &req, &raw).await,
+            Err(reason) => {
+                tracing::warn!("DENY transparent {policy_target}: {reason}");
+                policy.record(&policy_target, false, &reason.to_string());
+                Ok(())
+            }
+        };
+    }
+
     if !buf.is_empty() {
         upstream.write_all(&buf).await?;
     }

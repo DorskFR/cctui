@@ -2,14 +2,16 @@
 //! `policy.json` can never open these destinations to the worker.
 //!
 //! Denied:
-//! - Link-local `169.254.0.0/16` / `fe80::/10` — cloud IMDS + EKS Pod Identity,
-//!   the credential surface. NEVER relaxed.
+//! - Link-local `169.254.0.0/16` / `fe80::/10` and AWS's IPv6 IMDS / Pod
+//!   Identity range `fd00:ec2::/32`: the credential surface. NEVER relaxed.
+//! - IPv6 that carries an IPv4 target (v4-mapped, v4-compatible, NAT64
+//!   `64:ff9b::/96`, 6to4 `2002::/16`) is classified as that IPv4.
 //! - Loopback, RFC1918 + IPv6 ULA, CGNAT `100.64/10`, unspecified and IPv4
 //!   broadcast. Relaxed per host by `private_allow`, or wholesale by the legacy
 //!   [`allow_private_ips_from_env`]; link-local stays denied even then.
 //! - `metadata.google.internal` and any `GUARD_PROXY_DENY_HOSTS` extras.
 
-use std::net::{IpAddr, Ipv4Addr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::sync::OnceLock;
 
 /// Metadata/credential hostnames that are always denied. IP-literal forms are
@@ -28,20 +30,14 @@ pub fn allow_private_ips_from_env() -> bool {
     })
 }
 
-/// True if `ip` must never be dialed. Link-local (`169.254/16` / `fe80::/10`) —
-/// the cloud metadata + EKS Pod Identity surface — is always denied. Loopback,
-/// RFC1918/ULA, CGNAT, unspecified and broadcast are also denied unless
-/// `allow_private` (the dev opt-out) is set.
+/// True if `ip` must never be dialed. The credential surface (link-local and
+/// `fd00:ec2::/32`) is always denied. Loopback, RFC1918/ULA, CGNAT, unspecified
+/// and broadcast are also denied unless `allow_private` (the dev opt-out) is set.
 #[must_use]
 pub fn ip_is_denied(ip: IpAddr, allow_private: bool) -> bool {
-    // Fold IPv4-mapped IPv6 (`::ffff:a.b.c.d`) down to IPv4 so a mapped metadata
-    // or private address can't slip past the v4 checks.
-    let ip = match ip {
-        IpAddr::V6(v6) => v6.to_ipv4_mapped().map_or(IpAddr::V6(v6), IpAddr::V4),
-        IpAddr::V4(_) => ip,
-    };
-    if is_link_local(ip) {
-        return true; // metadata/credential surface — never opt-out-able
+    let ip = canonical(ip);
+    if is_credential_surface(ip) {
+        return true;
     }
     if allow_private {
         return false;
@@ -49,12 +45,38 @@ pub fn ip_is_denied(ip: IpAddr, allow_private: bool) -> bool {
     is_private_or_local(ip)
 }
 
-/// Link-local: IPv4 `169.254.0.0/16` (cloud IMDS + EKS Pod Identity) or IPv6
-/// `fe80::/10`.
-const fn is_link_local(ip: IpAddr) -> bool {
+/// The IPv4 target an IPv6 address stands for, if any, so a translated
+/// metadata or private address can't slip past the v4 checks.
+fn canonical(ip: IpAddr) -> IpAddr {
+    let IpAddr::V6(v6) = ip else { return ip };
+    if v6.is_loopback() || v6.is_unspecified() {
+        return ip;
+    }
+    v6.to_ipv4().or_else(|| embedded_ipv4(v6)).map_or(ip, IpAddr::V4)
+}
+
+/// IPv4 embedded by NAT64's well-known `64:ff9b::/96` or 6to4's `2002::/16`.
+fn embedded_ipv4(ip: Ipv6Addr) -> Option<Ipv4Addr> {
+    let seg = ip.segments();
+    let from = |hi: u16, lo: u16| Ipv4Addr::from((u32::from(hi) << 16) | u32::from(lo));
+    if seg[0] == 0x0064 && seg[1] == 0xff9b && seg[2..6] == [0, 0, 0, 0] {
+        return Some(from(seg[6], seg[7]));
+    }
+    if seg[0] == 0x2002 {
+        return Some(from(seg[1], seg[2]));
+    }
+    None
+}
+
+/// Cloud IMDS + EKS Pod Identity: IPv4 `169.254.0.0/16`, IPv6 `fe80::/10` and
+/// AWS's IPv6 endpoints in `fd00:ec2::/32`.
+const fn is_credential_surface(ip: IpAddr) -> bool {
     match ip {
         IpAddr::V4(v4) => v4.is_link_local(),
-        IpAddr::V6(v6) => (v6.segments()[0] & 0xffc0) == 0xfe80,
+        IpAddr::V6(v6) => {
+            let seg = v6.segments();
+            (seg[0] & 0xffc0) == 0xfe80 || (seg[0] == 0xfd00 && seg[1] == 0x0ec2)
+        }
     }
 }
 
@@ -69,8 +91,7 @@ const fn is_private_or_local(ip: IpAddr) -> bool {
                 || v4.is_broadcast()
                 || is_cgnat(v4)
         }
-        // 0xfc00 covers fc00::/7 (unique-local); loopback ::1 and unspecified ::
-        // are their own checks. (v4-mapped was already folded out above.)
+        // fc00::/7 unique-local.
         IpAddr::V6(v6) => {
             v6.is_loopback() || v6.is_unspecified() || (v6.segments()[0] & 0xfe00) == 0xfc00
         }
@@ -182,6 +203,30 @@ mod tests {
         );
         assert!(ip_is_denied(ip("::ffff:10.0.0.1"), false), "mapped private denied by default");
         assert!(!ip_is_denied(ip("::ffff:140.82.121.4"), false), "mapped public allowed");
+    }
+
+    #[test]
+    fn translated_ipv4_classified_as_embedded() {
+        for s in ["64:ff9b::a9fe:a9fe", "2002:a9fe:a9fe::", "::169.254.169.254"] {
+            assert!(ip_is_denied(ip(s), true), "{s} embeds metadata; never opt-out-able");
+        }
+        for s in ["64:ff9b::a00:5", "64:ff9b::7f00:1", "2002:c0a8:101::1"] {
+            assert!(ip_is_denied(ip(s), false), "{s} embeds a private v4");
+            assert!(!ip_is_denied(ip(s), true), "{s} relaxed by the opt-out");
+        }
+        assert!(!ip_is_denied(ip("64:ff9b::8c52:7904"), false), "NAT64 of a public v4 allowed");
+        assert!(!ip_is_denied(ip("2002:808:808::"), false), "6to4 of a public v4 allowed");
+        assert!(ip_is_denied(ip("::1"), false), "v6 loopback stays loopback");
+    }
+
+    #[test]
+    fn aws_ipv6_metadata_never_relaxed() {
+        for s in ["fd00:ec2::254", "fd00:ec2::23", "fd00:ec2::1"] {
+            assert!(ip_is_denied(ip(s), false), "{s} must be denied");
+            assert!(ip_is_denied(ip(s), true), "{s} is the credential surface");
+            assert!(host_is_denied_with(&format!("[{s}]"), &[], true));
+        }
+        assert!(!ip_is_denied(ip("fd00:ec3::1"), true), "other ULA relaxed by the opt-out");
     }
 
     #[test]

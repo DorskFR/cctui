@@ -454,7 +454,10 @@ a buggy/malicious `policy.json` nor a compromised proxy can open the hole:
    lists them (or sets `default: allow`), these are refused with a `DENY
    (builtin)` log line:
    - `169.254.0.0/16` (link-local): AWS/GCP/Azure IMDS (`169.254.169.254`) and
-     the EKS Pod Identity Agent (`169.254.170.23`).
+     the EKS Pod Identity Agent (`169.254.170.23`); their IPv6 forms
+     `fd00:ec2::/32` (`fd00:ec2::254`, `fd00:ec2::23`) and `fe80::/10`.
+   - An IPv6 address carrying an IPv4 one (v4-mapped, v4-compatible, NAT64
+     `64:ff9b::/96`, 6to4 `2002::/16`) is judged as that IPv4.
    - `metadata.google.internal` / `metadata` (GCP metadata DNS names).
    - Any host in `GUARD_PROXY_DENY_HOSTS` (comma-separated) — in dev this carries
      the OpenBao host (`openbao.security.svc.cluster.local`). The sidecar reaches
@@ -501,13 +504,26 @@ The list is built from:
 The proxy's own Vault/OpenBao address is deliberately not derived: the sidecar
 reaches it directly, and the worker must not reach the credential backend. A
 Secrets Manager VPC endpoint used through SigV4 injection is covered as an
-injection host. Link-local (`169.254/16`, `fe80::/10`) stays denied whatever the
-list says. Each private allow or deny is logged once per host and reason
+injection host. Link-local (`169.254/16`, `fe80::/10`) and `fd00:ec2::/32` stay
+denied whatever the list says. Each private allow or deny is logged once per host and reason
 (`private egress ALLOW <host:port> (rule: <source>)` /
 `private egress DENY <host:port>: <reason>`).
 
 `GUARD_PROXY_ALLOW_PRIVATE_IPS=1` is the legacy blanket opt-out: every private
 destination is reachable without binding, and the proxy logs a warning at start.
+
+### Host binding
+
+Every request is bound to the host the policy allowed. A `CONNECT` tunnel's
+first client bytes must be a TLS `ClientHello` whose SNI is the `CONNECT` host
+(an IP-literal `CONNECT` may send none), a single plain HTTP request whose
+`Host` is that host, or another protocol (SSH), which is spliced as is. Plain
+HTTP, in forward and transparent mode, is relayed one request per upstream
+connection: the head is rewritten to `Connection: close`, `Host` must match the
+request target, a request with ambiguous framing (both `Content-Length` and
+`Transfer-Encoding`, or a coding other than `chunked`) is refused, and any byte
+the client sends after the body closes the connection. Plain `ws://` through
+the proxy therefore never upgrades; `wss://` is unaffected.
 
 ### Sidecar mode (`transparent-external`)
 
@@ -884,7 +900,7 @@ startup**: a partially applied credential config is worse than none.
 | `secret` | yes (except `headers`, ambient `sigv4`) | Secret ref of the credential to inject. |
 | `shape` | no (`bearer`) | `bearer`, `basic`/`git`, `bearer+cookie`/`cookie`, `sigv4`, or `headers`. |
 | `service` | no (`host`) | Label for logs and GitHub-App provider matching — never a lookup key. |
-| `path_prefix` | no | Scopes the rule to a request path; must start with `/`. The **longest** matching prefix wins, ties keep config order, and a request matching no rule forwards the agent's head unchanged. |
+| `path_prefix` | no | Scopes the rule to a request path; must start with `/`. It matches whole segments: `/org/pack` covers `/org/pack` and `/org/pack/…`, never `/org/pack-other`. A path with dot segments, `//`, a backslash or an encoded `/`, `.`, `\` or `%` matches no scoped rule. The **longest** matching prefix wins, ties keep config order, and a request matching no rule forwards the agent's head unchanged. |
 | `username` | no (`x-access-token`) | Basic-auth username. |
 | `cookie_name` / `cookie_secret` | `cookie_secret` required for `bearer+cookie` | Companion session cookie (default name `d`). |
 | `headers` | required for `headers` | Map of header name → secret ref (no `Authorization`). Replaces `secret`. |
