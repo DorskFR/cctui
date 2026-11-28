@@ -261,7 +261,9 @@ pub fn worker_route<'a>(method: &http::Method, path: &'a str) -> WorkerRoute<'a>
 pub fn plugin_backend_route(path: &str) -> Option<&str> {
     match path.strip_prefix('/')?.split('/').collect::<Vec<_>>().as_slice() {
         ["api", "v1", "plugins", id, "backend", rest @ ..]
-            if !id.is_empty() && !rest.is_empty() && !id.contains('%') =>
+            if !id.is_empty()
+                && rest.first().is_some_and(|s| !s.is_empty())
+                && !id.contains('%') =>
         {
             Some(id)
         }
@@ -1515,6 +1517,7 @@ mod tests {
         for path in [
             "/api/v1/plugins/ghreview/backend",
             "/api/v1/plugins/ghreview/backend/",
+            "/api/v1/plugins/ghreview/backend//x",
             "/api/v1/plugins/ghreview",
             "/api/v1/plugins",
             "/api/v1/plugins//backend/x",
