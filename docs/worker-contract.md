@@ -734,6 +734,13 @@ skips a container that already mounts a volume of that name or already sets
 `AWS_CONTAINER_*`, and adds the pod volume only when none of that name exists,
 so the guard-proxy ends with one mount and one set of env.
 
+`cloudIdentity.env` is for the cloud SDK. Profile admission refuses a
+`GUARD_PROXY_*` name there (guard-proxy settings go in `spec.guard.env`, under
+its rules) and any per-dispatch name (`GUARD_PROXY_IDENTITY`,
+`GUARD_PROXY_HUMAN_GATE`, `CCTUI_DISPATCH_*`). The mutating webhook also drops a
+per-dispatch name from either profile env list, so none can shadow the
+dispatch's own value.
+
 The validating webhook, for a profile with `cloudIdentity`:
 
 - allows each named volume at pod level, present or not;

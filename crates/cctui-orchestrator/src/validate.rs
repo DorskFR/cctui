@@ -17,10 +17,11 @@
 //!    profile exposed to all three Rule of Two legs names one.
 
 use crate::envelope::{
-    EXTERNAL_GUARD_WORKER_VOLUMES, GUARD_ENV_HUMAN_GATE, GUARD_PROXY_CONTAINER, NET_INIT_CONTAINER,
-    PROXY_UID, VOL_GPG_AGENT, VOL_GUARD_PROXY_CA, VOL_GUARD_PROXY_INJECT, VOL_GUARD_PROXY_SA_TOKEN,
-    VOL_GUARD_STATE, VOL_HOME, VOL_OVERLAY, VOL_PROXY_POLICY, WARM_REPO_DIR_ENV, WORKER_UID,
-    has_overlay, worker_added_caps, worker_envelope_mounts,
+    EXTERNAL_GUARD_WORKER_VOLUMES, GUARD_ENV_HUMAN_GATE, GUARD_ENV_IDENTITY,
+    GUARD_ENV_PER_DISPATCH, GUARD_PROXY_CONTAINER, NET_INIT_CONTAINER, PROXY_UID, VOL_GPG_AGENT,
+    VOL_GUARD_PROXY_CA, VOL_GUARD_PROXY_INJECT, VOL_GUARD_PROXY_SA_TOKEN, VOL_GUARD_STATE,
+    VOL_HOME, VOL_OVERLAY, VOL_PROXY_POLICY, WARM_REPO_DIR_ENV, WORKER_UID, has_overlay,
+    worker_added_caps, worker_envelope_mounts,
 };
 use crate::{
     ANNOTATION_ENVELOPE_INJECTED, ANNOTATION_GUARD_SERVICE, ANNOTATION_POSTURE,
@@ -37,7 +38,6 @@ use std::collections::{BTreeMap, BTreeSet};
 const SECRET_REF_PREFIXES: [&str; 4] = ["vault:", "bao:", "k8s:", "aws-sm:"];
 
 const GUARD_ENV_PREFIX: &str = "GUARD_PROXY_";
-const GUARD_ENV_IDENTITY: &str = "GUARD_PROXY_IDENTITY";
 const GUARD_ENV_ALLOW_PRIVATE_IPS: &str = "GUARD_PROXY_ALLOW_PRIVATE_IPS";
 const GUARD_ENV_PRIVATE_ALLOW: &str = "GUARD_PROXY_PRIVATE_ALLOW";
 
@@ -440,8 +440,10 @@ fn nonroot_violation(sc: Option<&SecurityContext>) -> Option<&'static str> {
 ///
 /// `spec.guard.env` may only set `GUARD_PROXY_*` (never the per-dispatch
 /// identity), and widening private egress needs `allowPrivateEgress: true`.
-/// Narrowing (zeroing either setting) needs nothing. `envFrom` contents are
-/// not visible at admission and stay operator-owned, like `guard-proxy-env`.
+/// `cloudIdentity.env` is for the cloud SDK and may set no guard-proxy or
+/// per-dispatch variable. Narrowing (zeroing either setting) needs nothing.
+/// `envFrom` contents are not visible at admission and stay operator-owned,
+/// like `guard-proxy-env`.
 pub fn check_guard(guard: &GuardSpec) -> Result<(), String> {
     if guard.cloud_identity.as_ref().is_some_and(|c| c.volume_mounts.is_empty()) {
         return Err("cloudIdentity names no volumeMounts".to_owned());
@@ -457,15 +459,7 @@ pub fn check_guard(guard: &GuardSpec) -> Result<(), String> {
                 env.name
             ));
         }
-        if env.name == GUARD_ENV_IDENTITY {
-            return Err(format!(
-                "env `{GUARD_ENV_IDENTITY}` is set per dispatch (`cctui.dev/guard-identity`), \
-                 not per profile"
-            ));
-        }
-        if env.name == GUARD_ENV_HUMAN_GATE {
-            return Err(format!("env `{GUARD_ENV_HUMAN_GATE}` is set by spec.humanGate"));
-        }
+        check_per_dispatch(&env.name)?;
         if !guard.allow_private_egress && widens_private_egress(env) {
             return Err(format!(
                 "env `{}` widens private egress — set spec.guard.allowPrivateEgress: true to \
@@ -474,7 +468,30 @@ pub fn check_guard(guard: &GuardSpec) -> Result<(), String> {
             ));
         }
     }
+    for env in guard.cloud_identity.iter().flat_map(|c| c.env.iter().flatten()) {
+        check_per_dispatch(&env.name).map_err(|e| format!("cloudIdentity {e}"))?;
+        if env.name.starts_with(GUARD_ENV_PREFIX) {
+            return Err(format!(
+                "cloudIdentity env `{}` is a guard-proxy setting — set it in spec.guard.env",
+                env.name
+            ));
+        }
+    }
     Ok(())
+}
+
+fn check_per_dispatch(name: &str) -> Result<(), String> {
+    match name {
+        GUARD_ENV_IDENTITY => Err(format!(
+            "env `{GUARD_ENV_IDENTITY}` is set per dispatch (`cctui.dev/guard-identity`), not \
+             per profile"
+        )),
+        GUARD_ENV_HUMAN_GATE => {
+            Err(format!("env `{GUARD_ENV_HUMAN_GATE}` is set by spec.humanGate"))
+        }
+        n if GUARD_ENV_PER_DISPATCH.contains(&n) => Err(format!("env `{n}` is set per dispatch")),
+        _ => Ok(()),
+    }
 }
 
 /// Check a profile's `spec.pod`: its labels and annotations may not take a key
@@ -2055,6 +2072,44 @@ mod tests {
             .await,
         );
         assert!(msg.contains("is an envelope volume"), "{msg}");
+    }
+
+    #[test]
+    fn cloud_identity_env_cannot_set_guard_or_dispatch_settings() {
+        let guard = |name: &str, value: &str| -> GuardSpec {
+            serde_json::from_value(serde_json::json!({ "cloudIdentity": {
+                "volumeMounts": [{ "name": "eks-pod-identity-token", "mountPath": "/t" }],
+                "env": [{ "name": name, "value": value }]
+            } }))
+            .unwrap()
+        };
+        for (name, value, want) in [
+            ("GUARD_PROXY_ALLOW_PRIVATE_IPS", "1", "guard-proxy setting"),
+            ("GUARD_PROXY_PRIVATE_ALLOW", "db.lan:5432", "guard-proxy setting"),
+            ("GUARD_PROXY_SECRET_TTL_SECS", "60", "guard-proxy setting"),
+            ("GUARD_PROXY_IDENTITY", "admin", "set per dispatch"),
+            ("GUARD_PROXY_HUMAN_GATE", "off", "spec.humanGate"),
+            ("CCTUI_DISPATCH_ID", "x", "set per dispatch"),
+            ("CCTUI_DISPATCH_SERVER_URL", "http://evil", "set per dispatch"),
+        ] {
+            let err = check_guard(&guard(name, value)).unwrap_err();
+            assert!(err.contains(want) && err.contains("cloudIdentity"), "{name}: {err}");
+        }
+        assert_eq!(
+            check_guard(&guard("AWS_CONTAINER_CREDENTIALS_FULL_URI", "http://169.254.170.23/v1")),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn guard_env_cannot_set_dispatch_settings() {
+        for name in ["CCTUI_DISPATCH_ID", "GUARD_PROXY_IDENTITY", "GUARD_PROXY_HUMAN_GATE"] {
+            let guard: GuardSpec = serde_json::from_value(
+                serde_json::json!({ "env": [{ "name": name, "value": "x" }] }),
+            )
+            .unwrap();
+            assert!(check_guard(&guard).is_err(), "{name}");
+        }
     }
 
     async fn decide_with_guard(guard: serde_json::Value) -> Decision {
