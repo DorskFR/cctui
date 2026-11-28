@@ -75,10 +75,16 @@ const READ_FILE_TIMEOUT: std::time::Duration = std::time::Duration::from_mins(1)
 /// it reads, and may rewrite, every local transcript the harnesses kept.
 pub const TRANSCRIPT_AUDIT_TIMEOUT: std::time::Duration = std::time::Duration::from_mins(5);
 
-/// How long [`Bus::request_dispatcher`] awaits a dispatcher reply. Spawning a
-/// container/pod can take a few seconds; status/cancel are quick. One generous
-/// bound covers all three round-trips.
+/// How long [`Bus::request_dispatcher`] awaits a dispatcher's status, cancel or
+/// dedup-check reply.
 const DISPATCHER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// How long [`Bus::request_dispatcher`] awaits a `Dispatch` reply.
+///
+/// Above the kube dispatcher's worst case of registering the run (15 s) and
+/// waiting out a same-name terminal Job's deletion (30 s) on top of its API
+/// reads. A peer forwarding a dispatch must wait at least this long.
+pub const DISPATCH_REPLY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(90);
 
 /// How long [`Bus::request_daemon`] waits for the adapter's diagnose report.
 /// Aggregation over in-memory state plus one bounded socket probe —
@@ -462,9 +468,10 @@ impl Bus {
     /// unconditionally (nothing else can own them), but `machine`'s entry only
     /// if it is STILL `tx` — during a reconnect race the daemon's new
     /// connection may already have overwritten the map with its own channel,
-    /// and an unconditional remove would delete that live channel. Returns
-    /// whether the machine entry was removed, so the caller can mirror it into
-    /// presence.
+    /// and an unconditional remove would delete that live channel. When the
+    /// entry was ours and a sibling connection survives, the entry passes to
+    /// that sibling. Returns whether the machine lost its last daemon here, so
+    /// the caller can mirror it into presence.
     pub fn unregister_daemon(
         &self,
         machine: Uuid,
@@ -481,7 +488,16 @@ impl Bus {
             self.inner.exclusive.remove(&machine);
         }
         self.inner.session_conn.retain(|_, owner| *owner != conn_id);
-        self.inner.daemons.remove_if(&machine, |_, current| current.same_channel(tx)).is_some()
+        if self.inner.daemons.remove_if(&machine, |_, current| current.same_channel(tx)).is_none() {
+            return false;
+        }
+        let survivor = self.inner.machine_conns.get(&machine).and_then(|conns| {
+            conns.iter().find_map(|id| self.inner.conns.get(id).map(|entry| entry.1.clone()))
+        });
+        survivor.is_none_or(|sibling| {
+            self.inner.daemons.entry(machine).or_insert(sibling);
+            false
+        })
     }
 
     /// Bind `session_id` to the connection that announced it. Called from the
@@ -1093,6 +1109,11 @@ impl Bus {
         request_id: Uuid,
         frame: DispatcherFrameDown,
     ) -> Result<DispatcherFrameUp, BusError> {
+        let budget = if matches!(frame, DispatcherFrameDown::Dispatch { .. }) {
+            DISPATCH_REPLY_TIMEOUT
+        } else {
+            DISPATCHER_TIMEOUT
+        };
         let (reply_tx, reply_rx) = oneshot::channel();
         self.inner.pending_dispatcher.insert(request_id, reply_tx);
         let _pending = PendingReply { map: &self.inner.pending_dispatcher, request_id };
@@ -1102,7 +1123,7 @@ impl Bus {
             return Err(BusError::Closed);
         }
 
-        match tokio::time::timeout(DISPATCHER_TIMEOUT, reply_rx).await {
+        match tokio::time::timeout(budget, reply_rx).await {
             Ok(Ok(reply)) => Ok(reply),
             Ok(Err(_)) => Err(BusError::Disconnected),
             Err(_) => {
@@ -1806,6 +1827,34 @@ mod tests {
         let err =
             bus.command_daemon_for_session(machine, "sess-b", reply("sess-b")).await.unwrap_err();
         assert!(matches!(err, BusError::NoDaemon(m) if m == machine));
+    }
+
+    #[tokio::test]
+    async fn the_newest_connection_closing_first_hands_the_machine_to_a_sibling() {
+        let bus = bus();
+        let machine = Uuid::new_v4();
+        let (tx_a, mut rx_a) = mpsc::channel::<DaemonFrameDown>(8);
+        let (tx_b, _rx_b) = mpsc::channel::<DaemonFrameDown>(8);
+        let conn_a = Uuid::new_v4();
+        let conn_b = Uuid::new_v4();
+        bus.register_daemon(machine, conn_a, tx_a.clone());
+        bus.register_daemon(machine, conn_b, tx_b.clone());
+
+        assert!(!bus.unregister_daemon(machine, conn_b, &tx_b));
+        assert!(bus.daemon_connected(machine));
+        bus.command_daemon(
+            machine,
+            DaemonFrameDown::Reconcile {
+                adapters: Vec::new(),
+                secret_scrub: cctui_proto::ws::SecretScrubConfig::default(),
+            },
+        )
+        .await
+        .unwrap();
+        assert!(matches!(rx_a.recv().await, Some(DaemonFrameDown::Reconcile { .. })));
+
+        assert!(bus.unregister_daemon(machine, conn_a, &tx_a));
+        assert!(!bus.daemon_connected(machine));
     }
 
     /// A session that migrates to a new pod follows its newest announcement.

@@ -425,6 +425,7 @@ pub async fn resolve_dispatcher(
 struct Target {
     dispatcher: std::sync::Arc<dyn Dispatcher>,
     enrolled: Option<std::sync::Arc<EnrolledDispatcher>>,
+    owner: Option<uuid::Uuid>,
 }
 
 async fn resolve_target(
@@ -445,8 +446,8 @@ async fn resolve_target(
         }
         None => None,
     };
-    let row: Option<(uuid::Uuid, bool)> = sqlx::query_as(
-        "SELECT id, $3 = ANY(features) FROM dispatchers \
+    let row: Option<(uuid::Uuid, bool, Option<uuid::Uuid>)> = sqlx::query_as(
+        "SELECT id, $3 = ANY(features), user_id FROM dispatchers \
          WHERE ($1::uuid IS NULL OR user_id = $1) AND name = $2 \
          AND deleted_at IS NULL AND revoked_at IS NULL \
          ORDER BY created_at LIMIT 1",
@@ -457,16 +458,16 @@ async fn resolve_target(
     .fetch_optional(state.dispatch_pool())
     .await
     .map_err(|e| DispatchError::Backend(format!("dispatcher lookup: {e}")))?;
-    if let Some((dispatcher_id, dedup_check)) = row {
+    if let Some((dispatcher_id, dedup_check, owner)) = row {
         let enrolled = std::sync::Arc::new(
             EnrolledDispatcher::new(name, dispatcher_id, state.dispatch_bus().clone())
                 .with_dedup_check(dedup_check),
         );
-        return Ok(Some(Target { dispatcher: enrolled.clone(), enrolled: Some(enrolled) }));
+        return Ok(Some(Target { dispatcher: enrolled.clone(), enrolled: Some(enrolled), owner }));
     }
     // Fall back to a global env-configured http dispatcher (escape hatch).
     match state.dispatchers().get(name) {
-        Ok(dispatcher) => Ok(Some(Target { dispatcher, enrolled: None })),
+        Ok(dispatcher) => Ok(Some(Target { dispatcher, enrolled: None, owner: None })),
         Err(DispatchError::UnknownDispatcher(_)) => Ok(None),
         Err(e) => Err(e),
     }
@@ -509,7 +510,7 @@ async fn validate_dispatch(
     req: &DispatchRequest,
 ) -> DispatchResult<ValidatedDispatch> {
     let resolved = resolve_target(state, ctx.owner_filter(), &req.dispatcher).await;
-    let Target { dispatcher, enrolled } = match resolved {
+    let Target { dispatcher, enrolled, owner } = match resolved {
         Ok(Some(t)) => t,
         Ok(None) => {
             let known = state.dispatchers().ids().join(", ");
@@ -592,6 +593,13 @@ async fn validate_dispatch(
             },
         )?;
     }
+
+    crate::dispatch_policy::check_identity(ctx.owner_filter(), owner, &req.payload).map_err(
+        |(status, v)| {
+            tracing::warn!(uid = %ctx.user_id, dispatcher = %req.dispatcher, "dispatch refused: {v}");
+            (status, Json(ApiError { error: v.to_string() }))
+        },
+    )?;
 
     cctui_proto::worker_env::check_caller_payload_env(&req.payload).map_err(|e| {
         tracing::warn!(uid = %ctx.user_id, "dispatch rejected: {e}");
@@ -1117,6 +1125,24 @@ async fn forward_dispatch(
             }
             h
         }
+        Err(e @ DispatchError::Unconfirmed(_)) => {
+            tracing::error!(
+                dispatcher = %req.dispatcher,
+                session = %session_id,
+                error = %e,
+                "dispatch outcome unknown — the dispatcher took it and may still start the \
+                 worker; a retry with the same session id joins that run"
+            );
+            state.notify(DispatchNotification {
+                event: DispatchEvent::Failed,
+                session_id: session_id.clone(),
+                title: format!("Dispatch UNCONFIRMED → {}", req.dispatcher),
+                message: format!("user: {caller}\nsession: {session_id}\nerror: {e}"),
+                owner: None,
+                registered: false,
+            });
+            return Err(unconfirmed(session_id, &e));
+        }
         Err(e) => {
             tracing::error!(
                 dispatcher = %req.dispatcher,
@@ -1138,12 +1164,31 @@ async fn forward_dispatch(
                 DispatchError::UnknownDispatcher(_) => (StatusCode::NOT_FOUND, e.to_string()),
                 DispatchError::Backend(_) => (StatusCode::BAD_GATEWAY, e.to_string()),
                 DispatchError::Unsupported(_) => (StatusCode::NOT_IMPLEMENTED, e.to_string()),
+                DispatchError::Unconfirmed(_) => (StatusCode::GATEWAY_TIMEOUT, e.to_string()),
             };
             return Err((code, Json(ApiError { error: msg })));
         }
     };
 
     Ok(accepted(v, handle))
+}
+
+/// The answer to a dispatch that may have started a worker: a gateway timeout,
+/// never a refusal, naming the session a retry must reuse to join the run.
+fn unconfirmed(session_id: &str, e: &DispatchError) -> (StatusCode, Json<ApiError>) {
+    (
+        StatusCode::GATEWAY_TIMEOUT,
+        Json(ApiError {
+            error: format!(
+                "{e}; the worker may still start: retry with session_id {session_id} to join it"
+            ),
+        }),
+    )
+}
+
+/// Whether a forward failed without proof that no worker exists.
+fn outcome_unknown(out: &DispatchResult<Forwarded>) -> bool {
+    matches!(out, Err((StatusCode::GATEWAY_TIMEOUT, _)))
 }
 
 fn notify_forwarded(
@@ -1361,7 +1406,8 @@ fn cap_refused(
 /// Reserve policy capacity before forwarding and refund failed or deduplicated uses.
 ///
 /// Forward a policy-bound dispatch only once its use is reserved against the
-/// caps, refunding the use when the forward fails or joins a counted run.
+/// caps, refunding the use when the forward provably placed nothing or joins
+/// a counted run.
 ///
 /// The reservation is a short per-user locked transaction, so no connection
 /// is held across the forward. Without a policy, `forward` runs as is.
@@ -1413,6 +1459,7 @@ where
     };
     let out = forward().await;
     if !out.as_ref().is_ok_and(|(_, r)| counts_as_use(&r.status))
+        && !outcome_unknown(&out)
         && let Err(e) = release_use(pool, use_id).await
     {
         tracing::warn!(%uid, session = %session_id, error = %e, "dispatch policy use not refunded");
@@ -1454,9 +1501,10 @@ async fn forward_recorded(
                 (forwarded, _) => forwarded,
             }
         }
-        Err((_, e)) => {
-            records::set_outcome(state.dispatch_pool(), sid, "refused", Some(e.error.as_str()))
-                .await
+        Err((status, e)) => {
+            let outcome =
+                if *status == StatusCode::GATEWAY_TIMEOUT { "pending" } else { "refused" };
+            records::set_outcome(state.dispatch_pool(), sid, outcome, Some(e.error.as_str())).await
         }
     };
     if let Err(e) = settled {

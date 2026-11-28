@@ -78,6 +78,7 @@ pub enum Rule {
     Timeout,
     Concurrency,
     DailyCap,
+    Identity,
 }
 
 impl Rule {
@@ -92,6 +93,7 @@ impl Rule {
             Self::Timeout => "max_timeout_minutes",
             Self::Concurrency => "max_concurrent",
             Self::DailyCap => "daily_cap",
+            Self::Identity => "identity",
         }
     }
 }
@@ -231,6 +233,52 @@ pub fn check_rules(
     Ok(())
 }
 
+/// A task identity names whose credentials the guard-proxy injects and lands in
+/// pod annotations and secret-ref paths, so it is a short lowercase slug.
+#[must_use]
+pub fn valid_identity(identity: &str) -> bool {
+    (1..=32).contains(&identity.len())
+        && identity.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+}
+
+/// Refuse a malformed payload `identity` (400), or one set by anyone else than
+/// the admin token or the dispatcher's owner (403).
+///
+/// The identity selects whose signing key and service tokens the worker acts with.
+pub fn check_identity(
+    caller: Option<Uuid>,
+    dispatcher_owner: Option<Uuid>,
+    payload: &serde_json::Value,
+) -> Result<(), (StatusCode, Violation)> {
+    let identity = match payload.get("identity") {
+        None | Some(serde_json::Value::Null) => return Ok(()),
+        Some(serde_json::Value::String(s)) if s.is_empty() => return Ok(()),
+        Some(serde_json::Value::String(s)) => s.as_str(),
+        Some(_) => {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                violation(Rule::Identity, "the payload identity must be a string"),
+            ));
+        }
+    };
+    if !valid_identity(identity) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            violation(
+                Rule::Identity,
+                format!("{identity:?} is not an identity (lowercase letters, digits, `-`, 1-32)"),
+            ),
+        ));
+    }
+    if caller.is_none_or(|uid| dispatcher_owner == Some(uid)) {
+        return Ok(());
+    }
+    Err((
+        StatusCode::FORBIDDEN,
+        violation(Rule::Identity, "only the dispatcher's owner may select a task identity"),
+    ))
+}
+
 fn forbidden(v: &Violation) -> (StatusCode, Json<ApiError>) {
     (StatusCode::FORBIDDEN, Json(ApiError { error: v.to_string() }))
 }
@@ -283,4 +331,47 @@ pub async fn enforce(
         }
     }
     Ok(Some(policy))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn an_identity_is_a_short_lowercase_slug() {
+        for ok in ["acme", "zephyr-2", "a", &"x".repeat(32)] {
+            assert!(valid_identity(ok), "{ok}");
+        }
+        for bad in ["", "Acme", "acme/x", "acme#k", "a_b", "${IDENTITY}", "é", &"x".repeat(33)] {
+            assert!(!valid_identity(bad), "{bad}");
+        }
+    }
+
+    #[test]
+    fn only_the_dispatcher_owner_or_admin_selects_an_identity() {
+        let owner = Uuid::new_v4();
+        let other = Uuid::new_v4();
+        let picked = json!({ "identity": "acme" });
+
+        assert!(check_identity(Some(owner), Some(owner), &picked).is_ok());
+        assert!(check_identity(None, Some(owner), &picked).is_ok(), "the admin token");
+        let (status, v) = check_identity(Some(other), Some(owner), &picked).unwrap_err();
+        assert_eq!((status, v.rule), (StatusCode::FORBIDDEN, Rule::Identity));
+        let (status, _) = check_identity(Some(other), None, &picked).unwrap_err();
+        assert_eq!(status, StatusCode::FORBIDDEN, "an env dispatcher has no owning user");
+
+        for none in [json!({}), json!({ "identity": null }), json!({ "identity": "" })] {
+            assert!(check_identity(Some(other), Some(owner), &none).is_ok(), "{none}");
+        }
+    }
+
+    #[test]
+    fn a_malformed_identity_is_a_bad_request_even_for_the_owner() {
+        let owner = Uuid::new_v4();
+        for bad in [json!({ "identity": "acme/../x" }), json!({ "identity": 7 })] {
+            let (status, v) = check_identity(Some(owner), Some(owner), &bad).unwrap_err();
+            assert_eq!((status, v.rule), (StatusCode::BAD_REQUEST, Rule::Identity), "{bad}");
+        }
+    }
 }

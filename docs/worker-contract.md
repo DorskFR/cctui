@@ -68,8 +68,12 @@ convention:
   sandbox the tenant runs inside. **Never** sourced from the task payload —
   whoever controls these controls the sandbox policy.
 - **tenant** — carried in the dispatch payload (`TASK_PAYLOAD_JSON`). The tenant
-  may select *what* runs (a prompt file, an identity) but never *the rules it
-  runs under*.
+  may select *what* runs (a prompt file) but never *the rules it runs under*.
+  `payload.identity` picks whose credentials the guard-proxy injects, so the
+  server lets only the dispatcher's owner (or the admin token) set it, and
+  refuses any other caller with `403 dispatch policy violated (identity)`. An
+  identity is 1-32 lowercase letters, digits or `-`; anything else is a `400`,
+  and the kube dispatcher and the guard-proxy refuse it too.
 
 ## The degenerate worker (parity with the thin image)
 
@@ -1448,6 +1452,13 @@ or session id: nothing calls it back, the run reports to the dispatch that
 created it. While that Job is still suspended, `deduplicated` carries
 `queue_position` too. `queue_position` counts the profile's suspended Jobs
 oldest first, the order they are resumed in.
+
+A `502` means nothing was placed: the dispatcher was offline or refused the
+spec. A `504` means the dispatcher took the dispatch but did not answer within
+90 s or dropped its connection first: the worker may still start, the use stays
+counted against the dispatch policy caps, and the dispatch record stays
+`pending`. Retry with the same `session_id`, which joins that run if it
+started (`deduplicated`) and starts it otherwise.
 
 ## Polling for the result
 

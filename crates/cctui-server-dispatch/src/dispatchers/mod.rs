@@ -40,6 +40,10 @@ pub enum DispatchError {
     InvalidIntent(String),
     #[error("backend error: {0}")]
     Backend(String),
+    /// The dispatcher received the dispatch but its reply never came: the
+    /// worker may or may not start.
+    #[error("dispatch outcome unknown: {0}")]
+    Unconfirmed(String),
     #[error("operation not supported by dispatcher: {0}")]
     Unsupported(String),
 }

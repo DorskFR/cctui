@@ -3,9 +3,10 @@
 
 use cctui_orchestrator::{ANNOTATION_WORKER_CONTAINER, DEFAULT_WORKER_CONTAINER};
 use cctui_proto::api::WorkerExit;
+use k8s_openapi::api::batch::v1::Job;
 use k8s_openapi::api::core::v1::{ContainerStateTerminated, ContainerStatus, Pod};
 use kube::Error as KubeError;
-use kube::api::{ListParams, LogParams};
+use kube::api::LogParams;
 
 use super::Spawner;
 
@@ -102,15 +103,17 @@ fn logs_error(code: u16, message: &str, namespace: &str) -> String {
 }
 
 impl Spawner {
-    pub(super) async fn worker_termination_message(&self, job_name: &str) -> Option<String> {
-        let lp = ListParams::default().labels(&format!("job-name={job_name}"));
-        termination_message(&self.pods().list(&lp).await.ok()?.items)
+    pub(super) async fn worker_termination_message(&self, job: &Job) -> Option<String> {
+        termination_message(&self.pods().list(&super::pods_of(job)).await.ok()?.items)
     }
 
     pub(super) async fn read_worker_exit(&self, handle: &str) -> Option<WorkerExit> {
-        let name = super::handle::JobHandle::parse(handle).name;
-        let lp = ListParams::default().labels(&format!("job-name={name}"));
-        let pods = self.pods().list(&lp).await.ok()?.items;
+        let run = super::handle::JobHandle::parse(handle);
+        let job = self.jobs().get_opt(run.name).await.ok()??;
+        if !run.owns(&job) {
+            return None;
+        }
+        let pods = self.pods().list(&super::pods_of(&job)).await.ok()?.items;
         let (mut exit, target) = exit_of(&pods)?;
         let params = LogParams {
             container: Some(target.container),
