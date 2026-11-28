@@ -4244,6 +4244,40 @@ pub async fn set_model<S: SessionsContext>(
     ))
 }
 
+/// `adapter_id, machine_uuid, working_dir, user_id` of the session a fork copies.
+type ForkParentRow = (Option<String>, Option<uuid::Uuid>, String, Option<uuid::Uuid>);
+
+fn fork_detail(
+    parent: &str,
+    child: Option<&str>,
+    command_id: uuid::Uuid,
+    adapter_id: &str,
+) -> serde_json::Value {
+    serde_json::json!({
+        "parent_session_id": parent,
+        "child_session_id": child,
+        "command_id": command_id,
+        "adapter_id": adapter_id,
+    })
+}
+
+async fn fork_service_tier<S: SessionsContext>(
+    state: &S,
+    session_id: &str,
+    adapter_id: &str,
+) -> Option<String> {
+    if cctui_server_kernel::accounts_types::Family::from_adapter(adapter_id)
+        != Ok(cctui_server_kernel::accounts_types::Family::Openai)
+    {
+        return None;
+    }
+    let account_settings = state.resolve_session_settings(session_id).await;
+    Some(cctui_server_kernel::execution_settings::resolve_service_tier(
+        None,
+        account_settings.as_ref(),
+    ))
+}
+
 fn fork_frame(
     adapter_id: &str,
     parent_local_id: &str,
@@ -4295,12 +4329,13 @@ pub async fn fork_session<S: SessionsContext>(
     // Resolve the parent: adapter + machine + cwd. The fork inherits the
     // parent's working directory and adapter; only model/effort/name/prompt can
     // be overridden by the caller.
-    let row: Option<(Option<String>, Option<uuid::Uuid>, String)> =
-        sqlx::query_as("SELECT adapter_id, machine_uuid, working_dir FROM sessions WHERE id = $1")
-            .bind(&session_id)
-            .fetch_optional(state.pool())
-            .await?;
-    let Some((adapter_id, machine_uuid, working_dir)) = row else {
+    let row: Option<ForkParentRow> = sqlx::query_as(
+        "SELECT adapter_id, machine_uuid, working_dir, user_id FROM sessions WHERE id = $1",
+    )
+    .bind(&session_id)
+    .fetch_optional(state.pool())
+    .await?;
+    let Some((adapter_id, machine_uuid, working_dir, owner)) = row else {
         return Err(AppError::new(StatusCode::NOT_FOUND, "session not found"));
     };
     let Some(adapter_id) = adapter_id else {
@@ -4333,37 +4368,37 @@ pub async fn fork_session<S: SessionsContext>(
     let is_claude = adapter_id == "claude-code";
     let child_session_id = is_claude.then(|| uuid::Uuid::new_v4().to_string());
     let child_key = child_session_id.clone().unwrap_or_else(|| command_id.to_string());
-    let env = if is_claude {
-        state.fork_env_for_session(&session_id, &child_key).await?
-    } else {
-        std::collections::BTreeMap::new()
-    };
-    let service_tier = if cctui_server_kernel::accounts_types::Family::from_adapter(&adapter_id)
-        == Ok(cctui_server_kernel::accounts_types::Family::Openai)
-    {
-        let account_settings = state.resolve_session_settings(&session_id).await;
-        Some(cctui_server_kernel::execution_settings::resolve_service_tier(
-            None,
-            account_settings.as_ref(),
-        ))
-    } else {
-        None
-    };
     let mut spec = cctui_proto::adapter::SessionSpec {
         adapter_id: cctui_proto::adapter::AdapterId::new(&adapter_id),
-        working_dir: Some(working_dir),
+        working_dir: Some(working_dir.clone()),
         prompt: norm(req.prompt),
         name: norm(req.name),
         permission_mode: None,
         effort: norm(req.effort),
         model: norm(req.model),
-        service_tier,
-        env,
+        service_tier: fork_service_tier(&state, &session_id, &adapter_id).await,
+        env: if is_claude {
+            state.fork_env_for_session(&session_id, &child_key).await?
+        } else {
+            std::collections::BTreeMap::new()
+        },
         bootstrap: serde_json::Value::Null,
         parent_local_id: None,
         hook_policy: None,
     };
     state.inherit_for_launch(&session_id, &child_key, &mut spec).await?;
+    let failed = crate::commands::FailedSpawnRow {
+        session_id: child_key.clone(),
+        machine_id: machine_uuid,
+        user_id: owner.unwrap_or(ctx.user_id),
+        adapter_id: adapter_id.clone(),
+        working_dir,
+        name: spec.name.clone(),
+        model: spec.model.clone(),
+        effort: spec.effort.clone(),
+    };
+    let parent = Some(session_id.clone());
+    crate::commands::track_command(state.pending_commands(), command_id, parent, Some(failed));
     let frame = fork_frame(
         &adapter_id,
         &session_id,
@@ -4376,6 +4411,7 @@ pub async fn fork_session<S: SessionsContext>(
     state.remember_spawner(&child_key, ctx.user_id, None).await;
     if let Err(err) = state.bus().command_daemon_for_session(machine_uuid, &session_id, frame).await
     {
+        state.pending_commands().remove(&command_id);
         let detail = state.delivery_detail(machine_uuid, &err);
         return Err(AppError::new(StatusCode::SERVICE_UNAVAILABLE, detail.await));
     }
@@ -4385,12 +4421,7 @@ pub async fn fork_session<S: SessionsContext>(
         Event::new(kind::SESSION_FORKED, Actor::User(ctx.user_id))
             .session(&session_id)
             .machine(machine_uuid)
-            .detail(serde_json::json!({
-                "parent_session_id": session_id,
-                "child_session_id": child_session_id,
-                "command_id": command_id,
-                "adapter_id": adapter_id,
-            })),
+            .detail(fork_detail(&session_id, child_session_id.as_deref(), command_id, &adapter_id)),
     );
     Ok((
         StatusCode::ACCEPTED,
