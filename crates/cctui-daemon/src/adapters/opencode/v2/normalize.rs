@@ -8,6 +8,7 @@ use std::collections::{HashMap, HashSet};
 use cctui_proto::adapter::AdapterEvent;
 use serde_json::{Value, json};
 
+use super::client::Message;
 use super::events::{Event, Inbox, Step, Text, TextDelta, Tool};
 use crate::adapters::opencode::backend::Signal;
 use crate::adapters::opencode::normalize::{self as v1, Kind};
@@ -20,6 +21,15 @@ pub struct Tracker {
     inbox: HashMap<String, String>,
     emitted: HashSet<String>,
     emitted_usage: HashSet<String>,
+}
+
+/// Whether a `GET /api/session/{id}/message` snapshot ends on an idle marker.
+#[must_use]
+pub fn turn_settled(messages: &[Message]) -> bool {
+    matches!(
+        messages.iter().rev().find(|m| !matches!(m, Message::Other)),
+        Some(Message::Idle { .. })
+    )
 }
 
 impl Tracker {
@@ -187,6 +197,18 @@ mod tests {
 
     const FIXTURE: &str = include_str!("../fixtures/v2_events.sse");
     const SESSION: &str = "ses_ecd86c6adffeSeDX15STTLCF8s";
+
+    #[test]
+    fn a_v2_snapshot_is_settled_on_a_trailing_idle_marker() {
+        let user = Message::User { id: "u".to_owned(), text: "go".to_owned() };
+        let assistant =
+            Message::Assistant { id: "a".to_owned(), tokens: None, cost: None, finish: None };
+        let idle = Message::Idle { id: "i".to_owned(), outcome: "succeeded".to_owned() };
+        assert!(!turn_settled(&[]));
+        assert!(!turn_settled(&[user.clone(), assistant.clone()]));
+        assert!(turn_settled(&[user.clone(), assistant.clone(), idle.clone(), Message::Other]));
+        assert!(!turn_settled(&[idle, user, assistant]));
+    }
 
     fn replay() -> Vec<Signal> {
         let mut tracker = Tracker::default();
