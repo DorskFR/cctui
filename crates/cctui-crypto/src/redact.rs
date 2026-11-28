@@ -7,7 +7,10 @@
 //! idempotent because the `[REDACTED:...]` marker matches no anchored pattern.
 
 mod entropy;
+mod stream;
 mod user;
+
+pub use self::stream::{STREAM_HOLD_MAX, split_streamed_secrets};
 
 pub use self::user::{
     MIN_ECHO_LITERAL_LEN, USER_CATEGORY, USER_PLACEHOLDER, UserLiterals, collect_user_literals,
@@ -560,7 +563,7 @@ const BUILTINS: &[Builtin] = &[
     B {
         category: "db_url_password",
         family: "generic",
-        regex: r"[a-zA-Z][a-zA-Z0-9+.\-]*://[^:/@\s]+:([^@/\s]+)@",
+        regex: r"[a-zA-Z][a-zA-Z0-9+.\-]*://[^:/@\s]+:([^@/\s\[\]]+)@",
         group: 1,
         high_entropy: false,
     },
@@ -1573,6 +1576,21 @@ mod tests {
             let once = redact_str(&input);
             assert_eq!(redact_str(&once), once, "{cat} is not idempotent");
         }
+    }
+
+    #[test]
+    fn corpus_second_pass_counts_no_substitutions() {
+        for (cat, input) in fixtures() {
+            let mut v = json!(input);
+            assert!(redact_json(&mut v, &p()) > 0, "{cat} did not fire");
+            assert_eq!(redact_json(&mut v, &p()), 0, "{cat} re-matches its placeholder: {v}");
+        }
+    }
+
+    #[test]
+    fn db_url_placeholder_is_not_a_password() {
+        let mut v = json!("postgres://u:[REDACTED:db_url_password]@h/db");
+        assert_eq!(redact_json(&mut v, &p()), 0);
     }
 
     #[test]

@@ -368,7 +368,8 @@ impl Supervisor {
         // app-server`, headless claude), so tearing them down on a WS drop would
         // kill running work. The WS is only the transport.
         let mut running: HashMap<String, AdapterRunning> = HashMap::new();
-        let (event_tx, mut event_rx) = mpsc::channel::<(String, AdapterEvent)>(256);
+        let (event_tx, adapter_rx) = mpsc::channel::<(String, AdapterEvent)>(256);
+        let mut event_rx = spawn_observer(adapter_rx);
         crate::dispatch::register_event_sink(event_tx.clone());
         crate::guardwatch::start(event_tx.clone(), shutdown.clone());
 
@@ -511,9 +512,6 @@ impl Supervisor {
                             local_id = event_local_id(&event),
                             "queued event",
                         );
-                        observe_event(&adapter_id, &event);
-                        // Must stay after `observe`: the turn-tail signal needs
-                        // the event even though it has nothing to persist.
                         if is_textless_thinking(&event) {
                             continue;
                         }
@@ -567,9 +565,8 @@ impl Supervisor {
         let url = self.client.daemon_ws_url();
         tracing::info!(origin = crate::client::url_origin(&url), "connecting to daemon WS");
         let request = crate::client::daemon_ws_request(&url, &self.machine_key)?;
-        let connect = tokio_tungstenite::connect_async(request);
-        match tokio::time::timeout(CONNECT_TIMEOUT, connect).await {
-            Ok(res) => Ok(res?.0),
+        match tokio::time::timeout(CONNECT_TIMEOUT, crate::client::connect_ws(request)).await {
+            Ok(res) => res,
             Err(_) => anyhow::bail!(
                 "daemon WS connect did not complete within {}s",
                 CONNECT_TIMEOUT.as_secs()
@@ -1467,6 +1464,18 @@ fn compile_scrub(cfg: &SecretScrubConfig) -> CompiledPatterns {
 /// passed through unchanged rather than dropped.
 pub(crate) fn scrub_event(event: AdapterEvent, scrub: &CompiledPatterns) -> AdapterEvent {
     let event = crate::user_redact::mask_event(event);
+    let event = match event {
+        AdapterEvent::TextDelta { local_id, item_id, delta } => {
+            let delta = scrub_delta(&local_id, &item_id, &delta, scrub);
+            return AdapterEvent::TextDelta { local_id, item_id, delta };
+        }
+        AdapterEvent::TurnEnd { ref local_id, .. }
+        | AdapterEvent::SessionEnded { ref local_id, .. } => {
+            held_deltas().remove(local_id);
+            event
+        }
+        other => other,
+    };
     if scrub.is_empty() {
         return event;
     }
@@ -1481,6 +1490,31 @@ pub(crate) fn scrub_event(event: AdapterEvent, scrub: &CompiledPatterns) -> Adap
         return event;
     }
     serde_json::from_value(value).unwrap_or(event)
+}
+
+/// Raw tail of each session's delta stream, with its item: detectors only
+/// match a whole secret, and the model streams one over several deltas.
+static HELD_DELTAS: std::sync::OnceLock<std::sync::Mutex<HashMap<String, (String, String)>>> =
+    std::sync::OnceLock::new();
+
+fn held_deltas() -> std::sync::MutexGuard<'static, HashMap<String, (String, String)>> {
+    HELD_DELTAS
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+fn scrub_delta(local_id: &str, item_id: &str, delta: &str, scrub: &CompiledPatterns) -> String {
+    let previous = held_deltas().remove(local_id);
+    let carry = match previous {
+        Some((item, text)) if item == item_id => text,
+        _ => String::new(),
+    };
+    let (emit, hold) = redact::split_streamed_secrets(&(carry + delta), scrub);
+    if !hold.is_empty() {
+        held_deltas().insert(local_id.to_owned(), (item_id.to_owned(), hold));
+    }
+    emit
 }
 
 /// PTY bytes ride as base64, which the high-entropy detector would mask whole:
@@ -1550,7 +1584,9 @@ enum Lane {
 /// watcher left while it was queued is dropped.
 fn lane(adapter_id: &str, event: &AdapterEvent) -> serde_json::Result<Lane> {
     let watched = match event {
-        AdapterEvent::TextDelta { local_id, .. } => crate::text_deltas::wanted(local_id),
+        AdapterEvent::TextDelta { local_id, delta, .. } => {
+            !delta.is_empty() && crate::text_deltas::wanted(local_id)
+        }
         _ => return Ok(Lane::Batch),
     };
     if !watched {
@@ -1560,8 +1596,27 @@ fn lane(adapter_id: &str, event: &AdapterEvent) -> serde_json::Result<Lane> {
     serde_json::to_string(&frame).map(Lane::Immediate)
 }
 
-/// The one point every adapter's events pass through, so a `CctuiAgent`
-/// caller parked on its child's completion is fed here.
+/// Events observed but not yet on the wire. Sized to ride out a reconnect
+/// backoff or a chunked transfer without stalling the adapters behind it.
+const UPLOAD_QUEUE: usize = 8192;
+
+/// Observes every adapter event as it is emitted, whatever the link is doing:
+/// a local `CctuiAgent` follow must not wait on the server connection.
+fn spawn_observer(
+    mut events: mpsc::Receiver<(String, AdapterEvent)>,
+) -> mpsc::Receiver<(String, AdapterEvent)> {
+    let (tx, rx) = mpsc::channel(UPLOAD_QUEUE);
+    tokio::spawn(async move {
+        while let Some((adapter_id, event)) = events.recv().await {
+            observe_event(&adapter_id, &event);
+            if tx.send((adapter_id, event)).await.is_err() {
+                break;
+            }
+        }
+    });
+    rx
+}
+
 fn observe_event(adapter_id: &str, event: &AdapterEvent) {
     crate::childwatch::global().observe(event);
     crate::guardwatch::global().observe(adapter_id, event);
@@ -2045,6 +2100,72 @@ mod tests {
         assert!(!text.contains(&token), "secret leaked: {text}");
         assert!(text.starts_with("\x1b[1m$ export GH_TOKEN=[REDACTED:github_token"), "{text}");
         assert!(text.ends_with("\x1b[0m\r\n"), "{text}");
+    }
+
+    #[test]
+    fn scrub_event_never_relays_a_token_split_across_deltas() {
+        let scrub = compile_scrub(&cctui_proto::ws::SecretScrubConfig {
+            enabled: true,
+            ..Default::default()
+        });
+        let delta = |item: &str, text: &str| AdapterEvent::TextDelta {
+            local_id: "split-s1".to_owned(),
+            item_id: item.to_owned(),
+            delta: text.to_owned(),
+        };
+        let mut shown = String::new();
+        for chunk in ["found ghp_AB", "CDEFGHIJKL", "MNOPQRSTUVWX", "0123 in env"] {
+            let AdapterEvent::TextDelta { delta, .. } = scrub_event(delta("m:0", chunk), &scrub)
+            else {
+                panic!("a delta stays a delta");
+            };
+            shown.push_str(&delta);
+        }
+        assert!(!shown.contains("ghp_AB"), "secret prefix leaked: {shown}");
+        assert!(shown.contains("[REDACTED:github_token"), "{shown}");
+        assert_eq!(shown.rsplit(']').next(), Some(" in "), "{shown}");
+
+        let AdapterEvent::TextDelta { delta: next, .. } =
+            scrub_event(delta("m:1", "fresh "), &scrub)
+        else {
+            panic!("a delta stays a delta");
+        };
+        assert_eq!(next, "fresh ", "another item's carry is not prepended");
+    }
+
+    #[tokio::test]
+    async fn events_are_observed_while_nothing_uploads_them() {
+        let watch = crate::childwatch::global().register_bound("pump-child-1");
+        let (tx, rx) = tokio::sync::mpsc::channel(8);
+        let _upload = super::spawn_observer(rx);
+        for i in 0..64 {
+            let event = AdapterEvent::AskResolved { local_id: format!("pump-other-{i}") };
+            tx.send(("claude-code".to_owned(), event)).await.unwrap();
+        }
+        let ask = AdapterEvent::AskQuestion {
+            local_id: "pump-child-1".to_owned(),
+            question: "which one?".to_owned(),
+            questions: None,
+            preamble: None,
+        };
+        tx.send(("claude-code".to_owned(), ask)).await.unwrap();
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        while watch.snapshot().and_then(|s| s.blocked).is_none() {
+            assert!(tokio::time::Instant::now() < deadline, "the ask was never observed");
+            watch.changed(Duration::from_millis(50)).await;
+        }
+    }
+
+    #[test]
+    fn an_empty_scrubbed_delta_is_not_sent() {
+        crate::text_deltas::set("lane-empty", true);
+        let delta = AdapterEvent::TextDelta {
+            local_id: "lane-empty".to_owned(),
+            item_id: "m:0".to_owned(),
+            delta: String::new(),
+        };
+        assert!(matches!(lane("claude-code", &delta).unwrap(), Lane::Drop));
+        crate::text_deltas::set("lane-empty", false);
     }
 
     #[test]
