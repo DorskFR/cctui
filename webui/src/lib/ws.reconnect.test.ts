@@ -69,7 +69,7 @@ const lastSocket = () => {
 	return sock;
 };
 
-function setup(cached: AgentEvent[] | undefined = [ev(100)]) {
+function setup(cached: AgentEvent[] | null = [ev(100)]) {
 	const qc = new QueryClient();
 	if (cached) qc.setQueryData(qk.conversation(SID), cached);
 	const c = new WsClient();
@@ -116,7 +116,7 @@ describe('reconnect catch-up', () => {
 
 	it('leaves a session with no cached conversation to its query', () => {
 		const fetch = vi.spyOn(endpoints, 'conversation').mockResolvedValue([]);
-		const { reconnect } = setup(undefined);
+		const { reconnect } = setup(null);
 		const sock = reconnect();
 		expect(fetch).not.toHaveBeenCalled();
 		expect(sock.sent).toContainEqual({ type: 'subscribe', session_id: SID });
