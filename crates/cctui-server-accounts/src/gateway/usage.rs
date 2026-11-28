@@ -523,6 +523,10 @@ async fn usage_for_account(
         tracing::debug!(account = %account_id, wait_secs = wait.as_secs(), "usage read deferred");
         return Err(StatusCode::TOO_MANY_REQUESTS);
     }
+    let failures = match claim_shared_read(state, account_id).await {
+        SharedRead::Mine(failures) => failures,
+        SharedRead::Theirs(served) => return served,
+    };
     let result = match source {
         UsageSource::Probe(id) => probe_usage_windows(state, &acct, &id).await,
         UsageSource::OpenAi(chatgpt_account_id) => {
@@ -530,14 +534,73 @@ async fn usage_for_account(
         }
         UsageSource::Anthropic => fetch_anthropic_usage(state, &acct).await,
     };
-    match &result {
-        Ok(_) => gate.succeeded(account_id, std::time::Instant::now()),
-        Err(status) => {
-            let backoff = gate.failed(account_id, std::time::Instant::now());
-            tracing::info!(account = %account_id, %status, backoff_secs = backoff.as_secs(), "usage reads paused");
+    settle_read(state, account_id, failures, &result).await;
+    result
+}
+
+enum SharedRead {
+    /// This replica reads; the shared failure count, when the database answered.
+    Mine(Option<u32>),
+    /// Another replica holds the read: its fresh reading, or a deferral.
+    Theirs(Result<Option<serde_json::Value>, StatusCode>),
+}
+
+/// A database error leaves the in-process gate alone in charge.
+async fn claim_shared_read(state: &impl UsageContext, account_id: Uuid) -> SharedRead {
+    use super::usage_gate::{READ_INTERVAL, ReadGate, shared};
+    match shared::claim(state.pool(), account_id, READ_INTERVAL).await {
+        Ok(shared::Claim::Read { failures }) => SharedRead::Mine(Some(failures)),
+        Ok(shared::Claim::Held { wait, reading }) => {
+            ReadGate::global().hold(account_id, std::time::Instant::now() + wait);
+            let ttl = USAGE_CACHE_TTL.to_std().unwrap_or_default();
+            match reading {
+                Some((usage, age)) if age < ttl => SharedRead::Theirs(Ok(usage)),
+                _ => {
+                    tracing::debug!(account = %account_id, wait_secs = wait.as_secs(), "usage read held by another replica");
+                    SharedRead::Theirs(Err(StatusCode::TOO_MANY_REQUESTS))
+                }
+            }
+        }
+        Err(e) => {
+            tracing::warn!(account = %account_id, "shared usage gate unavailable: {e}");
+            SharedRead::Mine(None)
         }
     }
-    result
+}
+
+async fn settle_read(
+    state: &impl UsageContext,
+    account_id: Uuid,
+    failures: Option<u32>,
+    result: &Result<Option<serde_json::Value>, StatusCode>,
+) {
+    use super::usage_gate::{READ_INTERVAL, ReadGate, exponential, shared};
+    let gate = ReadGate::global();
+    let now = std::time::Instant::now();
+    let pool = state.pool();
+    let written = match result {
+        Ok(usage) => {
+            gate.succeeded(account_id, now);
+            match failures {
+                Some(_) => shared::succeeded(pool, account_id, usage.as_ref(), READ_INTERVAL).await,
+                None => Ok(()),
+            }
+        }
+        Err(status) => {
+            let local = gate.failed(account_id, now);
+            let shared_failures = failures.map(|f| f.saturating_add(1));
+            let backoff = shared_failures.map_or(local, |f| local.max(exponential(f)));
+            gate.hold(account_id, now + backoff);
+            tracing::info!(account = %account_id, %status, backoff_secs = backoff.as_secs(), "usage reads paused");
+            match shared_failures {
+                Some(f) => shared::failed(pool, account_id, f, backoff).await,
+                None => Ok(()),
+            }
+        }
+    };
+    if let Err(e) = written {
+        tracing::warn!(account = %account_id, "shared usage gate not updated: {e}");
+    }
 }
 
 fn usage_rejected(state: &impl UsageContext, acct: &Account, resp: &reqwest::Response) {
