@@ -812,6 +812,18 @@ tui = "waived"
 reason = "WebAuthn passkeys need a browser authenticator"
 
 [[route]]
+id = "get_admin_users_by_id_passkeys"
+# GET /admin/users/{id}/passkeys — List a user's passkeys (admin).
+tui = "waived"
+reason = "WebAuthn passkeys need a browser authenticator"
+
+[[route]]
+id = "delete_admin_users_by_id_passkeys_by_passkey"
+# DELETE /admin/users/{id}/passkeys/{passkey} — Revoke a user's passkey and end the sessions it opened (admin).
+tui = "waived"
+reason = "WebAuthn passkeys need a browser authenticator"
+
+[[route]]
 id = "put_admin_passkeys_auto_prompt"
 # PUT /admin/passkeys/auto-prompt — Server-wide: try the passkey as soon as the login screen opens (admin).
 tui = "waived"
