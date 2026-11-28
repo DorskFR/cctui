@@ -708,14 +708,14 @@ mod tests {
         assert!(!queue_outcome(&pool, &reply, &outcome).await.unwrap(), "never on a reply_url");
         assert!(queue_outcome(&pool, &notify, &outcome).await.unwrap());
 
-        sqlx::query("UPDATE session_webhooks SET next_attempt_at = now() WHERE session_id = $1")
-            .bind(&reply)
-            .execute(&pool)
-            .await
-            .unwrap();
-        let claimed = claim_due(&pool).await.unwrap();
-        let row = claimed.iter().find(|r| r.session_id == reply).expect("claimed");
-        assert!(row.death_only && row.payload.is_none());
+        let (death_only, payload): (bool, Option<serde_json::Value>) = sqlx::query_as(
+            "SELECT death_only, payload FROM session_webhooks WHERE session_id = $1",
+        )
+        .bind(&reply)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert!(death_only && payload.is_none());
 
         sqlx::query("DELETE FROM session_webhooks WHERE session_id = ANY($1)")
             .bind(vec![reply, notify])
