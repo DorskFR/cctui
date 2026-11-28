@@ -1557,7 +1557,13 @@ async fn start_or_join(
                 child = %req.session_id,
                 "CctuiAgent following child after follow-up",
             );
-            spawn_follow(ctx, handle, req.session_id.clone())
+            let joined = spawn_follow(ctx, handle, req.session_id.clone());
+            if ctx.proto >= 2 {
+                let child = &req.session_id;
+                let delivered = json!({ "progress": format!("follow-up sent to child session {child}"), "child": child });
+                let _ = write_line(out, &delivered).await;
+            }
+            joined
         }
         CallKind::Attach { session_id } => attach(&ctx.parent, session_id),
         CallKind::Usage { .. }
@@ -3848,6 +3854,37 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
         false
+    }
+
+    #[tokio::test]
+    async fn a_follow_up_names_its_child_only_after_delivery_and_a_ledger_entry() {
+        let (base, request) = capture_one_request("200 OK").await;
+        let child = "child-follow-up-named";
+        let kind = CallKind::Message(MessageChildRequest {
+            session_id: child.to_owned(),
+            prompt: "now fix the tests".to_owned(),
+        });
+        let mut out = Vec::new();
+        let joined = start_or_join(&ctx_for(&base, "parent-f"), &kind, &mut out).await;
+        assert!(matches!(joined, Joined::Waiting { .. }));
+        assert!(request.await.unwrap().contains("now fix the tests"), "the prompt went out");
+        let line: Value = serde_json::from_slice(out.trim_ascii_end()).unwrap();
+        assert_eq!(line["child"], json!(child));
+        let entry = crate::followledger::get(child).expect("the follow is in the ledger");
+        assert!(entry.finished.is_none(), "a reattach must join this turn, not an older one");
+    }
+
+    #[tokio::test]
+    async fn a_follow_up_that_never_reached_the_server_names_no_child() {
+        let (base, _request) = capture_one_request("500 Internal Server Error").await;
+        let kind = CallKind::Message(MessageChildRequest {
+            session_id: "child-follow-up-failed".to_owned(),
+            prompt: "now fix the tests".to_owned(),
+        });
+        let mut out = Vec::new();
+        let joined = start_or_join(&ctx_for(&base, "parent-f"), &kind, &mut out).await;
+        assert!(matches!(joined, Joined::Ready(_)));
+        assert!(out.is_empty(), "no child frame for an undelivered follow-up");
     }
 
     #[tokio::test]
