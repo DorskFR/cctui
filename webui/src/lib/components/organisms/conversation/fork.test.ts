@@ -1,8 +1,10 @@
 // @vitest-environment happy-dom
-import { describe, it, expect } from 'vitest';
+import { beforeEach, describe, it, expect, vi } from 'vitest';
 import { ForkController } from './fork.svelte';
 import type { SessionListItem } from '@bindings/SessionListItem';
 import type { ForkRequest } from '@bindings/ForkRequest';
+import type { CommandOutcome } from '#lib/ws.svelte.ts';
+import { toasts } from '#lib/toast.svelte.ts';
 
 function makeController(overrides: Partial<{ isCodex: boolean; archived: boolean }> = {}) {
 	const session = {
@@ -71,5 +73,43 @@ describe('ForkController extract', () => {
 		ctl.openExtract({ mode: 'up_to', anchor_message_id: 'msg_abc', selected_message_ids: [] });
 		expect(ctl.model).toBe('opus');
 		expect(ctl.effort).toBe('high');
+	});
+});
+
+describe('ForkController spawn verdict', () => {
+	beforeEach(() => toasts.reset());
+
+	function tracked(outcome: CommandOutcome) {
+		const waited: { commandId: string; sessionId: string | null | undefined }[] = [];
+		const ctl = new ForkController({
+			id: () => 'parent-1',
+			archived: () => false,
+			isCodex: () => false,
+			session: () => ({ model: 'opus', effort: 'high' }) as unknown as SessionListItem,
+			fork: async () => ({ command_id: 'c', session_id: 'child-9' }),
+			onForked: () => {},
+			awaitResult: async (commandId, sessionId) => {
+				waited.push({ commandId, sessionId });
+				return outcome;
+			}
+		});
+		return { ctl, waited };
+	}
+	const errors = () => toasts.items.filter((t) => t.tone === 'error');
+
+	it('toasts a fork the daemon rejected', async () => {
+		const { ctl, waited } = tracked({ ok: false, error: 'x' });
+		await ctl.submit();
+		await vi.waitFor(() => expect(errors()).toHaveLength(1));
+		expect(errors()[0].message).toContain('x');
+		expect(waited).toEqual([{ commandId: 'c', sessionId: 'child-9' }]);
+	});
+
+	it('stays quiet when the verdict only timed out', async () => {
+		const { ctl, waited } = tracked({ ok: false, timedOut: true });
+		await ctl.submit();
+		await vi.waitFor(() => expect(waited).toHaveLength(1));
+		await Promise.resolve();
+		expect(errors()).toHaveLength(0);
 	});
 });
