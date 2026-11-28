@@ -32,8 +32,8 @@ pub async fn upsert_session(
     extra: Option<serde_json::Value>,
 ) -> Result<Option<bool>, sqlx::Error> {
     // `parent_id`: resolve via a subquery rather than binding the
-    // raw value so a not-yet-known parent yields NULL instead of an FK
-    // violation that would drop the whole insert. In the normal case the
+    // raw value so a not-yet-known or foreign parent yields NULL instead of an
+    // FK violation that would drop the whole insert. In the normal case the
     // parent is upserted earlier in the same poll, so it resolves. On
     // conflict, COALESCE keeps an already-set parent and otherwise fills it
     // in from a later poll.
@@ -48,7 +48,7 @@ pub async fn upsert_session(
         r"INSERT INTO sessions
             (id, parent_id, account_id, machine_id, working_dir, status, registered_at,
              last_heartbeat, metadata, user_id, machine_uuid, adapter_id)
-          VALUES ($1, (SELECT id FROM sessions WHERE id = $7), NULL, $2, $3, 'active',
+          VALUES ($1, (SELECT id FROM sessions WHERE id = $7 AND user_id = $4), NULL, $2, $3, 'active',
                   COALESCE(to_timestamp($8::double precision), now()),
                   COALESCE(to_timestamp($8::double precision), now()),
                   COALESCE($9::jsonb, '{}'::jsonb), $4, $5, $6)

@@ -20,7 +20,7 @@ use uuid::Uuid;
 use crate::auth::AuthContext;
 use crate::context::SessionsContext;
 use crate::error::AppError;
-use crate::followup::nests_under_parent;
+use crate::followup::{launched_model_sql, nests_under_parent};
 use crate::store::sessions::SessionRowStatus;
 
 pub const SETTING_KEY: &str = "autoFollowup";
@@ -171,15 +171,6 @@ pub fn fill(
     item.auto_followup_override = prefs.over;
     let setting = prefs.user.with(prefs.over.as_ref());
     item.auto_followup_at = threshold_at(setting, window, held);
-}
-
-/// The model a session was launched with: the harness reports it without
-/// its `[1m]` suffix. Claude pre-mints its id, so the launch row's
-/// `session_id` is the session's.
-macro_rules! launched_model_sql {
-    () => {
-        "(SELECT ml.model FROM machine_launches ml WHERE ml.session_id = s.id)"
-    };
 }
 
 const PREFS_SQL: &str = concat!(

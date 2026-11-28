@@ -29,6 +29,15 @@ macro_rules! nests_under_parent {
     };
 }
 
+/// SQL: the model session `s` was launched with. The harness reports it
+/// without its `[1m]` suffix. Claude pre-mints its id, so the launch row's
+/// `session_id` is the session's.
+macro_rules! launched_model_sql {
+    () => {
+        "(SELECT ml.model FROM machine_launches ml WHERE ml.session_id = s.id)"
+    };
+}
+
 /// SQL: the latest follow-up continuing `sessions.id`.
 macro_rules! next_session_sql {
     () => {
@@ -47,6 +56,7 @@ macro_rules! followup_count_sql {
 }
 
 pub(crate) use followup_count_sql;
+pub(crate) use launched_model_sql;
 pub(crate) use nests_under_parent;
 pub(crate) use next_session_sql;
 
@@ -71,43 +81,45 @@ pub async fn followups_of(pool: &PgPool, id: &str) -> Result<(Option<String>, u3
     Ok(row.map_or((None, 0), |(next, count)| (next, u32::try_from(count).unwrap_or(0))))
 }
 
-/// SQL: `$1` and its ancestors through follow-up links; `seen` breaks link
-/// cycles, the longest `seen` is the root.
+/// SQL: `$1` and its ancestors through follow-up links, never leaving `$1`'s
+/// owner; `seen` breaks link cycles, the longest `seen` is the root.
 macro_rules! up_cte_sql {
     () => {
         "up AS ( \
-            SELECT id, metadata->>'relation' AS relation, parent_id, ARRAY[id] AS seen \
+            SELECT id, user_id, metadata->>'relation' AS relation, parent_id, ARRAY[id] AS seen \
               FROM sessions WHERE id = $1 \
             UNION ALL \
-            SELECT p.id, p.metadata->>'relation', p.parent_id, up.seen || p.id \
+            SELECT p.id, p.user_id, p.metadata->>'relation', p.parent_id, up.seen || p.id \
               FROM up JOIN sessions p ON p.id = up.parent_id \
              WHERE up.relation = 'followup' AND NOT p.id = ANY(up.seen) \
+               AND p.user_id IS NOT DISTINCT FROM up.user_id \
                AND cardinality(up.seen) < 500 \
         )"
     };
 }
 
 /// Up to the thread's root through follow-up links, then every follow-up
-/// below it: depth first, siblings oldest first.
+/// below it: depth first, siblings oldest first. Only `$1`'s owner's sessions.
 /// No status filter: archived sessions stay in the thread.
 const THREAD_SQL: &str = concat!(
     "WITH RECURSIVE ",
     up_cte_sql!(),
     ", root AS ( \
-        SELECT id FROM up ORDER BY cardinality(seen) DESC LIMIT 1 \
+        SELECT id, user_id FROM up ORDER BY cardinality(seen) DESC LIMIT 1 \
     ), tree AS ( \
-        SELECT s.id, NULL::text AS parent_id, \
+        SELECT s.id, s.user_id, NULL::text AS parent_id, \
                ARRAY[to_char(s.registered_at AT TIME ZONE 'UTC', 'YYYYMMDDHH24MISSUS') \
                      || s.id] AS path, \
                ARRAY[s.id] AS seen \
           FROM root JOIN sessions s ON s.id = root.id \
         UNION ALL \
-        SELECT f.id, f.parent_id, \
+        SELECT f.id, f.user_id, f.parent_id, \
                tree.path || (to_char(f.registered_at AT TIME ZONE 'UTC', 'YYYYMMDDHH24MISSUS') \
                      || f.id), \
                tree.seen || f.id \
           FROM tree JOIN sessions f ON f.parent_id = tree.id \
          WHERE f.metadata->>'relation' = 'followup' AND NOT f.id = ANY(tree.seen) \
+           AND f.user_id IS NOT DISTINCT FROM tree.user_id \
            AND cardinality(tree.seen) < 500 \
     ) \
     SELECT s.id, s.session_name, s.working_dir, s.registered_at, t.parent_id \
@@ -183,7 +195,7 @@ pub async fn remember_intent(pool: &PgPool, spawn_key: &str, req: &SpawnRequest)
 ///
 /// Looked up by its own id and by the spawn key the adapter echoed, so
 /// both pre-minted (claude-code) and self-minted (codex) ids resolve. The
-/// parent must exist (FK), else the link is skipped.
+/// parent must exist and share the session's owner, else the link is skipped.
 pub async fn claim_intent(pool: &PgPool, session_id: &str, spawn_key: Option<&str>) {
     crate::followup_op::claim(pool, session_id, spawn_key).await;
     let key = spawn_key.unwrap_or(session_id);
@@ -205,7 +217,8 @@ pub async fn claim_intent(pool: &PgPool, session_id: &str, spawn_key: Option<&st
     };
     let linked = sqlx::query_scalar::<_, Option<String>>(
         "UPDATE sessions SET \
-             parent_id = COALESCE(parent_id, (SELECT id FROM sessions WHERE id = $2)), \
+             parent_id = COALESCE(parent_id, (SELECT p.id FROM sessions p \
+                 WHERE p.id = $2 AND p.user_id IS NOT DISTINCT FROM sessions.user_id)), \
              metadata = COALESCE(metadata, '{}'::jsonb) || jsonb_build_object('relation', $3::text) \
          WHERE id = $1 RETURNING parent_id",
     )
@@ -519,6 +532,98 @@ mod tests {
         assert_eq!(followups_of(&pool, "no-such-session").await.expect("followups"), (None, 0));
 
         cleanup(&pool, uid, mid, &[r, a, a2, b]).await;
+    }
+
+    async fn parent_id(pool: &sqlx::PgPool, id: &str) -> Option<String> {
+        sqlx::query_scalar("SELECT parent_id FROM sessions WHERE id = $1")
+            .bind(id)
+            .fetch_one(pool)
+            .await
+            .expect("parent")
+    }
+
+    async fn claim_followup_of(pool: &sqlx::PgPool, id: &str, parent: &str) {
+        sqlx::query(
+            "INSERT INTO session_followup_intents (spawn_key, parent_session_id) VALUES ($1, $2)",
+        )
+        .bind(id)
+        .bind(parent)
+        .execute(pool)
+        .await
+        .expect("intent");
+        super::claim_intent(pool, id, None).await;
+    }
+
+    fn registration(id: &str, parent: &str, mid: Uuid) -> cctui_proto::models::Session {
+        let now = chrono::Utc::now();
+        cctui_proto::models::Session {
+            id: id.to_owned(),
+            parent_id: Some(parent.to_owned()),
+            account_id: None,
+            machine_id: mid.to_string(),
+            working_dir: "/w".into(),
+            status: cctui_proto::models::SessionStatus::New,
+            registered_at: now,
+            last_heartbeat: now,
+            metadata: serde_json::json!({"relation": "followup"}),
+            adapter_id: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn a_session_never_links_to_or_threads_through_another_users_session() {
+        let Some((pool, victim, victim_m)) = test_pool("followup_foreign_parent_victim").await
+        else {
+            return;
+        };
+        let Some((_, me, my_m)) = test_pool("followup_foreign_parent_attacker").await else {
+            return;
+        };
+        let theirs = seed(&pool, victim, victim_m, "active").await;
+        let their_next = seed(&pool, victim, victim_m, "active").await;
+        age(&pool, &theirs, 60).await;
+        link(&pool, &their_next, &theirs, "followup", 50).await;
+
+        let planted = seed(&pool, me, my_m, "active").await;
+        link(&pool, &planted, &theirs, "followup", 40).await;
+        assert_eq!(ids(&thread_of(&pool, &planted).await.expect("thread")), [planted.as_str()]);
+        assert_eq!(
+            super::chain_of(&pool, &planted).await.expect("chain"),
+            std::slice::from_ref(&planted)
+        );
+        let their_thread = [theirs.as_str(), their_next.as_str()];
+        assert_eq!(ids(&thread_of(&pool, &theirs).await.expect("thread")), their_thread);
+
+        let mine = seed(&pool, me, my_m, "active").await;
+        let claimed = seed(&pool, me, my_m, "active").await;
+        claim_followup_of(&pool, &claimed, &theirs).await;
+        assert_eq!(parent_id(&pool, &claimed).await, None, "a foreign intent parent is dropped");
+        let own_claim = seed(&pool, me, my_m, "active").await;
+        claim_followup_of(&pool, &own_claim, &mine).await;
+        assert_eq!(parent_id(&pool, &own_claim).await, Some(mine.clone()));
+
+        let registered = Uuid::new_v4().to_string();
+        let foreign = registration(&registered, &theirs, my_m);
+        crate::store::sessions::upsert_registered(&pool, &foreign, my_m, me)
+            .await
+            .expect("register")
+            .expect("written");
+        assert_eq!(
+            parent_id(&pool, &registered).await,
+            None,
+            "a foreign register parent is dropped"
+        );
+        let own_registered = Uuid::new_v4().to_string();
+        let own = registration(&own_registered, &mine, my_m);
+        crate::store::sessions::upsert_registered(&pool, &own, my_m, me)
+            .await
+            .expect("register")
+            .expect("written");
+        assert_eq!(parent_id(&pool, &own_registered).await, Some(mine.clone()));
+
+        let all = [planted, mine, claimed, own_claim, registered, own_registered];
+        cleanup(&pool, me, my_m, &all).await;
+        cleanup(&pool, victim, victim_m, &[their_next, theirs]).await;
     }
 }
 
