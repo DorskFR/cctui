@@ -1193,7 +1193,16 @@ entries and a structured entry's `summary`.
 The first declared outcome of a dispatch is the one delivered; later
 declarations still update the session row. A worker lost before declaring one
 still gets the failure body `{ task_id, status: "failed", error }` from the
-death detector. In the UI, only a session whose newest outcome is `result`
+death detector.
+
+A dispatch with a `reply_url` and no `notify_url` arms the death detector on
+`reply_url`: a worker lost before its exit trap (OOM kill, eviction, a pod that
+never started) still resumes the caller with the failure body. That target
+never receives a declared outcome, which stays with the worker's own
+`REPLY_URL` callback, and a 4xx from it (other than 408 and 429) ends the
+delivery, since the worker may already have consumed it. Like `notify_url`, it
+must pass the outbound URL guard (`https`, public address); a `reply_url` that
+fails the guard leaves the dispatch with the worker's trap only. In the UI, only a session whose newest outcome is `result`
 sits in Completed, and the headline shows on its row and in its drawer.
 
 ## Session timer (`CctuiTimer`)

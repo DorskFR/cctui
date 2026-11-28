@@ -223,34 +223,52 @@ impl DispatchContext for AppState {
     }
 }
 
-/// Register a server-emitted completion webhook when the caller supplied
-/// `notify_url`. The server fires it once the dispatched session reaches a
-/// terminal state — covering crash cases the worker's `REPLY_URL` exit trap can
-/// miss. Scoped to a real owning user (admin-token dispatches carry no owner,
-/// so they keep the `REPLY_URL` trap only). Best-effort: a registration failure
-/// never blocks the dispatch. The `task_id` echoed back is the dispatch
-/// payload's `task_id` if present, else the session id.
+/// Register a server-emitted completion webhook on `notify_url`, or failing
+/// that on `reply_url` for death verdicts only. The server fires it once the
+/// dispatched session dies without reaching the worker's `REPLY_URL` exit trap.
+/// Scoped to a real owning user (admin-token dispatches carry no owner, so they
+/// keep the `REPLY_URL` trap only). Best-effort: a registration failure never
+/// blocks the dispatch. The `task_id` echoed back is the dispatch payload's
+/// `task_id` if present, else the session id.
 async fn register_completion_webhook(
     state: &AppState,
     ctx: &AuthContext,
     req: &DispatchRequest,
     session_id: &str,
 ) {
-    if let (Some(uid), Some(notify_url)) =
-        (ctx.owner_filter(), req.notify_url.as_deref().filter(|u| !u.trim().is_empty()))
-    {
-        let task_id =
-            req.payload.get("task_id").and_then(serde_json::Value::as_str).unwrap_or(session_id);
-        cctui_server_dispatch::webhook::register(
-            state,
-            session_id,
-            uid,
-            notify_url,
-            req.notify_secret.as_deref().filter(|s| !s.trim().is_empty()),
-            task_id,
-        )
-        .await;
+    let (Some(uid), Some(target)) = (ctx.owner_filter(), completion_target(req)) else {
+        return;
+    };
+    let task_id =
+        req.payload.get("task_id").and_then(serde_json::Value::as_str).unwrap_or(session_id);
+    cctui_server_dispatch::webhook::register(
+        state,
+        session_id,
+        uid,
+        target.url,
+        target.secret,
+        task_id,
+        target.death_only,
+    )
+    .await;
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct CompletionTarget<'a> {
+    url: &'a str,
+    secret: Option<&'a str>,
+    death_only: bool,
+}
+
+fn completion_target(req: &DispatchRequest) -> Option<CompletionTarget<'_>> {
+    fn set(v: Option<&String>) -> Option<&str> {
+        v.map(String::as_str).filter(|s| !s.trim().is_empty())
     }
+    if let Some(url) = set(req.notify_url.as_ref()) {
+        let secret = set(req.notify_secret.as_ref());
+        return Some(CompletionTarget { url, secret, death_only: false });
+    }
+    set(req.reply_url.as_ref()).map(|url| CompletionTarget { url, secret: None, death_only: true })
 }
 
 impl cctui_server_dispatch::hooks::DispatchNotify for AppState {
@@ -327,5 +345,51 @@ pub fn dispatch_context_scope(
             }),
         },
         dispatched: true,
+    }
+}
+
+#[cfg(test)]
+mod completion_target_tests {
+    use super::{CompletionTarget, completion_target};
+    use cctui_proto::api::DispatchRequest;
+
+    fn request(reply: Option<&str>, notify: Option<&str>) -> DispatchRequest {
+        serde_json::from_value(serde_json::json!({
+            "dispatcher": "k8s",
+            "reply_url": reply,
+            "notify_url": notify,
+            "notify_secret": "s3",
+            "payload": {},
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn a_dispatch_with_only_a_reply_url_arms_a_death_only_webhook_on_it() {
+        assert_eq!(
+            completion_target(&request(Some("https://n8n.example.test/resume/1"), None)),
+            Some(CompletionTarget {
+                url: "https://n8n.example.test/resume/1",
+                secret: None,
+                death_only: true,
+            })
+        );
+    }
+
+    #[test]
+    fn notify_url_wins_over_reply_url() {
+        assert_eq!(
+            completion_target(&request(
+                Some("https://r.example.test"),
+                Some("https://n.example.test")
+            )),
+            Some(CompletionTarget {
+                url: "https://n.example.test",
+                secret: Some("s3"),
+                death_only: false
+            })
+        );
+        assert_eq!(completion_target(&request(None, None)), None);
+        assert_eq!(completion_target(&request(Some(" "), Some(""))), None);
     }
 }
