@@ -37,9 +37,16 @@ const INSERT_KEY_SQL: &str = "INSERT INTO instance_settings (key, value, updated
 const ACTION_PATH: &str = "/api/v1/notifications/actions/";
 const CONFIRM_PATH: &str = "/n/";
 
+fn no_allowlist() -> Arc<Vec<AllowedHost>> {
+    static EMPTY: OnceLock<Arc<Vec<AllowedHost>>> = OnceLock::new();
+    EMPTY.get_or_init(Arc::default).clone()
+}
+
+/// Follows no redirect and re-checks every resolution, so the connection
+/// cannot reach an address [`validate_outbound_url`] would refuse.
 fn client() -> &'static reqwest::Client {
     static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
-    CLIENT.get_or_init(cctui_server_kernel::client::build_http_client)
+    CLIENT.get_or_init(|| cctui_server_kernel::outbound::guarded_client(no_allowlist))
 }
 
 fn decode(field: &str, raw: &str) -> Result<Vec<u8>, String> {
