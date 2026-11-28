@@ -81,29 +81,32 @@ pub async fn followups_of(pool: &PgPool, id: &str) -> Result<(Option<String>, u3
     Ok(row.map_or((None, 0), |(next, count)| (next, u32::try_from(count).unwrap_or(0))))
 }
 
-/// SQL: `$1` and its ancestors through follow-up links, never leaving `$1`'s
-/// owner; `seen` breaks link cycles, the longest `seen` is the root.
+/// SQL: `$1` and its ancestors through follow-up links, each step also meeting
+/// `$step` (on `p`, the parent, and `up`); `seen` breaks link cycles, the
+/// longest `seen` is the root.
 macro_rules! up_cte_sql {
-    () => {
+    ($step:literal) => {
+        concat!(
         "up AS ( \
             SELECT id, user_id, metadata->>'relation' AS relation, parent_id, ARRAY[id] AS seen \
               FROM sessions WHERE id = $1 \
             UNION ALL \
             SELECT p.id, p.user_id, p.metadata->>'relation', p.parent_id, up.seen || p.id \
               FROM up JOIN sessions p ON p.id = up.parent_id \
-             WHERE up.relation = 'followup' AND NOT p.id = ANY(up.seen) \
-               AND p.user_id IS NOT DISTINCT FROM up.user_id \
-               AND cardinality(up.seen) < 500 \
-        )"
+             WHERE up.relation = 'followup' AND NOT p.id = ANY(up.seen) ",
+        $step,
+        " AND cardinality(up.seen) < 500 \
+        )")
     };
 }
 
 /// Up to the thread's root through follow-up links, then every follow-up
-/// below it: depth first, siblings oldest first. Only `$1`'s owner's sessions.
+/// below it: depth first, siblings oldest first. Only `$1`'s owner's sessions,
+/// since the route shows each entry's name and directory unchecked.
 /// No status filter: archived sessions stay in the thread.
 const THREAD_SQL: &str = concat!(
     "WITH RECURSIVE ",
-    up_cte_sql!(),
+    up_cte_sql!("AND p.user_id IS NOT DISTINCT FROM up.user_id"),
     ", root AS ( \
         SELECT id, user_id FROM up ORDER BY cardinality(seen) DESC LIMIT 1 \
     ), tree AS ( \
@@ -127,10 +130,13 @@ const THREAD_SQL: &str = concat!(
      ORDER BY t.path"
 );
 
-/// The follow-up line that leads to `$1`, root first. Sibling branches and
-/// descendants are not on it.
-const CHAIN_SQL: &str =
-    concat!("WITH RECURSIVE ", up_cte_sql!(), " SELECT id FROM up ORDER BY cardinality(seen) DESC");
+/// The follow-up line that leads to `$1`, root first, across owners: its
+/// readers check each session. Sibling branches and descendants are not on it.
+const CHAIN_SQL: &str = concat!(
+    "WITH RECURSIVE ",
+    up_cte_sql!(""),
+    " SELECT id FROM up ORDER BY cardinality(seen) DESC"
+);
 
 /// `id, session_name, working_dir, registered_at, parent_id` of a thread entry.
 type ThreadRow = (String, Option<String>, String, DateTime<Utc>, Option<String>);
@@ -587,10 +593,8 @@ mod tests {
         let planted = seed(&pool, me, my_m, "active").await;
         link(&pool, &planted, &theirs, "followup", 40).await;
         assert_eq!(ids(&thread_of(&pool, &planted).await.expect("thread")), [planted.as_str()]);
-        assert_eq!(
-            super::chain_of(&pool, &planted).await.expect("chain"),
-            std::slice::from_ref(&planted)
-        );
+        let chain = super::chain_of(&pool, &planted).await.expect("chain");
+        assert_eq!(chain, [theirs.clone(), planted.clone()], "readers check each link");
         let their_thread = [theirs.as_str(), their_next.as_str()];
         assert_eq!(ids(&thread_of(&pool, &theirs).await.expect("thread")), their_thread);
 
