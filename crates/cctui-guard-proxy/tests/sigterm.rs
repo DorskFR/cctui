@@ -98,10 +98,10 @@ fn open_tunnel(proxy: &str, target: &str) -> TcpStream {
 }
 
 fn roundtrip(conn: &mut TcpStream) {
-    conn.write_all(b"ping").unwrap();
-    let mut buf = [0u8; 4];
+    conn.write_all(b"ping\n").unwrap();
+    let mut buf = [0u8; 5];
     conn.read_exact(&mut buf).unwrap();
-    assert_eq!(&buf, b"ping");
+    assert_eq!(&buf, b"ping\n");
 }
 
 #[test]

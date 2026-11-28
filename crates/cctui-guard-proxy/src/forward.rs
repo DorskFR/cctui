@@ -246,8 +246,13 @@ async fn handle_connect(
     };
 
     conn.write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n").await?;
-    let Some(first) = first_flight(&mut conn, &mut upstream).await? else {
-        return Ok(());
+    let first = match first_flight(&mut conn, &mut upstream, FLIGHT_WAIT).await? {
+        FirstFlight::Bytes(first) => first,
+        FirstFlight::Stalled => {
+            refuse_tunnel(policy, &host_port, "first request line never completed");
+            return Ok(());
+        }
+        FirstFlight::ServerClosed => return Ok(()),
     };
     match check_flight(&first, &host) {
         Flight::Splice => {
@@ -280,41 +285,57 @@ enum Flight {
 
 const MAX_FLIGHT: usize = 5 + 16 * 1024 + 256;
 
-/// Reads the client's first bytes through the tunnel while still relaying
-/// anything the server sends first. `None` when the server closed first.
+enum FirstFlight {
+    Bytes(Vec<u8>),
+    Stalled,
+    ServerClosed,
+}
+
+const FLIGHT_WAIT: Duration = Duration::from_secs(10);
+
+/// Reads the client's first bytes through the tunnel while relaying anything
+/// the server sends first. A silent client is waited on indefinitely, but once
+/// it has started, a flight left incomplete for `wait` is `Stalled`: splicing
+/// it would let the rest of the request through unchecked.
 async fn first_flight(
     conn: &mut TcpStream,
     upstream: &mut TcpStream,
-) -> anyhow::Result<Option<Vec<u8>>> {
+    wait: Duration,
+) -> anyhow::Result<FirstFlight> {
     let (mut cr, mut cw) = conn.split();
     let (mut ur, _) = upstream.split();
     let peek = async {
         let mut buf = Vec::with_capacity(2048);
         let mut chunk = [0u8; 4096];
-        let fill = async {
-            while !flight_complete(&buf) {
-                let n = cr.read(&mut chunk).await?;
-                if n == 0 {
-                    break;
-                }
-                buf.extend_from_slice(&chunk[..n]);
+        let mut deadline = None;
+        while !flight_complete(&buf) {
+            let read = cr.read(&mut chunk);
+            let n = match deadline {
+                None => read.await?,
+                Some(at) => match tokio::time::timeout_at(at, read).await {
+                    Ok(r) => r?,
+                    Err(_) => return Ok(FirstFlight::Stalled),
+                },
+            };
+            if n == 0 {
+                break;
             }
-            std::io::Result::Ok(())
-        };
-        if let Ok(r) = tokio::time::timeout(Duration::from_secs(10), fill).await {
-            r?;
+            buf.extend_from_slice(&chunk[..n]);
+            if deadline.is_none() && !skip_blank_lines(&buf).is_empty() {
+                deadline = Some(tokio::time::Instant::now() + wait);
+            }
         }
-        std::io::Result::Ok(buf)
+        std::io::Result::Ok(FirstFlight::Bytes(buf))
     };
     tokio::pin!(peek);
     let mut server = [0u8; 4096];
     loop {
         tokio::select! {
-            r = &mut peek => return Ok(Some(r?)),
+            r = &mut peek => return Ok(r?),
             r = ur.read(&mut server) => {
                 let n = r?;
                 if n == 0 {
-                    return Ok(None);
+                    return Ok(FirstFlight::ServerClosed);
                 }
                 cw.write_all(&server[..n]).await?;
             }
@@ -335,9 +356,14 @@ fn flight_complete(buf: &[u8]) -> bool {
     match s.first() {
         None => false,
         Some(0x16) => s.len() >= 5 && s.len() >= 5 + usize::from(u16::from_be_bytes([s[3], s[4]])),
-        Some(&b) if http1::is_tchar(b) => s.contains(&b'\n'),
+        Some(&b) if http1::is_tchar(b) => s.iter().any(|&b| b == b'\n' || is_control(b)),
         Some(_) => true,
     }
+}
+
+/// A byte no HTTP request line can hold.
+const fn is_control(b: u8) -> bool {
+    (b < 0x20 && b != b'\t' && b != b'\r') || b == 0x7f
 }
 
 /// A TLS `ClientHello` must carry the CONNECT host as SNI (an IP-literal CONNECT
@@ -1012,9 +1038,47 @@ mod tests {
         assert_eq!(check_flight(b"SSH-2.0-OpenSSH_9.6\r\n", "a.example"), Flight::Splice);
         assert_eq!(check_flight("X / ht\u{e9}p\r\n".as_bytes(), "a.example"), Flight::Splice);
         assert!(!flight_complete(b"GE"));
+        assert!(!flight_complete(b"ping"));
+        assert!(flight_complete(b"ping\0"), "a control byte rules out HTTP");
+        assert!(flight_complete(b"AMQP\x00\x00\x09\x01"));
         assert!(!flight_complete(b"\r\n"));
         assert!(flight_complete(b"GET / HTTP/1.1\r\n"));
         assert!(!flight_complete(&client_hello(Some("a"))[..20]));
         assert!(flight_complete(&client_hello(Some("a"))));
+    }
+
+    async fn socket_pair() -> (TcpStream, TcpStream) {
+        let ln = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let near = TcpStream::connect(ln.local_addr().unwrap()).await.unwrap();
+        let (far, _) = ln.accept().await.unwrap();
+        (near, far)
+    }
+
+    #[tokio::test]
+    async fn a_stalled_first_flight_is_refused_not_spliced() {
+        let (mut client, mut conn) = socket_pair().await;
+        let (mut upstream, _server) = socket_pair().await;
+        client.write_all(b"GE").await.unwrap();
+        let got = first_flight(&mut conn, &mut upstream, Duration::from_millis(50)).await.unwrap();
+        assert!(matches!(got, FirstFlight::Stalled));
+    }
+
+    #[tokio::test]
+    async fn a_silent_client_is_waited_on_while_the_server_speaks_first() {
+        let (mut client, mut conn) = socket_pair().await;
+        let (mut upstream, mut server) = socket_pair().await;
+        server.write_all(b"220 ready\r\n").await.unwrap();
+        let wait = Duration::from_millis(50);
+        let peek = tokio::spawn(async move {
+            let got = first_flight(&mut conn, &mut upstream, wait).await.unwrap();
+            matches!(got, FirstFlight::Bytes(b) if b == b"EHLO x\r\n")
+        });
+        let mut greeting = [0u8; 11];
+        client.read_exact(&mut greeting).await.unwrap();
+        assert_eq!(&greeting, b"220 ready\r\n");
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert!(!peek.is_finished(), "no deadline before the client's first byte");
+        client.write_all(b"EHLO x\r\n").await.unwrap();
+        assert!(peek.await.unwrap());
     }
 }

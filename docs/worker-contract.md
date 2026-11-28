@@ -521,7 +521,10 @@ destination is reachable without binding, and the proxy logs a warning at start.
 Every request is bound to the host the policy allowed. A `CONNECT` tunnel's
 first client bytes must be a TLS `ClientHello` whose SNI is the `CONNECT` host
 (an IP-literal `CONNECT` may send none), a single plain HTTP request whose
-`Host` is that host, or another protocol (SSH), which is spliced as is. Plain
+`Host` is that host, or another protocol (SSH), which is spliced as is. A
+first line that starts with token characters is read up to its newline (or a
+control byte): the tunnel waits as long as the client is silent, server bytes
+still flow, but a line left incomplete for 10 s closes the tunnel. Plain
 HTTP, in forward and transparent mode, is relayed one request per upstream
 connection: the head is rewritten to `Connection: close`, `Host` must match the
 request target, a request with ambiguous framing (both `Content-Length` and
