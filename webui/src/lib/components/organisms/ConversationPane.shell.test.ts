@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import drawer from './ConversationDrawer.svelte?raw';
 import pane from './ConversationPane.svelte?raw';
-import composer from './conversation/ConversationComposer.svelte?raw';
 import header from './conversation/DrawerHeader.svelte?raw';
 import forkbar from './conversation/ForkSelectBar.svelte?raw';
 import overlays from './conversation/PaneOverlays.svelte?raw';
@@ -57,14 +56,17 @@ describe('ConversationPane chrome', () => {
 		expect(model).toContain('notify.holdOpen(this.id)');
 	});
 
-	it('remounts the composer per session so a switch never writes one draft over another', () => {
+	it('remounts the composer when the view leaves the line, and carries the draft only along it', () => {
 		const markup = pane.slice(pane.indexOf('</script>'));
 		const at = markup.indexOf('<ConversationComposer');
 		const open = markup.lastIndexOf('{#key', at);
 		expect(open).toBeGreaterThan(-1);
-		expect(markup.slice(open, at).trim()).toBe('{#key session.id}');
-		expect(markup.indexOf('{/key}', at)).toBeGreaterThan(at);
-		expect(composer).toContain('let input = $state(drafts.get(composerKey(session.id)));');
+		expect(markup.slice(open, at).trim()).toBe('{#key p.viewKey}');
+		const end = markup.indexOf('{/key}', at);
+		expect(end).toBeGreaterThan(at);
+		expect(markup.slice(at, end)).toContain(
+			'carriesDraft={(from, to) => p.line.members.has(from) && p.line.members.has(to)}'
+		);
 	});
 
 	it('adds no :global override', () => {

@@ -244,7 +244,7 @@
 					landed={voiceTranscriptLanded(lines, voice.live.transcript)}
 				/>
 			{/if}
-			{#key session.id}
+			{#key p.viewKey}
 				<ConversationComposer
 					bind:this={p.composer}
 					{session}
@@ -263,6 +263,7 @@
 					onResume={canFork ? sa.resume : undefined}
 					onfollowupstarted={p.thread.started}
 					compact={tile}
+					carriesDraft={(from, to) => p.line.members.has(from) && p.line.members.has(to)}
 				/>
 			{/key}
 		</Dropzone>
