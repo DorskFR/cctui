@@ -15,9 +15,14 @@ rename or repurpose one.
 `/metrics` sits at the root, outside `/api/v1`, because that is where a scrape
 config looks for it — so it authenticates itself:
 
-- **Default:** the same Bearer token scheme as `/api/v1` (any user or admin
-  token; the browser auth cookie also works). No token ⇒ `401`.
-- **`CCTUI_METRICS_PUBLIC=1`:** no authentication, for the usual
+- **Default:** the same Bearer token scheme as `/api/v1` (the browser auth
+  cookie also works). No token ⇒ `401`.
+  - An **admin** token sees the whole instance.
+  - Any other **user** token sees only that user's own accounts, machines and
+    sessions: the account series list only accounts the user owns, and the
+    session and machine gauges count only theirs.
+  - **Machine, dispatcher, worker and plugin keys** get `403`.
+- **`CCTUI_METRICS_PUBLIC=1`:** no authentication and the instance-wide view, for the usual
   scrape-inside-the-cluster case where the endpoint is not reachable from
   outside. Opt-in only — the output names accounts and their consumption, so it
   must never become public by accident.
