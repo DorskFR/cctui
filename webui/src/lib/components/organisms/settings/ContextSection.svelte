@@ -161,8 +161,8 @@
 	async function remove(id: string) {
 		if (await run(() => actions.remove(id)) && editing === id) cancel();
 	}
-	async function decide(id: string, approve: boolean) {
-		const ok = await run(() => (approve ? actions.approvePending(id) : actions.rejectPending(id)));
+	async function decide(item: ContextItem, approve: boolean) {
+		const ok = await run(() => (approve ? actions.approvePending(item) : actions.rejectPending(item)));
 		if (ok) reviewId = null;
 	}
 
@@ -457,10 +457,10 @@
 								class="d-{l.op}">{l.op === 'add' ? '+ ' : l.op === 'del' ? '- ' : '  '}{l.text}
 </span>{/each}</pre>
 					<div class="acts">
-						<Button variant="primary" disabled={busy} onclick={() => decide(reviewing.id, true)}
+						<Button variant="primary" disabled={busy} onclick={() => decide(reviewing, true)}
 							>{m.settings_context_approve()}</Button
 						>
-						<Button variant="danger" disabled={busy} onclick={() => decide(reviewing.id, false)}
+						<Button variant="danger" disabled={busy} onclick={() => decide(reviewing, false)}
 							>{m.settings_context_reject()}</Button
 						>
 						<Button disabled={busy} onclick={() => (reviewId = null)}>{m.common_cancel()}</Button>

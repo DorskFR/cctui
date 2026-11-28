@@ -1,6 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import type { ContextItem } from '@bindings/ContextItem';
-import { asAttached, asItems, asResolved, asSessionContext, newerVersion, resolveParams } from './context';
+import {
+	asAttached,
+	asItems,
+	asResolved,
+	asSessionContext,
+	newerVersion,
+	renderedAs,
+	resolveParams
+} from './context';
 
 describe('resolveParams', () => {
 	it('drops empty coordinates and joins sorted label ids', () => {
@@ -50,5 +58,12 @@ describe('newerVersion', () => {
 		expect(newerVersion(delivered, undefined)).toBeNull();
 		expect(newerVersion(delivered, [])).toBeNull();
 		expect(newerVersion({ ...delivered, id: 'gone' }, at(9))).toBeNull();
+	});
+});
+
+describe('renderedAs', () => {
+	it('sends the version and timestamp the card showed so a newer proposal is refused', () => {
+		const item = { id: 'i1', version: 3, updated_at: '2026-11-28T01:02:03.456789Z' } as ContextItem;
+		expect(renderedAs(item)).toEqual({ version: 3, updated_at: '2026-11-28T01:02:03.456789Z' });
 	});
 });

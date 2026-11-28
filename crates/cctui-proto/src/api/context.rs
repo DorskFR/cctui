@@ -156,6 +156,19 @@ pub struct UpdateContextItemRequest {
     pub spec: Option<ContextItemSpec>,
 }
 
+/// `POST /context/{id}/pending/{approve,reject}` body: the item as the client
+/// rendered it. When given, the proposal is settled only if it is unchanged.
+#[derive(Debug, Default, serde::Deserialize, serde::Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export))]
+pub struct SettlePendingRequest {
+    #[serde(default)]
+    #[cfg_attr(test, ts(optional))]
+    pub version: Option<i32>,
+    #[serde(default)]
+    #[cfg_attr(test, ts(type = "string", optional))]
+    pub updated_at: Option<DateTime<Utc>>,
+}
+
 /// `GET /context/resolve`: what a launch into these coordinates gets.
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 #[cfg_attr(test, derive(ts_rs::TS), ts(export))]
