@@ -15,7 +15,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -23,7 +23,7 @@ use cctui_proto::backoff::Backoff;
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
 use tokio::net::UnixStream;
-use tokio::sync::{broadcast, mpsc, oneshot};
+use tokio::sync::{broadcast, mpsc, oneshot, watch};
 use tokio_tungstenite::tungstenite::Message;
 use tokio_util::sync::CancellationToken;
 
@@ -37,6 +37,8 @@ fn rings() -> &'static Arc<super::app_server::DiagnoseRings> {
 }
 
 const RPC_TIMEOUT: Duration = Duration::from_secs(30);
+/// How long a request waits for a connection that is not up yet.
+const CONNECT_GRACE: Duration = Duration::from_secs(2);
 const BACKOFF_MIN: Duration = Duration::from_millis(250);
 const BACKOFF_MAX: Duration = Duration::from_secs(30);
 
@@ -127,7 +129,7 @@ static NEXT_ROUTE: AtomicU64 = AtomicU64::new(1);
 pub struct DaemonHandle {
     ops: mpsc::Sender<Op>,
     events: broadcast::Sender<DaemonEvent>,
-    connected: Arc<AtomicBool>,
+    connected: watch::Receiver<bool>,
 }
 
 /// One session's JSON-RPC pipe over the shared connection. Frames are what the
@@ -154,20 +156,44 @@ impl ThreadSink {
 
 impl Drop for ThreadSink {
     fn drop(&mut self) {
-        let _ = self.ops.try_send(Op::Close { route: self.route });
+        let close = Op::Close { route: self.route };
+        if let Err(mpsc::error::TrySendError::Full(close)) = self.ops.try_send(close)
+            && let Ok(rt) = tokio::runtime::Handle::try_current()
+        {
+            let ops = self.ops.clone();
+            rt.spawn(async move {
+                let _ = ops.send(close).await;
+            });
+        }
     }
 }
 
 impl DaemonHandle {
     /// Fails rather than blocking when the connection is down, so callers can
-    /// fall back to their own transport.
+    /// fall back to their own transport: a connection not up within
+    /// [`CONNECT_GRACE`] or an answer not back within [`RPC_TIMEOUT`] is an error.
     pub async fn request(&self, method: &str, params: Value) -> Result<Value> {
-        let (tx, rx) = oneshot::channel();
-        self.ops
-            .send(Op::Request { method: method.to_owned(), params, reply: tx })
+        self.request_within(method, params, RPC_TIMEOUT).await
+    }
+
+    async fn request_within(&self, method: &str, params: Value, limit: Duration) -> Result<Value> {
+        let mut connected = self.connected.clone();
+        match tokio::time::timeout(CONNECT_GRACE, connected.wait_for(|up| *up)).await {
+            Ok(Ok(_)) => {}
+            Ok(Err(_)) => anyhow::bail!("codex daemon connection closed"),
+            Err(_) => anyhow::bail!("codex daemon not connected"),
+        }
+        let call = async {
+            let (tx, rx) = oneshot::channel();
+            self.ops
+                .send(Op::Request { method: method.to_owned(), params, reply: tx })
+                .await
+                .map_err(|_| anyhow::anyhow!("codex daemon connection closed"))?;
+            rx.await.map_err(|_| anyhow::anyhow!("codex daemon dropped request `{method}`"))?
+        };
+        tokio::time::timeout(limit, call)
             .await
-            .map_err(|_| anyhow::anyhow!("codex daemon connection closed"))?;
-        rx.await.map_err(|_| anyhow::anyhow!("codex daemon dropped request `{method}`"))?
+            .map_err(|_| anyhow::anyhow!("codex daemon request `{method}` timed out"))?
     }
 
     #[must_use]
@@ -177,7 +203,7 @@ impl DaemonHandle {
 
     #[must_use]
     pub fn is_connected(&self) -> bool {
-        self.connected.load(Ordering::Relaxed)
+        *self.connected.borrow()
     }
 
     /// `config` and `cwd` are what a rejoin re-sends in its `thread/resume`.
@@ -193,15 +219,14 @@ impl DaemonHandle {
 }
 
 /// Spawn the supervisor and hand back a handle. The handle is usable
-/// immediately: requests issued before the first connect fail, and callers
-/// fall back.
+/// immediately: a request issued before the first connect waits out
+/// [`CONNECT_GRACE`], then fails so callers fall back.
 #[must_use]
 pub fn connect(endpoint: DaemonEndpoint, shutdown: CancellationToken) -> DaemonHandle {
     let (ops_tx, ops_rx) = mpsc::channel(256);
     let (events_tx, _) = broadcast::channel(NOTIFY_BUFFER);
-    let connected = Arc::new(AtomicBool::new(false));
-    let handle =
-        DaemonHandle { ops: ops_tx, events: events_tx.clone(), connected: connected.clone() };
+    let (connected, connected_rx) = watch::channel(false);
+    let handle = DaemonHandle { ops: ops_tx, events: events_tx.clone(), connected: connected_rx };
     tokio::spawn(supervise(endpoint, ops_rx, events_tx, connected, shutdown));
     handle
 }
@@ -210,7 +235,7 @@ async fn supervise(
     endpoint: DaemonEndpoint,
     mut ops: mpsc::Receiver<Op>,
     events: broadcast::Sender<DaemonEvent>,
-    connected: Arc<AtomicBool>,
+    connected: watch::Sender<bool>,
     shutdown: CancellationToken,
 ) {
     let mut backoff = Backoff::new(BACKOFF_MIN, BACKOFF_MAX);
@@ -225,7 +250,7 @@ async fn supervise(
                 routes.init = Some(init);
                 generation += 1;
                 backoff.reset();
-                connected.store(true, Ordering::Relaxed);
+                connected.send_replace(true);
                 let _ = events.send(DaemonEvent::Connected { generation });
                 tracing::info!(
                     socket = %endpoint.socket.display(),
@@ -233,7 +258,7 @@ async fn supervise(
                     "codex: shared app-server connection established"
                 );
                 pump(stream, &mut ops, &mut routes, &events, &shutdown).await;
-                connected.store(false, Ordering::Relaxed);
+                connected.send_replace(false);
                 let _ = events.send(DaemonEvent::Disconnected { generation });
                 if shutdown.is_cancelled() {
                     return;
@@ -798,6 +823,57 @@ mod tests {
     fn daemon_start_without_socket_path_is_an_error() {
         assert!(parse_daemon_start("{\"status\":\"started\"}").is_err());
         assert!(parse_daemon_start("not json").is_err());
+    }
+
+    #[tokio::test]
+    async fn a_request_fails_fast_while_the_daemon_is_unreachable() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let shutdown = CancellationToken::new();
+        let handle =
+            connect(DaemonEndpoint { socket: dir.path().join("absent.sock") }, shutdown.clone());
+        let started = std::time::Instant::now();
+        let err = handle.request("thread/list", json!({})).await.unwrap_err();
+        assert!(err.to_string().contains("not connected"), "{err}");
+        assert!(started.elapsed() < CONNECT_GRACE + Duration::from_secs(2));
+        shutdown.cancel();
+    }
+
+    #[tokio::test]
+    async fn an_unanswered_request_on_a_live_connection_times_out() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let sock = dir.path().join("ctl.sock");
+        let listener = tokio::net::UnixListener::bind(&sock).expect("bind");
+        let _server = tokio::spawn(async move {
+            let Ok((stream, _)) = listener.accept().await else { return };
+            let Ok(mut ws) = tokio_tungstenite::accept_async(stream).await else { return };
+            while let Some(Ok(frame)) = ws.next().await {
+                let Message::Text(text) = frame else { continue };
+                let v: Value = serde_json::from_str(&text).unwrap_or_default();
+                if v["method"] == "initialize" {
+                    let reply = json!({"jsonrpc": "2.0", "id": v["id"], "result": {}});
+                    let _ = ws.send(Message::Text(reply.to_string().into())).await;
+                }
+            }
+        });
+        let shutdown = CancellationToken::new();
+        let handle = connect(DaemonEndpoint { socket: sock }, shutdown.clone());
+        let err = handle
+            .request_within("thread/list", json!({}), Duration::from_millis(300))
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("timed out"), "{err}");
+        shutdown.cancel();
+    }
+
+    #[tokio::test]
+    async fn dropping_a_thread_sink_closes_its_route_even_when_the_queue_is_full() {
+        let (ops, mut rx) = mpsc::channel(1);
+        ops.try_send(Op::Close { route: 1 }).unwrap();
+        drop(ThreadSink { route: 9, ops: ops.clone() });
+        assert!(matches!(rx.recv().await, Some(Op::Close { route: 1 })));
+        let next =
+            tokio::time::timeout(Duration::from_secs(2), rx.recv()).await.expect("close sent");
+        assert!(matches!(next, Some(Op::Close { route: 9 })));
     }
 
     #[test]
