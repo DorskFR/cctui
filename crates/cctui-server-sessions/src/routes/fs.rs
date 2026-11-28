@@ -238,8 +238,13 @@ async fn serve_read<S: SessionsContext>(
         Err(e) => return Err(AppError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
     };
 
-    if let Some(hash) = file.blob_hash.as_deref() {
-        record_blob_link(state.pool(), sid, hash).await?;
+    if let Some(hash) = file.blob_hash.as_deref()
+        && !record_blob_link(state.pool(), sid, hash).await?
+    {
+        return Err(AppError::new(
+            StatusCode::BAD_GATEWAY,
+            "daemon named a blob it did not upload",
+        ));
     }
     file_response(&file, Some(sid), headers)
 }
@@ -394,20 +399,28 @@ async fn path_is_linked(
     Ok(hit.is_some())
 }
 
+/// Links only the hashes the session's owner uploaded or attached to this
+/// session: a daemon naming a hash proves nothing about holding its bytes.
+const LINK_BLOBS_SQL: &str = "INSERT INTO session_blob_links (session_id, hash) \
+     SELECT $1, h FROM UNNEST($2::text[]) AS h \
+     WHERE EXISTS (SELECT 1 FROM blob_uploaders u JOIN sessions s ON s.user_id = u.user_id \
+                   WHERE s.id = $1 AND u.hash = h) \
+        OR EXISTS (SELECT 1 FROM session_attachments a WHERE a.session_id = $1 AND a.hash = h) \
+     ON CONFLICT DO NOTHING";
+
 async fn record_blob_link(
     pool: &sqlx::PgPool,
     session_id: &str,
     hash: &str,
-) -> Result<(), sqlx::Error> {
-    sqlx::query(
-        "INSERT INTO session_blob_links (session_id, hash) VALUES ($1, $2) \
-         ON CONFLICT DO NOTHING",
-    )
-    .bind(session_id)
-    .bind(hash)
-    .execute(pool)
-    .await?;
-    Ok(())
+) -> Result<bool, sqlx::Error> {
+    sqlx::query(LINK_BLOBS_SQL).bind(session_id).bind(vec![hash]).execute(pool).await?;
+    let linked: Option<i32> =
+        sqlx::query_scalar("SELECT 1 FROM session_blob_links WHERE session_id = $1 AND hash = $2")
+            .bind(session_id)
+            .bind(hash)
+            .fetch_optional(pool)
+            .await?;
+    Ok(linked.is_some())
 }
 
 /// Grant every local path and blob reference an event mentions, so the paths
@@ -428,14 +441,7 @@ pub async fn record_links(
         .await?;
     }
     if !blobs.is_empty() {
-        sqlx::query(
-            "INSERT INTO session_blob_links (session_id, hash) \
-             SELECT $1, * FROM UNNEST($2::text[]) ON CONFLICT DO NOTHING",
-        )
-        .bind(session_id)
-        .bind(blobs)
-        .execute(pool)
-        .await?;
+        sqlx::query(LINK_BLOBS_SQL).bind(session_id).bind(blobs).execute(pool).await?;
     }
     Ok(())
 }
@@ -776,6 +782,81 @@ mod tests {
             .unwrap();
         sqlx::query("DELETE FROM users WHERE id = ANY($1)")
             .bind(vec![f.owner.user_id, f.stranger.user_id])
+            .execute(&f.pool)
+            .await
+            .unwrap();
+    }
+
+    async fn seed_blob(pool: &sqlx::PgPool, tag: &str) -> String {
+        let hash = hex::encode(<sha2::Sha256 as sha2::Digest>::digest(format!(
+            "{tag}-{}",
+            Uuid::new_v4()
+        )));
+        sqlx::query(
+            "INSERT INTO daemon_blobs (hash, media_type, byte_len, bytes) \
+             VALUES ($1, 'image/png', 1, 'x')",
+        )
+        .bind(&hash)
+        .execute(pool)
+        .await
+        .unwrap();
+        hash
+    }
+
+    async fn linked_blobs(pool: &sqlx::PgPool, session: &str) -> Vec<String> {
+        sqlx::query_scalar(
+            "SELECT hash FROM session_blob_links WHERE session_id = $1 ORDER BY hash",
+        )
+        .bind(session)
+        .fetch_all(pool)
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_daemon_links_only_blobs_its_user_uploaded_or_attached_to_the_session() {
+        let Some(f) = fixture("blob_link_provenance").await else { return };
+        let own = seed_blob(&f.pool, "own").await;
+        let foreign = seed_blob(&f.pool, "foreign").await;
+        let attached = seed_blob(&f.pool, "attached").await;
+        let unknown = seed_blob(&f.pool, "unknown").await;
+        for (hash, uid) in [(&own, f.owner.user_id), (&foreign, f.stranger.user_id)] {
+            sqlx::query("INSERT INTO blob_uploaders (hash, user_id) VALUES ($1, $2)")
+                .bind(hash)
+                .bind(uid)
+                .execute(&f.pool)
+                .await
+                .unwrap();
+        }
+        sqlx::query(
+            "INSERT INTO session_attachments (session_id, name, hash, size) VALUES ($1, 'a.png', $2, 1)",
+        )
+        .bind(&f.session)
+        .bind(&attached)
+        .execute(&f.pool)
+        .await
+        .unwrap();
+
+        let payload = serde_json::json!([
+            {"blob_id": own}, {"blob_id": foreign}, {"blob_id": attached}, {"blob_id": unknown},
+        ]);
+        record_links(&f.pool, &f.session, &extract_links(&payload)).await.unwrap();
+        let mut expected = vec![own.clone(), attached.clone()];
+        expected.sort();
+        assert_eq!(linked_blobs(&f.pool, &f.session).await, expected);
+
+        assert!(!record_blob_link(&f.pool, &f.session, &foreign).await.unwrap());
+        assert!(!record_blob_link(&f.pool, &f.session, &unknown).await.unwrap());
+        assert!(record_blob_link(&f.pool, &f.session, &own).await.unwrap());
+
+        sqlx::query("DELETE FROM session_attachments WHERE session_id = $1")
+            .bind(&f.session)
+            .execute(&f.pool)
+            .await
+            .unwrap();
+        cleanup(&f).await;
+        sqlx::query("DELETE FROM daemon_blobs WHERE hash = ANY($1)")
+            .bind(vec![own, foreign, attached, unknown])
             .execute(&f.pool)
             .await
             .unwrap();

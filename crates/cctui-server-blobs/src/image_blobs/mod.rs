@@ -295,6 +295,24 @@ async fn stored_inline(
     .await
 }
 
+/// The session's owner sent these bytes, so its daemon events may link them.
+async fn record_owner_uploads(
+    conn: &mut sqlx::PgConnection,
+    session_id: &str,
+    hashes: &[&str],
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO blob_uploaders (hash, user_id) \
+         SELECT h, s.user_id FROM sessions s CROSS JOIN UNNEST($2::text[]) AS h \
+         WHERE s.id = $1 AND s.user_id IS NOT NULL ON CONFLICT DO NOTHING",
+    )
+    .bind(session_id)
+    .bind(hashes)
+    .execute(conn)
+    .await?;
+    Ok(())
+}
+
 /// On any failure, or when the session already holds the event inline, the
 /// payload is left as it was.
 pub async fn externalize(
@@ -312,13 +330,22 @@ pub async fn externalize(
         if stored_inline(&mut conn, session_id, event_type, original).await? {
             return Ok(None);
         }
-        recover_redacted(&mut conn, session_id, &mut rewritten, &mut blobs).await?;
+        let intact = recover_redacted(&mut conn, session_id, &mut rewritten, &mut blobs).await?;
         for b in &blobs {
             if let Some(reason) = b.corrupt {
                 tracing::warn!(session_id, hash = %b.hash, reason, "stored a corrupt image source");
             }
         }
-        store_verified(&mut conn, &blobs).await
+        let verified = store_verified(&mut conn, &blobs).await?;
+        if verified.is_some() {
+            let hashes: Vec<&str> = blobs
+                .iter()
+                .map(|b| b.hash.as_str())
+                .chain(intact.iter().map(String::as_str))
+                .collect();
+            record_owner_uploads(&mut conn, session_id, &hashes).await?;
+        }
+        Ok(verified)
     }
     .await;
     match stored {
