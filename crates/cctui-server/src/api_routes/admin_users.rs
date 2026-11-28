@@ -9,7 +9,7 @@ use cctui_server_kernel::authz::Authn;
 use cctui_server_kernel::authz::Authz::Scope as ScopeAz;
 
 pub(super) fn register(r: Routes) -> Routes {
-    r.add(
+    let r = r.add(
         &[Method::DELETE, Method::PATCH],
         "/admin/users/{id}",
         "Revoke or update a user (admin).",
@@ -94,8 +94,12 @@ pub(super) fn register(r: Routes) -> Routes {
             .delete(cctui_server_dispatch::routes::dispatch_policy::delete_policy::<crate::state::AppState>),
         Authn::Bearer,
         ScopeAz(auth::Scope::Admin),
-    )
-    .add(
+    );
+    machines(r)
+}
+
+fn machines(r: Routes) -> Routes {
+    r.add(
         &[Method::DELETE, Method::PATCH],
         "/admin/machines/{id}",
         "Revoke or rename a machine (admin).",

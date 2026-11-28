@@ -11,8 +11,10 @@ pub enum Ownership {
 
 const MAX_CACHED_OWNERS: usize = 10_000;
 
-/// Which sessions a daemon connection's machine owns: the row's `machine_uuid`
-/// and `user_id` both match. A NULL on either is foreign. A connection opened
+/// Which sessions a daemon connection's machine owns.
+///
+/// The row's `machine_uuid` and `user_id` must both match; a NULL on either is
+/// foreign. A connection opened
 /// with a session-bound worker key owns only that session and the ones it
 /// spawned. Only settled answers are cached; an absent row may be created by
 /// this connection's next upsert.

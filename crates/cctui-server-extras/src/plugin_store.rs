@@ -101,8 +101,9 @@ pub async fn sync_or_warn(pool: &PgPool, registry: &PluginRegistry, blobs: &impl
     }
 }
 
-/// Validate `bytes`, store them, upsert the row and register the plugin. An
-/// existing id is upgraded in place and keeps its instance toggle; its
+/// Validate `bytes`, store them, upsert the row and register the plugin.
+///
+/// An existing id is upgraded in place and keeps its instance toggle; its
 /// previous archive is collected once nothing else references it.
 pub async fn install(
     pool: &PgPool,
