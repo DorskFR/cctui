@@ -383,6 +383,8 @@ pub trait SessionsExtras: Send + Sync + 'static {
         entity_id: Uuid,
         conn: Uuid,
     ) -> impl Future<Output = ()> + Send;
+    /// `presence::PodIdentity::hand_off`.
+    fn hand_off_conn(&self, kind: Kind, entity_id: Uuid, from: Uuid, to: Uuid);
     /// This pod's presence id.
     fn presence_pod(&self) -> &str;
     /// `preview::Registry::detach_session`.

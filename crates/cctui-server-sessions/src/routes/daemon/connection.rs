@@ -316,6 +316,9 @@ impl<S: SessionsContext> Conn<S> {
                     "announced_sessions": sessions.len(),
                 })),
             );
+        } else if let Some(survivor) = state.bus().machine_conn(machine_id) {
+            let kind = cctui_server_kernel::extras_types::Kind::Daemon;
+            state.hand_off_conn(kind, machine_id, self.id, survivor);
         }
         // A shared machine's other connections are siblings, not this daemon's
         // replacement, so its sessions are still owed a mark.

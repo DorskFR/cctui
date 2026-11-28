@@ -459,6 +459,9 @@ impl SessionsExtras for AppState {
     async fn unregister_conn(&self, kind: Kind, entity_id: Uuid, conn: Uuid) {
         cctui_server_extras::presence::unregister_conn(self, kind, entity_id, conn).await;
     }
+    fn hand_off_conn(&self, kind: Kind, entity_id: Uuid, from: Uuid, to: Uuid) {
+        self.presence.hand_off(kind, entity_id, from, to);
+    }
     fn presence_pod(&self) -> &str {
         &self.presence.pod
     }
