@@ -11,7 +11,7 @@ use futures_util::{SinkExt, StreamExt};
 use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::{broadcast, mpsc};
 
-use crate::auth::{AuthContext, Scope};
+use crate::auth::AuthContext;
 use crate::context::SessionsContext;
 use crate::routes::hidden_owners::{self, HiddenSet, SessionPlacement};
 
@@ -75,13 +75,12 @@ pub async fn tui_ws<S: SessionsContext>(
     // would leak into access logs). `bearer_or_cookie` also accepts an
     // `Authorization` header for non-browser clients.
     let token = crate::auth::bearer_or_cookie(&headers).ok_or(StatusCode::UNAUTHORIZED)?;
-    let auth_ctx = state.auth_config().validate(&token).await.ok_or(StatusCode::UNAUTHORIZED)?;
-
-    // The TUI/webui socket is for human identities (a user or admin token), not
-    // a machine key. Gate on the `read` scope and the absence of a machine id.
-    if auth_ctx.machine_id.is_some() || !auth_ctx.has(Scope::Read) {
+    let principal =
+        state.auth_config().validate_principal(&token).await.ok_or(StatusCode::UNAUTHORIZED)?;
+    if !crate::auth::human_reader(&principal.ctx, &principal.kind) {
         return Err(StatusCode::FORBIDDEN);
     }
+    let auth_ctx = principal.ctx;
 
     Ok(ws.on_upgrade(move |socket| handle_tui_ws(socket, state, auth_ctx)))
 }

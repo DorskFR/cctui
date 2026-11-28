@@ -1,7 +1,9 @@
 //! Per-user cctui credentials the host mints on a plugin's behalf.
 //!
-//! Enabling a plugin that declares `hostToken` mints a `read`-scoped user token
-//! labelled `plugin:<id>`, and the token dies with the enablement.
+//! Enabling a plugin that declares `hostToken` mints a `read`-scoped `plugin`
+//! key labelled `plugin:<id>`, and the token dies with the enablement. The auth
+//! layer reads the plugin id back from that label and refuses the key
+//! everywhere but `/api/v1/plugins/<id>/backend/*`.
 //!
 //! The plaintext is needed again on every session spawn, so it is sealed with
 //! the vault key into the owning user's `user_settings.data` under
@@ -19,9 +21,8 @@ use cctui_server_kernel::auth::{
     AuthConfig, NewKey, Scope, mint_secret, register_key, sha256_hex, token_preview, user_token,
 };
 
-/// The only scope a host token ever carries. A plugin's skill reaches cctui
-/// through one route — the backend proxy at `/api/v1/plugins/<id>/backend/*` —
-/// and that route asks for `read`, the narrowest scope the system has.
+/// The only scope a host token ever carries: the backend proxy, the one route
+/// the token reaches, asks for `read`.
 const GRANT: Scope = Scope::Read;
 
 const KIND: &str = "plugin";
@@ -499,6 +500,31 @@ mod db_tests {
             sealed(Some(&again), ID).as_deref(),
             Some(first.as_str()),
             "and carries the same sealed token across the write"
+        );
+
+        forget_user(&pool, user_id).await;
+    }
+
+    #[tokio::test]
+    async fn a_minted_host_token_resolves_as_its_plugin_and_never_as_a_person() {
+        use cctui_server_kernel::auth::{KeyKind, is_human_credential, plugin_backend_route};
+        const ID: &str = "host-token-confined";
+        install_test_vault_key();
+        let Some(pool) = connect("plugin_host_token_confined").await else { return };
+        let (_root, reg) = registry(ID);
+        let auth = AuthConfig::new(vec![], pool.clone());
+        let user_id = seed_user(&pool).await;
+
+        let mut data = enabled(ID, true);
+        reconcile(&pool, &auth, &reg, user_id, None, &mut data).await.unwrap();
+        let token = unsealed(Some(&data), ID).expect("a token was minted");
+        let principal = auth.validate_principal(&token).await.expect("the token resolves");
+        assert_eq!(principal.kind, KeyKind::Plugin(ID.to_owned()));
+        assert!(!is_human_credential(&pool, &principal.ctx).await.unwrap());
+        assert_eq!(
+            plugin_backend_route(&format!("/api/v1/plugins/{ID}/backend/v1/status")),
+            Some(ID),
+            "the one route the gate lets it through"
         );
 
         forget_user(&pool, user_id).await;
