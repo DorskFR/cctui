@@ -691,10 +691,11 @@ pub async fn settle_pending(
             let row: Option<Row> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
                 "DELETE FROM context_items \
                  WHERE id = $1 AND user_id = $2 AND pending IS NOT NULL AND version = 1 \
-                 RETURNING {COLS}"
+                   AND updated_at = $3 RETURNING {COLS}"
             )))
             .bind(item.id)
             .bind(user_id)
+            .bind(item.updated_at)
             .fetch_optional(pool)
             .await?;
             return Ok(row.map(|r| ContextItem { pending: None, ..ContextItem::from(r) }));
@@ -702,10 +703,13 @@ pub async fn settle_pending(
         None => {
             sqlx::query_as(sqlx::AssertSqlSafe(format!(
                 "UPDATE context_items SET pending = NULL, updated_at = now() \
-                 WHERE id = $1 AND user_id = $2 AND pending IS NOT NULL RETURNING {COLS}"
+                 WHERE id = $1 AND user_id = $2 AND pending IS NOT NULL \
+                   AND version = $3 AND updated_at = $4 RETURNING {COLS}"
             )))
             .bind(item.id)
             .bind(user_id)
+            .bind(item.version)
+            .bind(item.updated_at)
             .fetch_optional(pool)
             .await?
         }
@@ -2304,6 +2308,35 @@ mod tests {
         decide(&pool, &me, kept.id, false).await.expect("reject");
         let after = get_one(&pool, uid, kept.id).await.expect("lookup").expect("still there");
         assert_eq!(after.body, "do the thing", "an approved rule survives a later rejection");
+
+        sqlx::query("DELETE FROM users WHERE id = $1").bind(uid).execute(&pool).await.ok();
+    }
+
+    #[tokio::test]
+    async fn rejecting_a_superseded_proposal_keeps_the_newer_one() {
+        let Some(pool) = test_pool("context_reject_stale").await else { return };
+        let uid = seed_user(&pool).await;
+        let v1 = rule_spec("fresh", "first idea", ContextMatch::default());
+        let v2 = rule_spec("fresh", "second idea", ContextMatch::default());
+        let placeholder = ContextItemSpec { body: String::new(), enabled: false, ..v1.clone() };
+
+        let unborn =
+            insert(&pool, uid, &placeholder, Some(&v1), Some("agent-1")).await.expect("insert");
+        propose(&pool, uid, unborn.id, &v2, "agent-1").await.expect("propose").expect("row");
+        let stale = settle_pending(&pool, uid, &unborn, None).await.expect("reject");
+        assert!(stale.is_none(), "a reject of v1 must not delete the item carrying v2");
+        let kept = get_one(&pool, uid, unborn.id).await.expect("lookup").expect("still there");
+        assert_eq!(kept.pending.expect("v2 pending").body, "second idea");
+
+        let me = human(uid, false);
+        decide(&pool, &me, unborn.id, true).await.expect("approve");
+        let seen =
+            propose(&pool, uid, unborn.id, &v1, "agent-1").await.expect("propose").expect("row");
+        propose(&pool, uid, unborn.id, &v2, "agent-1").await.expect("propose").expect("row");
+        let stale = settle_pending(&pool, uid, &seen, None).await.expect("reject");
+        assert!(stale.is_none(), "a reject of v1 must not drop v2");
+        let after = get_one(&pool, uid, unborn.id).await.expect("lookup").expect("still there");
+        assert_eq!(after.pending.expect("v2 pending").body, "second idea");
 
         sqlx::query("DELETE FROM users WHERE id = $1").bind(uid).execute(&pool).await.ok();
     }
