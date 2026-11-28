@@ -58,11 +58,11 @@ describe('AccessPasskeysTab', () => {
 		expect(rows[0].textContent).toContain('YubiKey');
 		expect(rows[0].textContent).toContain(m.settings_passkeys_never_used());
 
-		rows[0].querySelector<HTMLButtonElement>('td.dt-actions button')?.click();
-		flushSync();
-		const dialog = document.querySelector('dialog[open]');
-		expect(dialog?.textContent).toContain(
-			m.users_confirm_revoke_passkey({ name: 'jeanne', label: 'YubiKey' })
+		button(m.settings_passkeys_revoke(), 'tbody tr[data-part="row"]:first-child')?.click();
+		await vi.waitFor(() =>
+			expect(document.querySelector('dialog[open]')?.textContent ?? '').toContain(
+				m.users_confirm_revoke_passkey({ name: 'jeanne', label: 'YubiKey' })
+			)
 		);
 		expect(state.revokePasskey).not.toHaveBeenCalled();
 
@@ -73,7 +73,8 @@ describe('AccessPasskeysTab', () => {
 	it('offers no delete to a viewer who cannot manage', () => {
 		state.rows = [passkey('p1', 'YubiKey')];
 		render(false);
-		expect(document.querySelector('td.dt-actions button')).toBeNull();
+		expect(document.querySelectorAll('tbody tr[data-part="row"]')).toHaveLength(1);
+		expect(button(m.settings_passkeys_revoke())).toBeUndefined();
 	});
 
 	it('shows the empty copy when the user has no passkeys', () => {
